@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    match /users/{userId}/stories/{storyId} {
+      allow get, list: if isSignedIn() && request.auth.uid == userId;
+      
+      allow create: if isSignedIn() 
+        && request.auth.uid == userId 
+        && isValidId(storyId)
+        && incoming().userId == request.auth.uid
+        && incoming().title is string && incoming().title.size() <= 200
+        && incoming().concept is string && incoming().concept.size() <= 1000
+        && incoming().musicSuggestion is string && incoming().musicSuggestion.size() <= 500
+        && incoming().voiceover is string && incoming().voiceover.size() <= 5000;
+
+      allow update: if isSignedIn() 
+        && request.auth.uid == userId 
+        && isValidId(storyId)
+        && incoming().userId == existing().userId
+        && incoming().title is string && incoming().title.size() <= 200
+        && incoming().concept is string && incoming().concept.size() <= 1000
+        && incoming().musicSuggestion is string && incoming().musicSuggestion.size() <= 500
+        && incoming().voiceover is string && incoming().voiceover.size() <= 5000;
+
+      allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(storyId);
+    }
+  }
+}

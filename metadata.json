@@ -1,0 +1,6 @@
+{
+  "name": "Wedding Storyboard",
+  "description": "Aplikacja analizująca filmy i zdjęcia weselne, tworząca niezapomniane widowiska muzyczne.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
