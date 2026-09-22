@@ -1,4 +1,4 @@
-import { MediaClip, ClipTechnicalAnalysis, ClipQualityRating } from '../../types/project';
+import { MediaClip, ClipTechnicalAnalysis, ClipQualityRating, DuplicateStatus } from '../../types/project';
 import { resolveClipMediaUrl } from '../media/mediaResolver';
 
 export interface AnalysisProgressCallback {
@@ -304,6 +304,120 @@ export async function analyzeClipVideo(
   };
 }
 
+export interface SimilarityGroup {
+  groupId: string;
+  name: string;
+  clipIds: string[];
+  bestClipId: string;
+  type: DuplicateStatus;
+}
+
+/**
+ * Detects IDENTICAL, VERY SIMILAR, SEQUENCE, and POSSIBLE DUPLICATE clips.
+ * Groups them together, ranks them, and identifies the best take for the editor.
+ */
+export function detectDuplicatesAndSimilarShots(
+  clips: MediaClip[],
+  analysisMap?: Map<string, ClipTechnicalAnalysis>
+): {
+  groups: SimilarityGroup[];
+  clipAnalysisUpdates: Map<string, Partial<ClipTechnicalAnalysis>>;
+} {
+  const groups: SimilarityGroup[] = [];
+  const clipAnalysisUpdates = new Map<string, Partial<ClipTechnicalAnalysis>>();
+  const assigned = new Set<string>();
+
+  for (let i = 0; i < clips.length; i++) {
+    const a = clips[i];
+    if (assigned.has(a.id)) continue;
+
+    const similar: { clip: MediaClip; status: DuplicateStatus }[] = [];
+    const timeA = new Date(a.capturedAt || a.createdAt).getTime();
+
+    for (let j = i + 1; j < clips.length; j++) {
+      const b = clips[j];
+      if (assigned.has(b.id)) continue;
+
+      const timeB = new Date(b.capturedAt || b.createdAt).getTime();
+      const timeDiffSec = Math.abs(timeA - timeB) / 1000;
+      const durDiffSec = Math.abs(a.duration - b.duration);
+
+      // Check for IDENTICAL: exact size + exact duration (<0.05s)
+      if (a.size > 0 && a.size === b.size && durDiffSec < 0.05) {
+        similar.push({ clip: b, status: 'IDENTICAL' });
+        continue;
+      }
+
+      // Check for VERY_SIMILAR: taken within 10 seconds + same orientation + duration within 2.5s
+      if (timeDiffSec <= 10 && a.orientation === b.orientation && durDiffSec <= 2.5) {
+        similar.push({ clip: b, status: 'VERY_SIMILAR' });
+        continue;
+      }
+
+      // Check for SEQUENCE: taken within 45 seconds of each other in the same category
+      if (timeDiffSec <= 45 && a.category === b.category && a.category !== 'unassigned') {
+        similar.push({ clip: b, status: 'SEQUENCE' });
+        continue;
+      }
+
+      // Check for POSSIBLE_DUPLICATE: same normalized base name (e.g. VID_001.mp4 and VID_001(1).mp4) or same duration (<0.1s) and resolution
+      const normA = a.name.replace(/\(\d+\)|\scopy|\s\d+$/i, '').toLowerCase().trim();
+      const normB = b.name.replace(/\(\d+\)|\scopy|\s\d+$/i, '').toLowerCase().trim();
+      if ((normA === normB && normA.length > 3) || (durDiffSec < 0.08 && a.width === b.width && a.height === b.height && a.duration > 2)) {
+        similar.push({ clip: b, status: 'POSSIBLE_DUPLICATE' });
+        continue;
+      }
+    }
+
+    if (similar.length > 0) {
+      const groupId = `grp_${a.id}`;
+      const allClipsInGroup = [a, ...similar.map(s => s.clip)];
+      allClipsInGroup.forEach(c => assigned.add(c.id));
+
+      // Find best take in group based on qualityScore, stability, and sharpness
+      let bestClip = a;
+      let bestScore = -1;
+
+      for (const c of allClipsInGroup) {
+        const an = analysisMap?.get(c.id) || c.analysis;
+        const score = an ? (an.qualityScore * 0.45 + an.stabilityScore * 0.35 + an.sharpnessScore * 0.20) : 50;
+        if (score > bestScore) {
+          bestScore = score;
+          bestClip = c;
+        }
+      }
+
+      const groupType: DuplicateStatus = similar.some(s => s.status === 'IDENTICAL')
+        ? 'IDENTICAL'
+        : similar.some(s => s.status === 'VERY_SIMILAR')
+        ? 'VERY_SIMILAR'
+        : similar.some(s => s.status === 'SEQUENCE')
+        ? 'SEQUENCE'
+        : 'POSSIBLE_DUPLICATE';
+
+      groups.push({
+        groupId,
+        name: `Seria (${allClipsInGroup.length}): ${a.name}`,
+        clipIds: allClipsInGroup.map(c => c.id),
+        bestClipId: bestClip.id,
+        type: groupType
+      });
+
+      // Update analysis records
+      allClipsInGroup.forEach(c => {
+        const isBest = c.id === bestClip.id;
+        clipAnalysisUpdates.set(c.id, {
+          duplicateStatus: isBest ? 'NONE' : groupType,
+          similarGroupId: groupId,
+          bestInGroup: isBest
+        });
+      });
+    }
+  }
+
+  return { groups, clipAnalysisUpdates };
+}
+
 /**
  * Runs full batch analysis across the library with real-time progress and abort control.
  */
@@ -323,7 +437,7 @@ export async function analyzeWholeLibrary(
     }
 
     const clip = clips[i];
-    const percent = Math.round((i / total) * 98);
+    const percent = Math.round((i / total) * 88);
     if (onProgress) {
       onProgress(percent, `Analiza ujęcia [${i + 1}/${total}]: "${clip.name}"`);
     }
@@ -333,7 +447,20 @@ export async function analyzeWholeLibrary(
   }
 
   if (onProgress) {
-    onProgress(100, 'Zakończono analizę biblioteki.');
+    onProgress(92, 'Wykrywanie duplikatów i grupowanie serii ujęć...');
+  }
+
+  // Run duplicate and similarity detection pass
+  const { clipAnalysisUpdates } = detectDuplicatesAndSimilarShots(clips, analysisMap);
+  clipAnalysisUpdates.forEach((updates, clipId) => {
+    const existing = analysisMap.get(clipId);
+    if (existing) {
+      analysisMap.set(clipId, { ...existing, ...updates });
+    }
+  });
+
+  if (onProgress) {
+    onProgress(100, 'Zakończono analizę biblioteki i identyfikację ujęć.');
   }
 
   return analysisMap;

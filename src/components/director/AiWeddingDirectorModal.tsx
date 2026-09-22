@@ -45,6 +45,10 @@ interface ProposedItem {
   reason: string;
   qualityTag: 'BEST' | 'GOOD' | 'NEUTRAL' | 'PROBLEM';
   isIncluded: boolean;
+  duplicateStatus?: string;
+  bestInGroup?: boolean;
+  similarGroupId?: string;
+  rhythmNotice?: string;
 }
 
 export function AiWeddingDirectorModal({
@@ -392,10 +396,17 @@ export function AiWeddingDirectorModal({
 
                     {/* Info */}
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="text-xs font-bold text-white truncate">
                           {item.clip.name}
                         </span>
+
+                        {/* Chapter Tag */}
+                        {item.category && item.category !== 'unassigned' && (
+                          <span className="text-[10px] font-semibold text-[#D4AF37] bg-[#D4AF37]/10 px-1.5 py-0.2 rounded border border-[#D4AF37]/20">
+                            {item.category}
+                          </span>
+                        )}
                         
                         {/* Rating Badge */}
                         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
@@ -404,14 +415,38 @@ export function AiWeddingDirectorModal({
                           item.qualityTag === 'PROBLEM' ? 'bg-red-950 text-red-400 border border-red-500/30' :
                           'bg-[#222] text-[#AAA]'
                         }`}>
-                          {item.qualityTag}
+                          {item.qualityTag} {item.clip.analysis?.qualityScore ? `(${item.clip.analysis.qualityScore})` : ''}
                         </span>
+
+                        {/* Best in group badge */}
+                        {item.bestInGroup && (
+                          <span className="flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                            <Star className="w-3 h-3 fill-current" />
+                            Główne ujęcie z serii
+                          </span>
+                        )}
+
+                        {/* Duplicate badge */}
+                        {item.duplicateStatus && item.duplicateStatus !== 'NONE' && (
+                          <span className="flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-950/60 text-purple-300 border border-purple-500/30">
+                            <Copy className="w-3 h-3" />
+                            {item.duplicateStatus}
+                          </span>
+                        )}
                       </div>
 
-                      <div className="flex items-center gap-3 text-[11px] text-[#888] mt-0.5">
-                        <span>Cięcie: {item.sourceStart.toFixed(1)}s - {item.sourceEnd.toFixed(1)}s ({item.duration.toFixed(1)}s)</span>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#888] mt-0.5">
+                        <span className="font-mono text-[#AAA]">
+                          {item.sourceStart.toFixed(1)}s - {item.sourceEnd.toFixed(1)}s ({item.duration.toFixed(1)}s)
+                        </span>
                         <span>•</span>
                         <span className="text-[#AAA69D] truncate">{item.reason}</span>
+                        {item.rhythmNotice && (
+                          <>
+                            <span>•</span>
+                            <span className="text-cyan-400/90 italic">{item.rhythmNotice}</span>
+                          </>
+                        )}
                       </div>
                     </div>
 
@@ -475,8 +510,28 @@ export function AiWeddingDirectorModal({
   );
 }
 
+const CHAPTER_ORDER: Record<string, number> = {
+  'opening': 1,
+  'preparations': 2,
+  'ceremony': 3,
+  'congratulations': 4,
+  'wishes': 5,
+  'first_dance': 6,
+  'toast': 7,
+  'party': 8,
+  'family': 9,
+  'guests': 10,
+  'cake': 11,
+  'games': 12,
+  'outdoor': 13,
+  'climax': 14,
+  'ending': 15,
+  'unassigned': 99
+};
+
 /**
- * Heuristic rules to generate a curated proposal.
+ * Advanced heuristic rules to generate a wedding director proposal.
+ * Preserves wedding narrative flow, pacing rhythm, smart cuts, and duplicate prevention.
  */
 function generateDirectorProposals(
   clips: MediaClip[],
@@ -486,25 +541,34 @@ function generateDirectorProposals(
     targetDurationMinutes: number;
   }
 ): ProposedItem[] {
-  // Sort chronologically
+  // Sort by chapter sequence first (if categorized), then chronologically
   const sorted = [...clips].sort((a, b) => {
+    const orderA = CHAPTER_ORDER[a.category] ?? 99;
+    const orderB = CHAPTER_ORDER[b.category] ?? 99;
+
+    if (orderA !== orderB && orderA !== 99 && orderB !== 99) {
+      return orderA - orderB;
+    }
+
     const timeA = new Date(a.capturedAt || a.createdAt).getTime();
     const timeB = new Date(b.capturedAt || b.createdAt).getTime();
     return timeA - timeB;
   });
 
   const proposals: ProposedItem[] = [];
+  let consecutiveSameCat = 0;
+  let lastCat = '';
 
   for (const clip of sorted) {
     const analysis = clip.analysis;
     const isProblem = analysis?.ratingCategory === 'PROBLEM';
 
-    // Filter rules
+    // Filter out severe problem clips if requested
     if (options.filterOutProblems && isProblem) {
       continue;
     }
 
-    // Determine timing
+    // Determine timing (Smart Cut)
     let sourceStart = 0;
     let sourceEnd = clip.duration;
     let reason = 'Wysoki potencjał montażowy';
@@ -513,9 +577,44 @@ function generateDirectorProposals(
       sourceStart = analysis.recommendedStart;
       sourceEnd = analysis.recommendedEnd;
       reason = `Stabilność: ${analysis.stabilityScore}%, Ostrość: ${analysis.sharpnessScore}%`;
+    } else if (options.applySmartCuts && clip.duration > 8) {
+      // General smart cut fallback for clips without full analysis
+      sourceStart = Math.min(1.5, clip.duration * 0.1);
+      sourceEnd = Math.min(clip.duration - 0.5, sourceStart + 6.0);
+      reason = `Smart Cut: dynamiczne okno 6.0s`;
     }
 
     const duration = Math.max(0.5, sourceEnd - sourceStart);
+
+    // Duplicate detection & inclusion decision
+    const isDuplicate = Boolean(
+      (analysis?.duplicateStatus && analysis.duplicateStatus !== 'NONE') ||
+      (clip.duplicateStatus && clip.duplicateStatus !== 'NONE')
+    );
+    const isBestInGroup = Boolean(analysis?.bestInGroup || clip.bestInGroup);
+
+    let isIncluded = true;
+    let duplicateLabel = analysis?.duplicateStatus || clip.duplicateStatus;
+
+    if (isDuplicate && !isBestInGroup) {
+      // Exclude secondary takes by default to prevent repetitive cuts
+      isIncluded = false;
+      reason = `Powtórzenie z serii (${duplicateLabel}) — wybrano lepsze ujęcie`;
+    } else if (isBestInGroup) {
+      reason = `Główne ujęcie z serii (${analysis?.qualityScore || 85} pkt)`;
+    }
+
+    // Rhythm and pacing check
+    let rhythmNotice: string | undefined;
+    if (clip.category === lastCat && clip.category !== 'unassigned') {
+      consecutiveSameCat++;
+      if (consecutiveSameCat >= 3) {
+        rhythmNotice = 'Rytm: zalecany montaż dynamiczny / przebitka';
+      }
+    } else {
+      consecutiveSameCat = 1;
+      lastCat = clip.category;
+    }
 
     proposals.push({
       id: `prop_${clip.id}`,
@@ -525,8 +624,12 @@ function generateDirectorProposals(
       duration,
       category: clip.category,
       reason,
-      qualityTag: analysis?.ratingCategory || 'GOOD',
-      isIncluded: true
+      qualityTag: analysis?.ratingCategory || (clip.duration > 3 ? 'GOOD' : 'NEUTRAL'),
+      isIncluded,
+      duplicateStatus: duplicateLabel,
+      bestInGroup: isBestInGroup,
+      similarGroupId: analysis?.similarGroupId || clip.similarGroupId,
+      rhythmNotice
     });
   }
 

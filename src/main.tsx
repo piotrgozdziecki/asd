@@ -3,7 +3,6 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { AuthProvider } from './lib/firebase/AuthContext';
-import { patchGlobalJsonStringify } from './lib/safeJson';
 import { registerSW } from 'virtual:pwa-register';
 import './index.css';
 
@@ -36,9 +35,6 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
     console.warn('Nie udało się zarejestrować Service Workera:', err);
   }
 }
-
-// Initialize global protection against circular JSON errors (HTMLVideoElement, FiberNode, etc.)
-patchGlobalJsonStringify();
 
 // Global safe-guard against cross-origin script error masking, circular error serialization, and unhandled network errors
 if (typeof window !== 'undefined') {

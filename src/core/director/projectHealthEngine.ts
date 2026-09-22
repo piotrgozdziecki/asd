@@ -194,19 +194,48 @@ export async function runRealRuntimeHealthCheck(project: ProjectState): Promise<
   // 3. AUDIO MODULE (Real Runtime Test)
   // ==========================================
   const audioIssues: string[] = [];
+  let hasAudioAutoFix = false;
   const videoTrack = project.tracks.find(t => t.id === 'v1');
   const hasAudioTracks = project.audioTracks.length > 0;
 
   if (videoTrack?.muted && !hasAudioTracks) {
     audioIssues.push('Ścieżka wideo jest wyciszona, a projekt nie zawiera żadnej muzyki (film będzie całkowicie niemy).');
     warnings.push('Film będzie całkowicie niemy (wyciszone wideo bez muzyki)');
+    hasAudioAutoFix = true;
   }
 
-  for (const track of project.audioTracks) {
+  project.audioTracks.forEach((track, idx) => {
     if (!track.objectUrl && !track.file && !track.driveFileId) {
       audioIssues.push(`Brak pliku audio dla ścieżki "${track.name}".`);
       warnings.push(`Niedostępny plik podkładu muzycznego: "${track.name}"`);
     }
+
+    if (track.timelineStart < 0) {
+      audioIssues.push(`Ścieżka muzyczna "${track.name}" ma ujemny czas startu (${track.timelineStart.toFixed(1)}s).`);
+      hasAudioAutoFix = true;
+    }
+
+    if (track.duration <= 0) {
+      audioIssues.push(`Ścieżka muzyczna "${track.name}" ma zerowy czas trwania.`);
+      hasAudioAutoFix = true;
+    }
+
+    if (track.volume === 0 && !track.muted) {
+      audioIssues.push(`Ścieżka muzyczna "${track.name}" ma ustawioną zerową głośność (0%).`);
+    }
+  });
+
+  // Check orientation and aspect ratio consistency
+  const targetAspect = project.settings?.aspectRatio || '16:9';
+  let portraitClipsOnTimeline = 0;
+  project.timelineItems.forEach(item => {
+    const clip = clipMap.get(item.clipId);
+    if (clip && clip.orientation === 'portrait' && targetAspect === '16:9') {
+      portraitClipsOnTimeline++;
+    }
+  });
+  if (portraitClipsOnTimeline > 0) {
+    warnings.push(`Wykryto ${portraitClipsOnTimeline} pionowych ujęć (9:16) w poziomym projekcie 16:9. Zastosowano dopasowanie kadrów.`);
   }
 
   let audioStatus: HealthStatus = 'OK';
@@ -223,7 +252,7 @@ export async function runRealRuntimeHealthCheck(project: ProjectState): Promise<
     issues: audioIssues,
     metrics: `${project.audioTracks.length} ścieżek muzycznych`,
     testedAt: timestamp,
-    canAutoFix: videoTrack?.muted && !hasAudioTracks
+    canAutoFix: hasAudioAutoFix
   };
 
   // ==========================================
@@ -405,9 +434,32 @@ export function autoFixProjectHealthIssues(project: ProjectState): {
     } : item);
   });
 
-  // 2. Unmute video track if needed
+  // 2. Repair audio tracks
+  const updatedAudioTracks = project.audioTracks.map(track => {
+    let trackModified = false;
+    let newStart = track.timelineStart;
+    let newDur = track.duration;
+
+    if (newStart < 0) {
+      newStart = 0;
+      trackModified = true;
+      fixedItems.push(`Skorygowano ujemny czas startu ścieżki audio "${track.name}"`);
+      fixedCount++;
+    }
+
+    if (newDur <= 0) {
+      newDur = 10;
+      trackModified = true;
+      fixedItems.push(`Przywrócono domyślny czas trwania dla ścieżki audio "${track.name}"`);
+      fixedCount++;
+    }
+
+    return trackModified ? { ...track, timelineStart: newStart, duration: newDur } : track;
+  });
+
+  // 3. Unmute video track if needed
   let updatedTracks = project.tracks;
-  const hasMusic = project.audioTracks.length > 0;
+  const hasMusic = updatedAudioTracks.length > 0;
   const v1 = project.tracks.find(t => t.id === 'v1');
   if (v1 && v1.muted && !hasMusic) {
     updatedTracks = project.tracks.map(t => t.id === 'v1' ? { ...t, muted: false } : t);
@@ -419,6 +471,7 @@ export function autoFixProjectHealthIssues(project: ProjectState): {
     ...project,
     tracks: updatedTracks,
     timelineItems: validItems,
+    audioTracks: updatedAudioTracks,
     updatedAt: new Date().toISOString()
   };
 

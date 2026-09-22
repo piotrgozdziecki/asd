@@ -11,10 +11,11 @@ export type ClipCategory =
   | 'first_dance' | 'toast' | 'party' | 'family' | 'guests' 
   | 'cake' | 'games' | 'outdoor' | 'climax' | 'ending';
 
-export type ClipStatus = 'unused' | 'selected' | 'used' | 'rejected' | 'missing' | 'error';
+export type ClipStatus = 'READY' | 'PROCESSING' | 'USED' | 'UNUSED' | 'MISSING' | 'ERROR' | 'unused' | 'selected' | 'used' | 'rejected' | 'missing' | 'error';
 export type ClipOrientation = 'landscape' | 'portrait' | 'square';
 
 export type ClipQualityRating = 'BEST' | 'GOOD' | 'NEUTRAL' | 'PROBLEM';
+export type DuplicateStatus = 'IDENTICAL' | 'VERY_SIMILAR' | 'SEQUENCE' | 'POSSIBLE_DUPLICATE' | 'NONE';
 
 export interface ClipTechnicalAnalysis {
   qualityScore: number; // 0 - 100
@@ -28,6 +29,11 @@ export interface ClipTechnicalAnalysis {
   recommendedEnd: number; // Usable segment end (s)
   issues: string[]; // e.g. ['Poruszone ujęcie', 'Zbyt ciemne']
   analyzedAt?: string;
+  duplicateStatus?: DuplicateStatus;
+  similarGroupId?: string;
+  bestInGroup?: boolean;
+  narrativeImportance?: 'HIGH' | 'MEDIUM' | 'LOW';
+  sceneType?: string;
 }
 
 export interface MediaClip {
@@ -36,6 +42,7 @@ export interface MediaClip {
   objectUrl?: string;
   driveFileId?: string;
   type: 'video' | 'image' | 'audio';
+  mimeType?: string;
   name: string;
   duration: number; // in seconds
   width: number;
@@ -49,6 +56,7 @@ export interface MediaClip {
   thumbnailUrl?: string;
   category: ClipCategory;
   status: ClipStatus;
+  usageCount?: number;
   isFavorite: boolean;
   tags: string[];
   comment?: string;
@@ -56,8 +64,11 @@ export interface MediaClip {
   capturedAt?: string;
   missingReason?: string;
 
-  // Etap 6: Smart Director & Quality Analysis
+  // Etap 7: Smart Director & Quality Analysis
   analysis?: ClipTechnicalAnalysis;
+  similarGroupId?: string;
+  duplicateStatus?: DuplicateStatus;
+  bestInGroup?: boolean;
   proxyUrl?: string;
   isProxyReady?: boolean;
 }
