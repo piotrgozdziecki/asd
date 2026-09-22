@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { 
+  initializeFirestore,
   getFirestore, 
   collection, 
   doc, 
@@ -11,11 +12,31 @@ import {
   orderBy,
   onSnapshot 
 } from 'firebase/firestore';
+import {
+  getStorage,
+  ref,
+  uploadBytesResumable,
+  getDownloadURL,
+  deleteObject
+} from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 export const app = initializeApp(firebaseConfig);
+
+// Initialize Firestore with force long polling to prevent WebChannel stream timeouts in iframe environments
+try {
+  initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+  }, firebaseConfig.firestoreDatabaseId);
+} catch {
+  // If already initialized
+}
+
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+export const storage = getStorage(app);
+
+import { safeStringify } from './safeJson';
 
 export enum OperationType {
   CREATE = 'create',
@@ -44,8 +65,17 @@ export interface FirestoreErrorInfo {
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  let errorMsg = 'Unknown Firestore error';
+  if (error instanceof Error) {
+    errorMsg = error.message;
+  } else if (typeof error === 'string') {
+    errorMsg = error;
+  } else if (typeof error === 'object' && error !== null) {
+    errorMsg = (error as any).message || (error as any).code || 'Database error occurred';
+  }
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: String(errorMsg),
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -60,8 +90,24 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+
+  const serialized = safeStringify(errInfo);
+  console.error('Firestore Error: ', serialized);
+  throw new Error(serialized);
+}
+
+export interface SavedStoryMediaItem {
+  id?: string;
+  name: string;
+  mimeType: string;
+  cloudUrl?: string;
+  storagePath?: string;
+  comment?: string;
+  durationSec?: number;
+  startTimeSec?: number;
+  endTimeSec?: number;
+  audioVolume?: number;
+  exifDate?: string;
 }
 
 export interface SavedStory {
@@ -69,20 +115,115 @@ export interface SavedStory {
   title: string;
   concept: string;
   musicSuggestion: string;
-  timeline: { time: string; elementName: string; action: string }[];
+  timeline: { time: string; elementName: string; action: string; directorNote?: string }[];
   voiceover: string;
   coverUrl?: string;
+  mood?: string;
+  exifDate?: string;
+  mediaItems?: SavedStoryMediaItem[];
   userId: string;
   createdAt: string;
   updatedAt: string;
 }
 
-export async function saveStoryToFirestore(userId: string, story: Omit<SavedStory, 'userId' | 'createdAt' | 'updatedAt'> & { id?: string }): Promise<string> {
+export interface StorageUploadProgress {
+  percent: number;
+  bytesTransferred: number;
+  totalBytes: number;
+}
+
+/**
+ * Uploads a large video/audio/image file to Firebase Cloud Storage with real-time progress tracking.
+ */
+export async function uploadMediaToCloudStorage(
+  userId: string,
+  file: File | Blob,
+  fileName: string,
+  onProgress?: (progress: StorageUploadProgress) => void
+): Promise<{ downloadUrl: string; storagePath: string }> {
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const uniqueId = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const storagePath = `users/${userId}/media/${uniqueId}_${safeName}`;
+  const storageRef = ref(storage, storagePath);
+
+  const uploadTask = uploadBytesResumable(storageRef, file, {
+    contentType: file.type || 'application/octet-stream',
+    customMetadata: {
+      originalName: fileName,
+      uploadedBy: userId,
+      uploadedAt: new Date().toISOString()
+    }
+  });
+
+  return new Promise((resolve, reject) => {
+    uploadTask.on(
+      'state_changed',
+      (snapshot) => {
+        const percent = Math.round((snapshot.bytesTransferred / (snapshot.totalBytes || 1)) * 100);
+        if (onProgress) {
+          onProgress({
+            percent,
+            bytesTransferred: snapshot.bytesTransferred,
+            totalBytes: snapshot.totalBytes
+          });
+        }
+      },
+      (error) => {
+        console.error('[Firebase Storage Error]', error);
+        reject(error);
+      },
+      async () => {
+        try {
+          const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+          resolve({ downloadUrl, storagePath });
+        } catch (err) {
+          reject(err);
+        }
+      }
+    );
+  });
+}
+
+/**
+ * Deletes a file from Firebase Cloud Storage by its storage path.
+ */
+export async function deleteMediaFromCloudStorage(storagePath: string): Promise<void> {
+  try {
+    const storageRef = ref(storage, storagePath);
+    await deleteObject(storageRef);
+  } catch (error: any) {
+    // If already removed or not found, don't crash
+    if (error?.code !== 'storage/object-not-found') {
+      console.warn('[Firebase Storage Delete Warning]', error);
+    }
+  }
+}
+
+/**
+ * Recursively removes undefined values from an object or array.
+ * Firestore does not support undefined values.
+ */
+function removeUndefined(obj: any): any {
+  if (Array.isArray(obj)) {
+    return obj.map(v => (v && typeof v === 'object') ? removeUndefined(v) : v).filter(v => v !== undefined);
+  }
+  if (obj && typeof obj === 'object') {
+    return Object.fromEntries(
+      Object.entries(obj)
+        .filter(([_, v]) => v !== undefined)
+        .map(([k, v]) => [k, (v && typeof v === 'object') ? removeUndefined(v) : v])
+    );
+  }
+  return obj;
+}
+
+export async function saveStoryToFirestore(userId: string, story: Omit<SavedStory, 'userId' | 'createdAt' | 'updatedAt' | 'id'> & { id?: string }): Promise<string> {
   const storyId = story.id || `story_${Date.now()}`;
   const path = `users/${userId}/stories/${storyId}`;
   try {
     const now = new Date().toISOString();
     const docData: SavedStory = {
+      mediaItems: [],
       ...story,
       id: storyId,
       userId,
@@ -90,15 +231,20 @@ export async function saveStoryToFirestore(userId: string, story: Omit<SavedStor
       updatedAt: now,
     };
     
-    // Clean up undefined values which Firestore doesn't support
-    const cleanData = Object.fromEntries(
-      Object.entries(docData).filter(([_, v]) => v !== undefined)
-    );
+    // Deep clean undefined values which Firestore doesn't support
+    const cleanData = removeUndefined(docData);
 
     await setDoc(doc(db, 'users', userId, 'stories', storyId), cleanData);
     return storyId;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+  } catch (error: any) {
+    const errMsg = error?.message || String(error);
+    const isPermissionError = error?.code === 'permission-denied' || errMsg.toLowerCase().includes('insufficient permissions');
+    if (isPermissionError) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    } else {
+      console.warn(`[Firestore Offline/Network] Nie można zapisać historii w chmurze (${path}):`, errMsg);
+      return storyId;
+    }
   }
 }
 
@@ -116,11 +262,25 @@ export function subscribeToUserStories(userId: string, onUpdate: (stories: Saved
         onUpdate(stories);
       },
       (error) => {
-        handleFirestoreError(error, OperationType.LIST, path);
+        const errMsg = error?.message || String(error);
+        const isPermissionDenied = error?.code === 'permission-denied' || errMsg.includes('insufficient permissions');
+        if (isPermissionDenied) {
+          handleFirestoreError(error, OperationType.LIST, path);
+        } else {
+          console.warn(`[Firestore Status] Połączenie offline dla ${path}:`, errMsg);
+          if (onError) onError(error);
+        }
       }
     );
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+  } catch (error: any) {
+    const errMsg = error?.message || String(error);
+    const isPermissionDenied = error?.code === 'permission-denied' || errMsg.includes('insufficient permissions');
+    if (isPermissionDenied) {
+      handleFirestoreError(error, OperationType.LIST, path);
+    } else {
+      console.warn(`[Firestore Status] Błąd subskrypcji dla ${path}:`, errMsg);
+      if (onError) onError(error);
+    }
   }
 }
 
@@ -128,7 +288,13 @@ export async function deleteStoryFromFirestore(userId: string, storyId: string):
   const path = `users/${userId}/stories/${storyId}`;
   try {
     await deleteDoc(doc(db, 'users', userId, 'stories', storyId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
+  } catch (error: any) {
+    const errMsg = error?.message || String(error);
+    const isPermissionError = error?.code === 'permission-denied' || errMsg.toLowerCase().includes('insufficient permissions');
+    if (isPermissionError) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    } else {
+      console.warn(`[Firestore Offline/Network] Nie można usunąć historii z chmury (${path}):`, errMsg);
+    }
   }
 }

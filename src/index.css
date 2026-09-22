@@ -1,44 +1,229 @@
 @import "tailwindcss";
 
 @layer base {
+  html {
+    font-size: clamp(14px, 12px + 0.8vw, 16px);
+    scroll-behavior: smooth;
+    text-rendering: optimizeLegibility;
+  }
+  
   :root {
-    --font-serif: 'Cormorant Garamond', Georgia, serif;
-    --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+    /* HIGH-CONTRAST DARK LUXURY THEME */
+    --bg-atelier: #030303; 
+    --bg-card: rgba(18, 18, 18, 0.7);
+    --bg-subtle: rgba(26, 26, 26, 0.6);
+    
+    --ink-primary: #FAFAF9; 
+    --ink-secondary: #E7E5E4;
+    --ink-muted: #A8A29E;
+    
+    /* True Gold colors for sharp contrast */
+    --gold-primary: #D4AF37;
+    --gold-bright: #FDE047;
+    --gold-dark: #A1821C;
+    --gold-glow: rgba(212, 175, 55, 0.25);
+    --gold-soft: rgba(212, 175, 55, 0.12);
+    
+    --border-luxury: rgba(212, 175, 55, 0.4);
+    --border-glass: rgba(255, 255, 255, 0.15);
+    --border-subtle: rgba(255, 255, 255, 0.08);
+    
+    --font-serif: 'Playfair Display', Georgia, serif;
+    --font-sans: 'Manrope', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #030712;
-    color: #f1f5f9;
+    background-color: var(--bg-atelier);
+    color: var(--ink-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+    letter-spacing: -0.01em;
+    background-image: radial-gradient(circle at 50% 0%, rgba(30, 30, 30, 0.5) 0%, transparent 60%);
   }
 }
 
+::selection {
+  background: var(--gold-primary);
+  color: #000000;
+}
+
+/* Typography Classes - Now using the sharper fonts */
 .font-serif-luxury {
-  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-family: var(--font-serif);
+  letter-spacing: 0.01em;
 }
-
 .font-sans-modern {
-  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  font-family: var(--font-sans);
+}
+.font-mono-label {
+  font-family: var(--font-mono);
+  letter-spacing: 0.03em;
 }
 
-/* Safe area insets for notched / punch-hole devices like POCO F6 */
+/* ========================================================= */
+/* 🌟 REFINED DARK GLASSMORPHISM ENGINE                     */
+/* ========================================================= */
+.glass-panel {
+  background: rgba(12, 12, 12, 0.7);
+  backdrop-filter: blur(32px) saturate(200%);
+  -webkit-backdrop-filter: blur(32px) saturate(200%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.9), inset 0 1px 1px rgba(255, 255, 255, 0.1);
+}
+
+.glass-panel-gold {
+  background: linear-gradient(135deg, rgba(35, 30, 20, 0.8) 0%, rgba(12, 12, 12, 0.9) 100%);
+  backdrop-filter: blur(32px) saturate(200%);
+  -webkit-backdrop-filter: blur(32px) saturate(200%);
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.9), 0 0 32px rgba(212, 175, 55, 0.12), inset 0 1px 2px rgba(253, 224, 71, 0.15);
+}
+
+.glass-card {
+  background: rgba(18, 18, 18, 0.55);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.05);
+  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card:hover {
+  border-color: rgba(212, 175, 55, 0.4);
+  background: rgba(22, 22, 22, 0.7);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6), 0 0 24px rgba(212, 175, 55, 0.15), inset 0 1px 2px rgba(253, 224, 71, 0.15);
+  transform: translateY(-3px);
+}
+
+.glass-input {
+  background: rgba(8, 8, 8, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #FFFFFF;
+  backdrop-filter: blur(16px);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-input:focus {
+  border-color: var(--gold-primary);
+  background: rgba(15, 15, 15, 0.9);
+  box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.15), 0 0 20px rgba(212, 175, 55, 0.1);
+  outline: none;
+}
+
+/* Luminous Glows & Shimmers */
+.ambient-halo {
+  position: absolute;
+  pointer-events: none;
+  filter: blur(100px);
+  opacity: 0.25;
+  border-radius: 9999px;
+  z-index: 0;
+}
+
+.gold-gradient-text {
+  background: linear-gradient(135deg, #FEF08A 0%, #D4AF37 45%, #A1821C 80%, #FDE047 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.luxury-btn-primary {
+  background: linear-gradient(135deg, #D4AF37 0%, #C59B48 50%, #A1821C 100%);
+  color: #050505;
+  font-weight: 800;
+  border: 1px solid rgba(253, 224, 71, 0.5);
+  box-shadow: 0 8px 24px -4px rgba(212, 175, 55, 0.35), inset 0 1px 2px rgba(255, 255, 255, 0.6);
+  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.luxury-btn-primary:hover {
+  background: linear-gradient(135deg, #FDE047 0%, #D4AF37 50%, #B48E23 100%);
+  box-shadow: 0 12px 32px -4px rgba(212, 175, 55, 0.5), 0 0 24px rgba(212, 175, 55, 0.25);
+  transform: translateY(-2px) scale(1.01);
+}
+
+.luxury-btn-primary:active {
+  transform: translateY(0.5px) scale(0.99);
+}
+
+.luxury-btn-ghost {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #FAFAF9;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.luxury-btn-ghost:hover {
+  background: rgba(212, 175, 55, 0.1);
+  border-color: rgba(212, 175, 55, 0.4);
+  color: var(--gold-primary);
+  transform: translateY(-1.5px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3), 0 0 16px rgba(212, 175, 55, 0.15);
+}
+
+/* Badge with crisp neon aura */
+.badge-luxury {
+  background: rgba(212, 175, 55, 0.12);
+  color: #FDE047;
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  box-shadow: 0 0 16px rgba(212, 175, 55, 0.15);
+}
+
+/* Safe Area Insets for Mobile / Android PWA */
 .pt-safe {
   padding-top: max(1rem, env(safe-area-inset-top));
 }
-
 .pb-safe {
   padding-bottom: max(1rem, env(safe-area-inset-bottom));
 }
-
 .pb-safe-nav {
-  padding-bottom: max(5.5rem, calc(4.5rem + env(safe-area-inset-bottom)));
+  padding-bottom: max(6rem, calc(4.5rem + env(safe-area-inset-bottom)));
 }
 
-/* Custom scrollbar for horizontal mobile strips */
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(212, 175, 55, 0.35);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(212, 175, 55, 0.7);
+}
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* Touch and Horizontal Scrolling Enhancements */
+.custom-scrollbar {
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(212, 175, 55, 0.4) transparent;
+}
+
+.touch-pan-x {
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.9; transform: scale(0.98); }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 3s ease-in-out infinite;
 }

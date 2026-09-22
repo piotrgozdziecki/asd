@@ -1,27 +1,21 @@
 {
   "entities": {
-    "Story": {
-      "title": "Wedding Storyboard",
-      "description": "Scenariusz i timeline widowiska weselnego",
+    "Project": {
+      "title": "Wedding Project",
+      "description": "Stan projektu wideo i timeline",
       "type": "object",
       "properties": {
-        "title": { "type": "string", "maxLength": 200 },
-        "concept": { "type": "string", "maxLength": 1000 },
-        "musicSuggestion": { "type": "string", "maxLength": 500 },
-        "timeline": { "type": "array" },
-        "voiceover": { "type": "string", "maxLength": 5000 },
-        "coverUrl": { "type": "string", "maxLength": 2000000 },
         "userId": { "type": "string", "maxLength": 128 },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
+        "state": { "type": "object" },
+        "updatedAt": { "type": "string" }
       },
-      "required": ["title", "concept", "musicSuggestion", "timeline", "voiceover", "userId", "createdAt", "updatedAt"]
+      "required": ["userId", "state", "updatedAt"]
     }
   },
   "firestore": {
-    "/users/{userId}/stories/{storyId}": {
-      "schema": { "$ref": "#/entities/Story" },
-      "description": "Zapisane scenariusze weselne użytkownika"
+    "/users/{userId}/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/Project" },
+      "description": "Zapisane projekty weselne użytkownika"
     }
   }
 }

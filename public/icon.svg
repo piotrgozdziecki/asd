@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="50%" stop-color="#1e1b4b" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fb7185" />
+      <stop offset="50%" stop-color="#f43f5e" />
+      <stop offset="100%" stop-color="#f59e0b" />
+    </linearGradient>
+    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fde047" />
+      <stop offset="100%" stop-color="#d97706" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+  <circle cx="256" cy="256" r="210" fill="none" stroke="url(#goldGrad)" stroke-width="4" opacity="0.4" stroke-dasharray="12 8" />
+  <!-- Rings Motif -->
+  <circle cx="220" cy="250" r="82" fill="none" stroke="url(#ringGrad)" stroke-width="18" stroke-linecap="round" />
+  <circle cx="292" cy="250" r="82" fill="none" stroke="url(#goldGrad)" stroke-width="18" stroke-linecap="round" />
+  <!-- Sparkles -->
+  <path d="M256 120 L262 145 L287 151 L262 157 L256 182 L250 157 L225 151 L250 145 Z" fill="#fde047" />
+  <path d="M370 200 L374 216 L390 220 L374 224 L370 240 L366 224 L350 220 L366 216 Z" fill="#fb7185" />
+  <path d="M140 310 L144 324 L158 328 L144 332 L140 346 L136 332 L122 328 L136 324 Z" fill="#f59e0b" />
+  <!-- Film Clapper Accent -->
+  <path d="M190 395 L322 395 Q330 395 330 403 L330 412 Q330 420 322 420 L190 420 Q182 420 182 412 L182 403 Q182 395 190 395 Z" fill="#f43f5e" opacity="0.9" />
+  <text x="256" y="455" fill="#f1f5f9" font-family="serif" font-size="28" font-weight="bold" text-anchor="middle" letter-spacing="4">STUDIO KINOWE</text>
+</svg>

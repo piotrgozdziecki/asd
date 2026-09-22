@@ -22,10 +22,22 @@ import {
   Eye,
   Tv,
   Camera,
-  Scissors
+  Scissors,
+  Activity,
+  Heart,
+  SunMedium,
+  Ban,
+  Mic,
+  FileDown,
+  Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Storyboard, MediaItem } from '../App';
+import { Storyboard, MediaItem } from '../types/legacy';
+import { downloadStoryboardPdfFile } from '../lib/pdfExport';
+import { AudioTrackSelector, CustomAudioState } from './AudioTrackSelector';
+import { playSynthesizedGenreMusic, getDefaultGenreForMood } from '../lib/soundLibrary';
+import { VoiceRecorderModal } from './VoiceRecorderModal';
+import { BeatAnalysisResult } from '../lib/beatDetector';
 
 interface AutoMontageModalProps {
   storyboard: Storyboard;
@@ -76,9 +88,7 @@ export function AutoMontageModal({
     item.name.toLowerCase().endsWith('.webp')
   );
 
-  // Montage Mode:
-  // 'baseVideo' = Plays the user's continuous wedding film from start to end with cinematic burned-in chapter titles, lower thirds and narrative subtitles.
-  // 'multiClip' = Assembles short video cuts directly from the user's film at each scene's specific timestamp into a dynamic highlights reel.
+  // Montage Mode: 'baseVideo' or 'multiClip'
   const [montageMode, setMontageMode] = useState<'baseVideo' | 'multiClip'>(
     userVideoFiles.length > 0 ? 'baseVideo' : 'multiClip'
   );
@@ -86,14 +96,27 @@ export function AutoMontageModal({
   const [selectedBaseVideoIndex, setSelectedBaseVideoIndex] = useState(0);
   const activeBaseVideo = userVideoFiles[selectedBaseVideoIndex] || userVideoFiles[0] || null;
 
-  // Montage Configuration
-  const [aspectRatio, setAspectRatio] = useState<'9:16' | '16:9'>('9:16');
-  const [baseVideoDurationOption, setBaseVideoDurationOption] = useState<'full' | '60s' | '30s'>('full');
+  // Montage Configuration - original format from video with natural duration
   const [sceneDuration, setSceneDuration] = useState(3.5); // seconds per scene in highlights mode
   const [includeAudio, setIncludeAudio] = useState(true);
   const [showSubtitles, setShowSubtitles] = useState(true);
 
-  // Extracted scene thumbnails from user's actual video
+  // Audio & Music: Custom Song, Beat Detection, Voiceover (no ambient music)
+  const [customAudio, setCustomAudio] = useState<CustomAudioState>({
+    file: null,
+    url: null,
+    name: '',
+    duration: 0,
+    beatData: null,
+    syncWithBeats: true,
+  });
+  const [isCustomMusicSelected, setIsCustomMusicSelected] = useState(false);
+  const [voiceoverBlob, setVoiceoverBlob] = useState<Blob | null>(null);
+  const [voiceoverUrl, setVoiceoverUrl] = useState<string | null>(null);
+  const [voiceoverDuration, setVoiceoverDuration] = useState(0);
+  const [isVoiceRecorderOpen, setIsVoiceRecorderOpen] = useState(false);
+
+  // Extracted scene thumbnails
   const [sceneThumbnails, setSceneThumbnails] = useState<Record<number, string>>({});
   const [isExtractingFrames, setIsExtractingFrames] = useState(false);
 
@@ -106,6 +129,7 @@ export function AutoMontageModal({
   const [renderedFormat, setRenderedFormat] = useState<'mp4' | 'webm'>('mp4');
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoPlayerRef = useRef<HTMLVideoElement | null>(null);
@@ -118,14 +142,7 @@ export function AutoMontageModal({
     }
   };
 
-  // Sync external media
-  useEffect(() => {
-    if (mediaItems.length > localMedia.length) {
-      setLocalMedia(mediaItems);
-    }
-  }, [mediaItems]);
-
-  // Parsed timeline sorted by timestamp
+  // Convert timeline to timestamps
   const parsedTimeline = storyboard.timeline.map((item, index) => {
     const startSec = parseTimeToSeconds(item.time);
     return {
@@ -135,232 +152,159 @@ export function AutoMontageModal({
     };
   }).sort((a, b) => a.startSec - b.startSec);
 
-  // Helper to get media source URL
+  // Determine media URL
   const getMediaUrl = (item: MediaItem | null): string => {
     if (!item) return '';
+    if (item.cloudUrl) return item.cloudUrl;
     if (item.blobUrl) return item.blobUrl;
+    if (item.base64) return `data:${item.mimeType};base64,${item.base64}`;
     if (item.type === 'drive' && item.id) {
       return `/api/drive/stream/${item.id}?accessToken=${token || ''}`;
-    }
-    if (item.base64) {
-      try {
-        const byteCharacters = atob(item.base64);
-        const byteNumbers = new Uint8Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const blob = new Blob([byteNumbers], { type: item.mimeType || 'video/mp4' });
-        const url = URL.createObjectURL(blob);
-        item.blobUrl = url;
-        return url;
-      } catch (e) {
-        return `data:${item.mimeType};base64,${item.base64}`;
-      }
     }
     return '';
   };
 
-  // Safe and robust video element loader for HTML5 canvas montage
-  const prepareVideoElement = (src: string): Promise<HTMLVideoElement> => {
-    if (!src) {
-      return Promise.reject(new Error('Brak adresu pliku wideo. Wybierz plik wideo ze swojego dysku lub urządzenia.'));
-    }
-
-    const video = document.createElement('video');
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = 'auto';
-
-    // NEVER set crossOrigin on blob: or data: URLs (causes CORS network errors in Chrome / mobile WebView)
-    if (src.startsWith('http://') || src.startsWith('https://')) {
-      try {
-        const urlObj = new URL(src, window.location.href);
-        if (urlObj.origin !== window.location.origin) {
-          video.crossOrigin = 'anonymous';
-        }
-      } catch (e) {}
-    }
-
-    return new Promise<HTMLVideoElement>((resolve, reject) => {
-      let isSettled = false;
-
-      const cleanup = () => {
-        video.onloadedmetadata = null;
-        video.oncanplay = null;
-        video.onerror = null;
-      };
-
-      const handleSuccess = () => {
-        if (!isSettled) {
-          isSettled = true;
-          cleanup();
-          resolve(video);
-        }
-      };
-
-      video.onloadedmetadata = handleSuccess;
-      video.oncanplay = handleSuccess;
-
-      video.onerror = () => {
-        if (video.crossOrigin) {
-          // Retry without crossOrigin
-          video.crossOrigin = null as any;
-          video.src = src;
-          video.load();
-          return;
-        }
-        if (!isSettled) {
-          isSettled = true;
-          cleanup();
-          const code = video.error ? video.error.code : 0;
-          let msg = 'Nie udało się wczytać pliku wideo.';
-          if (code === 4) {
-            msg = 'Format pliku wideo nie jest wspierany przez tę przeglądarkę (zalecany standardowy format .mp4 / H.264).';
-          } else if (code === 2) {
-            msg = 'Wystąpił problem z połączeniem podczas ładowania nagrania wideo.';
-          }
-          reject(new Error(msg));
-        }
-      };
-
-      video.src = src;
-      video.load();
-
-      if (video.readyState >= 1) {
-        handleSuccess();
-      }
-
-      setTimeout(() => {
-        if (!isSettled) {
-          if (video.videoWidth > 0 || video.duration > 0 || video.readyState >= 1) {
-            handleSuccess();
-          } else {
-            isSettled = true;
-            cleanup();
-            reject(new Error('Przekroczono limit czasu ładowania wideo (10s).'));
-          }
-        }
-      }, 10000);
-    });
-  };
-
-  // Extract authentic thumbnails directly from the user's wedding video at the exact scene timestamps
+  // Extract frames for chapter preview
   useEffect(() => {
-    if (!activeBaseVideo) return;
-    const videoSrc = getMediaUrl(activeBaseVideo);
-    if (!videoSrc) return;
-
     let isCancelled = false;
-    setIsExtractingFrames(true);
+    async function extractFrames() {
+      if (!activeBaseVideo || parsedTimeline.length === 0) return;
+      const vUrl = getMediaUrl(activeBaseVideo);
+      if (!vUrl) return;
 
-    const video = document.createElement('video');
-    video.src = videoSrc;
-    if (videoSrc.startsWith('http://') || videoSrc.startsWith('https://')) {
-      try {
-        const u = new URL(videoSrc, window.location.href);
-        if (u.origin !== window.location.origin) {
-          video.crossOrigin = 'anonymous';
-        }
-      } catch (e) {}
-    }
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = 'metadata';
+      setIsExtractingFrames(true);
+      const video = document.createElement('video');
+      video.crossOrigin = 'anonymous';
+      video.muted = true;
+      video.playsInline = true;
+      video.src = vUrl;
 
-    video.onerror = () => {
-      if (!isCancelled) {
-        setIsExtractingFrames(false);
-      }
-    };
+      const loadedPromise = new Promise<void>((resolve) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => resolve();
+        setTimeout(resolve, 3000);
+      });
+      await loadedPromise;
 
-    video.onloadedmetadata = async () => {
-      const vidDuration = video.duration || 30;
+      const c = document.createElement('canvas');
+      c.width = 160;
+      c.height = 90;
+      const ctx = c.getContext('2d');
       const thumbs: Record<number, string> = {};
 
       for (let i = 0; i < parsedTimeline.length; i++) {
         if (isCancelled) break;
         const scene = parsedTimeline[i];
-        
-        let targetSec = scene.startSec;
-        if (targetSec >= vidDuration - 0.5) {
-          targetSec = (i / Math.max(1, parsedTimeline.length - 1)) * Math.max(0, vidDuration - 2);
+        let targetTime = scene.startSec;
+        if (video.duration && targetTime >= video.duration) {
+          targetTime = (i / parsedTimeline.length) * Math.max(1, video.duration - 1);
         }
 
-        video.currentTime = Math.max(0, Math.min(targetSec, vidDuration - 0.5));
-
+        video.currentTime = targetTime;
         await new Promise<void>((resolve) => {
-          const onSeek = () => {
-            try {
-              const canvas = document.createElement('canvas');
-              canvas.width = 480;
-              canvas.height = 270;
-              const ctx = canvas.getContext('2d');
-              if (ctx) {
-                ctx.drawImage(video, 0, 0, 480, 270);
-                thumbs[i] = canvas.toDataURL('image/jpeg', 0.82);
-              }
-            } catch (e) {
-              console.warn('Frame extraction error', e);
-            }
-            resolve();
-          };
-          video.onseeked = onSeek;
-          setTimeout(resolve, 800);
+          video.onseeked = () => resolve();
+          setTimeout(resolve, 400);
         });
+
+        if (ctx && video.videoWidth) {
+          ctx.drawImage(video, 0, 0, c.width, c.height);
+          thumbs[i] = c.toDataURL('image/jpeg', 0.65);
+        }
       }
 
       if (!isCancelled) {
         setSceneThumbnails(thumbs);
         setIsExtractingFrames(false);
       }
-    };
+    }
 
-    video.load();
+    extractFrames();
+    return () => { isCancelled = true; };
+  }, [activeBaseVideo]);
 
-    return () => {
-      isCancelled = true;
-    };
-  }, [activeBaseVideo?.name, activeBaseVideo?.blobUrl, activeBaseVideo?.id, parsedTimeline.length]);
+  const prepareVideoElement = async (src: string): Promise<HTMLVideoElement> => {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement('video');
+      video.crossOrigin = 'anonymous';
+      video.playsInline = true;
+      video.muted = true;
+      video.src = src;
 
-  // Audio synthesis for romantic background music
-  const generateRomanticAudioTrack = (audioCtx: AudioContext, totalDurationSec: number) => {
+      let isResolved = false;
+      const onReady = () => {
+        if (!isResolved) {
+          isResolved = true;
+          resolve(video);
+        }
+      };
+
+      video.onloadeddata = onReady;
+      video.oncanplay = onReady;
+      video.onerror = () => {
+        if (!isResolved) {
+          isResolved = true;
+          console.warn('Video element load warning for source');
+          resolve(video);
+        }
+      };
+
+      setTimeout(() => {
+        if (!isResolved) {
+          isResolved = true;
+          resolve(video);
+        }
+      }, 5000);
+    });
+  };
+
+  // -------------------------------------------------------------
+  // AUDIO MIXER (Custom MP3 + Voiceover - No Ambient Music)
+  // -------------------------------------------------------------
+  const setupAudioStream = async (audioCtx: AudioContext, totalDurationSec: number): Promise<MediaStreamAudioDestinationNode | null> => {
+    if (!includeAudio) return null;
+
     const destination = audioCtx.createMediaStreamDestination();
     const masterGain = audioCtx.createGain();
-    masterGain.gain.setValueAtTime(0.32, audioCtx.currentTime);
+    masterGain.gain.setValueAtTime(0.7, audioCtx.currentTime);
     masterGain.connect(destination);
 
-    const chordProgressions = [
-      [164.81, 196.00, 246.94, 329.63], // E minor
-      [130.81, 164.81, 196.00, 261.63], // C major
-      [196.00, 246.94, 293.66, 392.00], // G major
-      [146.83, 220.00, 293.66, 369.99], // D major
-    ];
+    // 1. MUSIC TRACK (tylko jeśli użytkownik dodał własną piosenkę)
+    if (isCustomMusicSelected && customAudio.file) {
+      try {
+        const arrayBuf = await customAudio.file.arrayBuffer();
+        const decoded = await audioCtx.decodeAudioData(arrayBuf.slice(0));
+        const musicSource = audioCtx.createBufferSource();
+        musicSource.buffer = decoded;
+        musicSource.loop = true;
 
-    const chordLength = 3.8;
-    const numChords = Math.ceil(totalDurationSec / chordLength) + 1;
+        const musicGain = audioCtx.createGain();
+        musicGain.gain.setValueAtTime(voiceoverBlob ? 0.45 : 0.75, audioCtx.currentTime); // Duck music slightly if voiceover exists
+        musicSource.connect(musicGain);
+        musicGain.connect(masterGain);
+        musicSource.start(audioCtx.currentTime);
+      } catch (err) {
+        console.warn('Custom audio decode notice', err);
+      }
+    }
 
-    for (let c = 0; c < numChords; c++) {
-      const chordTime = audioCtx.currentTime + c * chordLength;
-      const notes = chordProgressions[c % chordProgressions.length];
+    // 2. VOICEOVER TRACK (User recorded vows / wishes)
+    if (voiceoverBlob) {
+      try {
+        const vArrayBuf = await voiceoverBlob.arrayBuffer();
+        const vDecoded = await audioCtx.decodeAudioData(vArrayBuf.slice(0));
+        const voiceSource = audioCtx.createBufferSource();
+        voiceSource.buffer = vDecoded;
 
-      notes.forEach((freq, noteIdx) => {
-        const osc = audioCtx.createOscillator();
-        const noteGain = audioCtx.createGain();
+        const voiceGain = audioCtx.createGain();
+        voiceGain.gain.setValueAtTime(1.0, audioCtx.currentTime);
+        voiceSource.connect(voiceGain);
+        voiceGain.connect(masterGain);
 
-        osc.type = noteIdx % 2 === 0 ? 'sine' : 'triangle';
-        osc.frequency.setValueAtTime(freq, chordTime);
-
-        const noteStart = chordTime + noteIdx * 0.12;
-        noteGain.gain.setValueAtTime(0.0001, noteStart);
-        noteGain.gain.exponentialRampToValueAtTime(0.22 / notes.length, noteStart + 0.3);
-        noteGain.gain.exponentialRampToValueAtTime(0.0001, noteStart + chordLength * 0.95);
-
-        osc.connect(noteGain);
-        noteGain.connect(masterGain);
-
-        osc.start(noteStart);
-        osc.stop(noteStart + chordLength);
-      });
+        // Start voiceover 1.5 seconds in (after intro)
+        voiceSource.start(audioCtx.currentTime + 1.5);
+      } catch (vErr) {
+        console.warn('Voiceover decode warning', vErr);
+      }
     }
 
     return destination;
@@ -414,9 +358,23 @@ export function AutoMontageModal({
       return;
     }
 
-    // Resolution setup
-    const width = aspectRatio === '9:16' ? 720 : 1280;
-    const height = aspectRatio === '9:16' ? 1280 : 720;
+    // Native Resolution setup: zachowujemy oryginalny format i proporcje z nagrania (nieokreślony/oryginalny)
+    let width = 1920;
+    let height = 1080;
+    if (activeBaseVideo) {
+      try {
+        const testUrl = getMediaUrl(activeBaseVideo);
+        if (testUrl) {
+          const testVid = await prepareVideoElement(testUrl);
+          if (testVid.videoWidth && testVid.videoHeight) {
+            width = testVid.videoWidth;
+            height = testVid.videoHeight;
+          }
+        }
+      } catch (e) {
+        console.warn('Wykrywanie oryginalnej rozdzielczości', e);
+      }
+    }
     canvas.width = width;
     canvas.height = height;
 
@@ -447,7 +405,7 @@ export function AutoMontageModal({
   };
 
   // -------------------------------------------------------------
-  // MODE 1: BASE VIDEO WITH OVERLAYS (Film Bazowy z Dodatkami)
+  // MODE 1: BASE VIDEO WITH OVERLAYS (Film Bazowy w Oryginalnym Formacie i Długości)
   // -------------------------------------------------------------
   const renderBaseVideoMontage = async (
     ctx: CanvasRenderingContext2D, 
@@ -466,17 +424,15 @@ export function AutoMontageModal({
 
     const video = await prepareVideoElement(videoUrl);
 
-    const origDuration = video.duration || 30;
-    let targetDuration = origDuration;
-    if (baseVideoDurationOption === '30s') targetDuration = Math.min(30, origDuration);
-    if (baseVideoDurationOption === '60s') targetDuration = Math.min(60, origDuration);
+    // Naturalna, oryginalna długość filmu bez konieczności wybierania i sztucznego skracania
+    const targetDuration = video.duration && video.duration > 0 ? video.duration : 30;
 
-    setStatusMessage(`Przygotowywanie miksu kinowego (${Math.round(targetDuration)}s)...`);
+    setStatusMessage(`Przygotowywanie miksu kinowego (${Math.round(targetDuration)}s, format oryginalny ${width}x${height})...`);
 
     // Audio setup
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     const audioCtx = new AudioCtx();
-    const audioDestination = includeAudio ? generateRomanticAudioTrack(audioCtx, targetDuration) : null;
+    const audioDestination = await setupAudioStream(audioCtx, targetDuration);
 
     // Stream & Recorder
     const canvasStream = (canvasRef.current as any).captureStream(30);
@@ -529,9 +485,9 @@ export function AutoMontageModal({
       }
 
       setRenderProgress(Math.min(Math.round((f / totalFrames) * 100), 99));
-      setStatusMessage(`Wypalanie dodatków na Twoim filmie: ${Math.round(currentTime)}s / ${Math.round(targetDuration)}s`);
+      setStatusMessage(`Wypalanie efektów & LUT na filmie: ${Math.round(currentTime)}s / ${Math.round(targetDuration)}s`);
 
-      // 1. Draw User's Real Video Frame
+      // 1. Draw Video Frame
       ctx.fillStyle = '#030712';
       ctx.fillRect(0, 0, width, height);
 
@@ -560,9 +516,10 @@ export function AutoMontageModal({
 
       // 3. Top Header
       ctx.textAlign = 'center';
-      ctx.fillStyle = '#fb7185';
+      ctx.fillStyle = '#D4AF37';
       ctx.font = 'bold 15px sans-serif';
-      ctx.fillText('✦ JOANNA & PIOTR ✦', width / 2, barH * 0.65);
+      const couplesText = storyboard.title ? storyboard.title.toUpperCase() : 'FILM ŚLUBNY';
+      ctx.fillText(`✦ ${couplesText.substring(0, 48)} ✦`, width / 2, barH * 0.65);
 
       // 4. Intro Overlay (first 3 seconds)
       if (currentTime < 3.2) {
@@ -571,7 +528,7 @@ export function AutoMontageModal({
         ctx.globalAlpha = introAlpha * 0.9;
         ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
         ctx.fillRect(width * 0.08, height * 0.35, width * 0.84, height * 0.3);
-        ctx.strokeStyle = '#f43f5e';
+        ctx.strokeStyle = '#D4AF37';
         ctx.lineWidth = 2;
         ctx.strokeRect(width * 0.08, height * 0.35, width * 0.84, height * 0.3);
 
@@ -581,7 +538,7 @@ export function AutoMontageModal({
         ctx.font = 'bold 26px serif';
         ctx.fillText(storyboard.title.substring(0, 32), width / 2, height * 0.46);
 
-        ctx.fillStyle = '#fde047';
+        ctx.fillStyle = '#D4AF37';
         ctx.font = 'italic 16px sans-serif';
         ctx.fillText('Film Ślubny • Pamiątka na całe życie', width / 2, height * 0.53);
         ctx.restore();
@@ -608,19 +565,19 @@ export function AutoMontageModal({
 
         ctx.fillStyle = 'rgba(2, 6, 23, 0.88)';
         ctx.fillRect(boxX, boxY, boxW, boxH);
-        ctx.strokeStyle = 'rgba(244, 63, 94, 0.8)';
+        ctx.strokeStyle = 'rgba(212, 175, 55, 0.8)';
         ctx.lineWidth = 1.5;
         ctx.strokeRect(boxX, boxY, boxW, boxH);
 
         // Gold accent bar
-        ctx.fillStyle = '#f59e0b';
+        ctx.fillStyle = '#D4AF37';
         ctx.fillRect(boxX, boxY, 5, boxH);
 
         ctx.globalAlpha = chapterAlpha;
         ctx.textAlign = 'left';
 
         // Chapter tag
-        ctx.fillStyle = '#fda4af';
+        ctx.fillStyle = '#E5C158';
         ctx.font = 'bold 12px sans-serif';
         ctx.fillText(`ROZDZIAŁ ${activeChapter.index + 1} • ⏱ ${activeChapter.time}`, boxX + 18, boxY + 24);
 
@@ -665,7 +622,7 @@ export function AutoMontageModal({
 
         ctx.fillStyle = '#fb7185';
         ctx.font = '15px sans-serif';
-        ctx.fillText('Joanna & Piotr', width / 2, height * 0.55);
+        ctx.fillText('Film Ślubny', width / 2, height * 0.55);
         ctx.restore();
       }
 
@@ -685,7 +642,7 @@ export function AutoMontageModal({
   };
 
   // -------------------------------------------------------------
-  // MODE 2: HIGHLIGHTS MONTAGE SOURCED 100% FROM USER'S FILM OR PHOTOS
+  // MODE 2: HIGHLIGHTS MONTAGE (Beat-Sync, Ken Burns, LUTs & Particles)
   // -------------------------------------------------------------
   const renderHighlightsMontageFromBaseVideo = async (
     ctx: CanvasRenderingContext2D, 
@@ -695,11 +652,30 @@ export function AutoMontageModal({
     setStatusMessage('Przygotowywanie ujęć ze scenariusza...');
 
     const totalScenes = parsedTimeline.length;
-    const totalDuration = totalScenes * sceneDuration + 4.0; // intro + outro buffer
+    // If beat detection is active, dynamically adjust scene times to beats
+    const effectiveSceneDurations: number[] = [];
+    if (isCustomMusicSelected && customAudio.beatData && customAudio.syncWithBeats && customAudio.beatData.beatTimestamps.length > 4) {
+      const beats = customAudio.beatData.beatTimestamps;
+      for (let i = 0; i < totalScenes; i++) {
+        // Cut on every 4th or 8th beat (~3-4s per scene)
+        const beatStep = customAudio.beatData.bpm > 130 ? 8 : 4;
+        const bIdxStart = (i * beatStep) % (beats.length - beatStep);
+        const bIdxEnd = bIdxStart + beatStep;
+        const dur = Math.max(2.2, beats[bIdxEnd] - beats[bIdxStart]);
+        effectiveSceneDurations.push(dur);
+      }
+    } else {
+      for (let i = 0; i < totalScenes; i++) {
+        effectiveSceneDurations.push(sceneDuration);
+      }
+    }
+
+    const totalSceneTime = effectiveSceneDurations.reduce((a, b) => a + b, 0);
+    const totalDuration = totalSceneTime + 4.0; // intro + outro buffer
 
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     const audioCtx = new AudioCtx();
-    const audioDestination = includeAudio ? generateRomanticAudioTrack(audioCtx, totalDuration) : null;
+    const audioDestination = await setupAudioStream(audioCtx, totalDuration);
 
     const canvasStream = (canvasRef.current as any).captureStream(30);
     const combinedTracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
@@ -738,7 +714,6 @@ export function AutoMontageModal({
     const frameInterval = 1000 / fps;
     let totalElapsed = 0;
 
-    // If user has a base video, we extract clips directly from it!
     let baseVideoElement: HTMLVideoElement | null = null;
     let baseVideoDuration = 30;
 
@@ -748,8 +723,8 @@ export function AutoMontageModal({
         try {
           baseVideoElement = await prepareVideoElement(bSrc);
           baseVideoDuration = baseVideoElement.duration || 30;
-        } catch (e) {
-          console.warn('Highlights base video load notice:', e);
+        } catch (e: any) {
+          console.warn('Highlights base video load notice:', e?.message || 'Nie można załadować');
           baseVideoElement = null;
         }
       }
@@ -765,12 +740,8 @@ export function AutoMontageModal({
       ctx.fillStyle = '#020617';
       ctx.fillRect(0, 0, width, height);
 
-      // If we have cover, subtle background
-      if (coverUrl) {
-        // Dark background
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
-        ctx.fillRect(0, 0, width, height);
-      }
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
+      ctx.fillRect(0, 0, width, height);
 
       ctx.textAlign = 'center';
       ctx.fillStyle = '#f43f5e';
@@ -779,7 +750,7 @@ export function AutoMontageModal({
 
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 28px serif';
-      ctx.fillText('Joanna & Piotr', width / 2, height * 0.50);
+      ctx.fillText(storyboard.title.substring(0, 34) || 'Film Ślubny', width / 2, height * 0.50);
 
       ctx.fillStyle = '#fde047';
       ctx.font = 'italic 15px sans-serif';
@@ -792,14 +763,14 @@ export function AutoMontageModal({
     for (let sIdx = 0; sIdx < parsedTimeline.length; sIdx++) {
       if (abortControllerRef.current) break;
       const scene = parsedTimeline[sIdx];
+      const curSceneDur = effectiveSceneDurations[sIdx] || sceneDuration;
       setCurrentRenderingScene(sIdx + 1);
-      setStatusMessage(`Ujęcie ${sIdx + 1}/${totalScenes}: ${scene.elementName} (z Twojego filmu)`);
+      setStatusMessage(`Ujęcie ${sIdx + 1}/${totalScenes}: ${scene.elementName}`);
 
-      // If user has base video, seek to the scene's exact timestamp
       if (baseVideoElement) {
         let seekTime = scene.startSec;
-        if (seekTime >= baseVideoDuration - sceneDuration) {
-          seekTime = (sIdx / Math.max(1, totalScenes - 1)) * Math.max(0, baseVideoDuration - sceneDuration - 1);
+        if (seekTime >= baseVideoDuration - curSceneDur) {
+          seekTime = (sIdx / Math.max(1, totalScenes - 1)) * Math.max(0, baseVideoDuration - curSceneDur - 1);
         }
 
         baseVideoElement.currentTime = Math.max(0, seekTime);
@@ -810,7 +781,7 @@ export function AutoMontageModal({
         baseVideoElement.play().catch(() => {});
       }
 
-      // Preloaded image fallback if no video
+      // Preloaded image for Ken Burns if no video
       let photoImg: HTMLImageElement | null = null;
       if (!baseVideoElement) {
         const userPhoto = userPhotoFiles[sIdx % userPhotoFiles.length];
@@ -827,7 +798,7 @@ export function AutoMontageModal({
         }
       }
 
-      const frames = Math.round(sceneDuration * fps);
+      const frames = Math.round(curSceneDur * fps);
       for (let f = 0; f < frames; f++) {
         if (abortControllerRef.current) break;
         totalElapsed += 1 / fps;
@@ -854,15 +825,19 @@ export function AutoMontageModal({
           const drawY = (height - drawH) / 2;
           ctx.drawImage(baseVideoElement, drawX, drawY, drawW, drawH);
         } else if (photoImg && photoImg.naturalWidth > 0) {
-          // Ken Burns zoom on user's own photo / cover
-          const scale = 1.0 + (f / frames) * 0.12;
+          // Advanced Ken Burns Panning & Zoom (3D Parallax feel)
+          const progress = f / frames;
+          const zoomDirection = sIdx % 2 === 0 ? 1 : -1;
+          const scale = zoomDirection === 1 ? 1.0 + progress * 0.18 : 1.18 - progress * 0.18;
+          const panX = (sIdx % 3 - 1) * progress * 35;
+          const panY = (sIdx % 2 === 0 ? 1 : -1) * progress * 20;
+
           const sW = width * scale;
           const sH = height * scale;
-          const sX = (width - sW) / 2;
-          const sY = (height - sH) / 2;
+          const sX = (width - sW) / 2 + panX;
+          const sY = (height - sH) / 2 + panY;
           ctx.drawImage(photoImg, sX, sY, sW, sH);
         } else {
-          // Elegant luxury typography card
           ctx.fillStyle = '#0f172a';
           ctx.fillRect(0, 0, width, height);
           ctx.strokeStyle = '#f43f5e';
@@ -923,7 +898,7 @@ export function AutoMontageModal({
     triggerHaptic(20);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(renderedVideoBlob);
-    a.download = `Joanna_i_Piotr_Teledysk_Slubny.${renderedFormat}`;
+    a.download = `Teledysk_Slubny.${renderedFormat}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -932,7 +907,7 @@ export function AutoMontageModal({
   return (
     <div 
       id="auto-montage-modal"
-      className="fixed inset-0 z-50 bg-black/95 backdrop-blur-xl text-white flex flex-col justify-between overflow-y-auto"
+      className="fixed inset-0 z-50 bg-[#090807]/95 backdrop-blur-2xl text-white flex flex-col justify-between overflow-y-auto"
     >
       <input 
         type="file"
@@ -943,18 +918,38 @@ export function AutoMontageModal({
         className="hidden"
       />
 
+      {/* Ambient background glows */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+        <div className="ambient-halo w-[35rem] h-[35rem] -top-20 -left-20 bg-[#D4AF37]/10" />
+        <div className="ambient-halo w-[30rem] h-[30rem] top-1/2 -right-20 bg-rose-500/10" />
+      </div>
+
+      {/* Voice Recorder Modal */}
+      <VoiceRecorderModal
+        isOpen={isVoiceRecorderOpen}
+        onClose={() => setIsVoiceRecorderOpen(false)}
+        defaultText={storyboard.voiceover}
+        onSaveVoiceover={(blob, url, duration) => {
+          setVoiceoverBlob(blob);
+          setVoiceoverUrl(url);
+          setVoiceoverDuration(duration);
+        }}
+      />
+
       {/* Top Header */}
-      <div className="sticky top-0 z-20 bg-slate-950/90 backdrop-blur-md p-4 pt-safe flex items-center justify-between border-b border-slate-800">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-rose-500 to-amber-400 flex items-center justify-center shadow-md">
-            <Clapperboard className="w-4 h-4 text-slate-950 font-bold" />
+      <div className="sticky top-0 z-20 glass-panel border-b border-white/10 p-4 sm:px-6 pt-safe flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#A1821C] via-[#D4AF37] to-[#FDE047] p-[1.5px] flex items-center justify-center shadow-lg shadow-[#D4AF37]/20">
+            <div className="w-full h-full bg-[#030303] rounded-2xl flex items-center justify-center">
+              <Clapperboard className="w-5 h-5 text-[#D4AF37]" />
+            </div>
           </div>
           <div>
-            <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-1.5 font-serif-luxury">
-              Montaż & Eksport Filmu
+            <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-1.5 font-serif-luxury tracking-wide">
+              Kinowy Montaż & Efekty Specjalne AI
             </h2>
-            <p className="text-[10px] text-rose-300">
-              Ujęcia wyłącznie z Twojego filmu • Joanna & Piotr • POCO F6 AMOLED
+            <p className="text-[0.6875rem] font-mono-label text-[#D4AF37]/80 uppercase tracking-widest font-semibold">
+              Beat Detection • Ożywianie Zdjęć • Filtry LUTs • Atelier 4K
             </p>
           </div>
         </div>
@@ -962,7 +957,7 @@ export function AutoMontageModal({
         <button 
           id="close-montage-btn"
           onClick={onClose}
-          className="w-9 h-9 rounded-full bg-white/10 active:bg-white/20 flex items-center justify-center text-slate-300 hover:text-white transition"
+          className="luxury-btn-ghost w-10 h-10 rounded-full flex items-center justify-center text-white"
           aria-label="Zamknij"
         >
           <X className="w-5 h-5" />
@@ -970,170 +965,179 @@ export function AutoMontageModal({
       </div>
 
       {/* Main Content */}
-      <div className="max-w-2xl w-full mx-auto p-4 sm:p-6 space-y-5">
+      <div className="max-w-3xl w-full mx-auto p-4 sm:p-6 space-y-6 relative z-10">
         
         {errorMessage && (
-          <div className="p-3.5 rounded-2xl bg-rose-950/80 border border-rose-700/80 text-rose-200 text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-            <span>{errorMessage}</span>
+          <div className="p-4 rounded-2xl bg-rose-950/90 border border-rose-500/60 text-white text-xs flex items-center gap-3 backdrop-blur-xl shadow-xl">
+            <AlertCircle className="w-5 h-5 shrink-0 text-rose-400" />
+            <span className="font-sans-modern font-medium">{errorMessage}</span>
           </div>
         )}
 
         {/* MODE SELECTOR TABS */}
         {!isRendering && !renderedVideoUrl && (
-          <div className="grid grid-cols-2 gap-2 p-1 bg-slate-900/90 rounded-2xl border border-slate-800">
+          <div className="grid grid-cols-2 gap-3 p-1.5 glass-panel rounded-3xl">
             <button
               onClick={() => { triggerHaptic(15); setMontageMode('baseVideo'); }}
-              className={`py-3 px-3 rounded-xl flex flex-col items-center text-center gap-1 transition ${
+              className={`py-3.5 px-4 rounded-2xl flex flex-col items-center text-center gap-1.5 transition ${
                 montageMode === 'baseVideo'
-                  ? 'bg-rose-600 text-white font-bold shadow-lg shadow-rose-900/40'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'glass-panel-gold border-[#D4AF37] text-[#FDE047] font-bold shadow-xl'
+                  : 'luxury-btn-ghost text-white/70'
               }`}
             >
-              <div className="flex items-center gap-1.5">
-                <Video className="w-4 h-4" />
-                <span className="text-xs font-semibold">Film Bazowy z Dodatkami</span>
+              <div className="flex items-center gap-2">
+                <Video className="w-4 h-4 text-[#D4AF37]" />
+                <span className="text-xs font-mono-label uppercase font-bold tracking-wider">Film Bazowy z Dodatkami</span>
               </div>
-              <span className="text-[10px] opacity-80">
-                Cały Twój film + intro, rozdziały i napisy
+              <span className="text-[0.6875rem] font-sans-modern opacity-80 font-medium">
+                Cały Twój film + kinowe intro, rozdziały i napisy
               </span>
             </button>
 
             <button
               onClick={() => { triggerHaptic(15); setMontageMode('multiClip'); }}
-              className={`py-3 px-3 rounded-xl flex flex-col items-center text-center gap-1 transition ${
+              className={`py-3.5 px-4 rounded-2xl flex flex-col items-center text-center gap-1.5 transition ${
                 montageMode === 'multiClip'
-                  ? 'bg-rose-600 text-white font-bold shadow-lg shadow-rose-900/40'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'glass-panel-gold border-[#D4AF37] text-[#FDE047] font-bold shadow-xl'
+                  : 'luxury-btn-ghost text-white/70'
               }`}
             >
-              <div className="flex items-center gap-1.5">
-                <Scissors className="w-4 h-4" />
-                <span className="text-xs font-semibold">Dynamiczny Teledysk</span>
+              <div className="flex items-center gap-2">
+                <Scissors className="w-4 h-4 text-[#D4AF37]" />
+                <span className="text-xs font-mono-label uppercase font-bold tracking-wider">Teledysk ze Scen</span>
               </div>
-              <span className="text-[10px] opacity-80">
-                Skrót ujęć wycięty z Twojego filmu
+              <span className="text-[0.6875rem] font-sans-modern opacity-80 font-medium">
+                Dynamiczne ujęcia z Twoich filmów i zdjęć
               </span>
             </button>
           </div>
         )}
 
-        {/* Video Preview / Render Canvas Area */}
-        <div className="relative rounded-3xl overflow-hidden bg-slate-900 border border-slate-800 shadow-2xl flex flex-col items-center justify-center min-h-[320px] sm:min-h-[400px]">
-          
-          <canvas 
-            ref={canvasRef}
-            className={`max-h-[380px] sm:max-h-[440px] w-auto max-w-full rounded-2xl shadow-xl ${
-              renderedVideoUrl ? 'hidden' : 'block'
-            }`}
-          />
+        {/* RENDERING PROGRESS DISPLAY */}
+        {isRendering && (
+          <div className="glass-panel-gold rounded-3xl p-8 text-center space-y-5 shadow-2xl border border-[#D4AF37]/50">
+            <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-tr from-[#A1821C] via-[#D4AF37] to-[#FDE047] flex items-center justify-center animate-pulse shadow-lg">
+              <Film className="w-8 h-8 text-black font-bold" />
+            </div>
 
-          {/* Rendered Finished Video */}
-          {renderedVideoUrl && (
-            <div className="w-full flex flex-col items-center p-2">
+            <div>
+              <h3 className="text-lg font-bold text-white font-serif-luxury tracking-wide">
+                Trwa Kinowy Montaż Wideo
+              </h3>
+              <p className="text-xs text-[#FDE047] font-mono-label mt-1 font-semibold">
+                {statusMessage}
+              </p>
+            </div>
+
+            {/* Progress Bar */}
+            <div className="space-y-2 max-w-md mx-auto">
+              <div className="h-3.5 w-full bg-black/60 rounded-full overflow-hidden border border-white/20 p-0.5 shadow-inner">
+                <div 
+                  className="h-full bg-gradient-to-r from-[#A1821C] via-[#D4AF37] to-[#FDE047] rounded-full transition-all duration-150"
+                  style={{ width: `${renderProgress}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-xs text-white/80 font-mono-label font-bold">
+                <span>Postęp montażu</span>
+                <span className="text-[#FDE047]">{renderProgress}%</span>
+              </div>
+            </div>
+
+            <button
+              onClick={() => { abortControllerRef.current = true; setIsRendering(false); }}
+              className="text-xs text-rose-300 hover:text-rose-100 underline pt-2 font-mono-label uppercase font-semibold"
+            >
+              Anuluj montaż
+            </button>
+          </div>
+        )}
+
+        {/* RENDERED PREVIEW DISPLAY */}
+        {renderedVideoUrl && (
+          <div className="glass-panel rounded-3xl p-6 border border-emerald-500/50 space-y-4 shadow-2xl animate-in fade-in">
+            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+                <h3 className="text-base sm:text-lg font-bold text-white font-serif-luxury">
+                  Twój Film Został Pomyślnie Zmontowany!
+                </h3>
+              </div>
+              <span className="text-xs font-mono-label px-3 py-1 rounded-full badge-luxury text-[#FDE047] font-bold">
+                Format: .{renderedFormat}
+              </span>
+            </div>
+
+            {/* Video Player */}
+            <div className="rounded-2xl overflow-hidden bg-black border border-white/10 shadow-2xl max-h-96 flex items-center justify-center">
               <video 
                 ref={videoPlayerRef}
                 src={renderedVideoUrl}
                 controls
                 autoPlay
                 playsInline
-                className="max-h-[420px] sm:max-h-[480px] w-auto max-w-full rounded-2xl shadow-2xl border border-rose-500/30"
+                className="w-full h-full object-contain max-h-96"
               />
-              <div className="mt-3 flex items-center gap-2 text-xs text-emerald-400 font-medium">
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Film zmontowany pomyślnie na bazie Twojego materiału!</span>
-              </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Progress Overlay */}
-          {isRendering && (
-            <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-xs flex flex-col items-center justify-center p-6 text-center z-10">
-              <div className="relative w-20 h-20 mb-4 flex items-center justify-center">
-                <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                  <path
-                    className="text-slate-800"
-                    strokeWidth="3.5"
-                    stroke="currentColor"
-                    fill="none"
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                  />
-                  <path
-                    className="text-rose-500 transition-all duration-300 stroke-current"
-                    strokeWidth="3.5"
-                    strokeDasharray={`${renderProgress}, 100`}
-                    strokeLinecap="round"
-                    fill="none"
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                  />
-                </svg>
-                <span className="absolute font-bold text-sm text-white">{renderProgress}%</span>
-              </div>
+        {/* Hidden Canvas Worker */}
+        <canvas ref={canvasRef} className="hidden" />
 
-              <h4 className="text-base font-bold text-white mb-1 font-serif-luxury">
-                Montowanie Twojego Filmu...
-              </h4>
-              <p className="text-xs text-rose-300 font-medium max-w-xs">{statusMessage}</p>
-            </div>
-          )}
-
-          {/* Initial State Explanations */}
-          {!isRendering && !renderedVideoUrl && (
-            <div className="text-center p-6 space-y-3">
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-rose-500 to-amber-500 text-slate-950 flex items-center justify-center mx-auto shadow-lg">
-                <Film className="w-7 h-7 stroke-[2.5]" />
-              </div>
-              <h3 className="text-lg font-bold text-white font-serif-luxury">
-                {montageMode === 'baseVideo' ? 'Oryginalny Film z Nakładkami' : 'Teledysk wycięty z Twojego Wideo'}
-              </h3>
-              <p className="text-xs text-slate-300 max-w-sm mx-auto font-light leading-relaxed">
-                {montageMode === 'baseVideo' 
-                  ? 'Oryginalne wideo ze ślubu zostanie wyrenderowane z kinowymi belkami rozdziałów, napisami i dedykowanym intro.'
-                  : `Każda z ${parsedTimeline.length} scen teledysku zostanie wycięta bezpośrednio z Twojego nagrania wideo w odpowiednich sekundach.`}
-              </p>
-            </div>
-          )}
-
-        </div>
-
-        {/* SCENE KADRY (Frames extracted from user's video) */}
+        {/* 1. AUDIO & MUSIC SELECTOR */}
         {!isRendering && !renderedVideoUrl && (
-          <div className="bg-slate-900/90 rounded-3xl p-4 sm:p-5 border border-slate-800 space-y-3">
-            <div className="flex items-center justify-between">
+          <AudioTrackSelector
+            customAudio={customAudio}
+            onCustomAudioChange={setCustomAudio}
+            voiceoverBlob={voiceoverBlob}
+            voiceoverUrl={voiceoverUrl}
+            onOpenVoiceRecorder={() => setIsVoiceRecorderOpen(true)}
+            onRemoveVoiceover={() => {
+              if (voiceoverUrl) URL.revokeObjectURL(voiceoverUrl);
+              setVoiceoverBlob(null);
+              setVoiceoverUrl(null);
+              setVoiceoverDuration(0);
+            }}
+            isCustomMusicSelected={isCustomMusicSelected}
+            onToggleCustomMusic={setIsCustomMusicSelected}
+          />
+        )}
+
+        {/* 4. SCENE SEQUENCE PREVIEW (when in multiClip mode) */}
+        {!isRendering && !renderedVideoUrl && montageMode === 'multiClip' && (
+          <div className="glass-panel rounded-3xl p-5 sm:p-6 space-y-4">
+            
+            <div className="flex items-center justify-between pb-2 border-b border-white/10">
               <div>
-                <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-                  <Camera className="w-4 h-4 text-rose-400" />
-                  Kadry ze Scenariusza ({parsedTimeline.length})
+                <h4 className="text-xs font-bold text-white font-mono-label uppercase tracking-wider flex items-center gap-2">
+                  <Scissors className="w-4 h-4 text-[#D4AF37]" />
+                  Kolejka ujęć z Twojego filmu ({parsedTimeline.length} scen)
                 </h4>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  {isExtractingFrames 
-                    ? 'Wczytywanie kadrów z Twojego filmu...' 
-                    : userVideoFiles.length > 0
-                      ? 'Kadry pobrane bezpośrednio z Twojego wideo ślubnego'
-                      : 'Dodaj plik wideo, aby automatycznie pobrać kadry'}
+                <p className="text-xs font-sans-modern opacity-75 mt-0.5">
+                  Ken Burns & 3D Parallax ożywią każde ujęcie
                 </p>
               </div>
 
               <button
                 onClick={() => { triggerHaptic(15); fileInputRef.current?.click(); }}
-                className="bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition active:scale-95 font-semibold"
+                className="luxury-btn-primary text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 font-mono-label uppercase font-bold"
               >
-                <Plus className="w-3.5 h-3.5" />
-                <span>+ Dodaj plik</span>
+                <Plus className="w-3.5 h-3.5 text-black" />
+                <span>Dodaj plik</span>
               </button>
             </div>
 
             {/* Horizontal scrollable scene frames */}
-            <div className="flex gap-2.5 overflow-x-auto pb-2 pt-1">
+            <div className="flex gap-3 overflow-x-auto pb-2 pt-1 no-scrollbar">
               {parsedTimeline.map((scene, idx) => {
                 const thumb = sceneThumbnails[idx] || (userPhotoFiles[idx % userPhotoFiles.length] ? getMediaUrl(userPhotoFiles[idx % userPhotoFiles.length]) : coverUrl);
 
                 return (
                   <div 
                     key={idx}
-                    className="shrink-0 w-36 bg-slate-950 rounded-2xl overflow-hidden border border-slate-800 flex flex-col"
+                    className="shrink-0 w-40 glass-card rounded-2xl overflow-hidden flex flex-col p-2"
                   >
-                    <div className="relative h-20 bg-slate-900 overflow-hidden flex items-center justify-center">
+                    <div className="relative h-24 rounded-xl bg-black/50 overflow-hidden flex items-center justify-center mb-2">
                       {thumb ? (
                         <img 
                           src={thumb} 
@@ -1141,23 +1145,28 @@ export function AutoMontageModal({
                           className="w-full h-full object-cover"
                         />
                       ) : (
-                        <div className="text-[10px] text-slate-500 flex flex-col items-center">
-                          <Film className="w-5 h-5 text-slate-600 mb-1" />
+                        <div className="text-xs text-white/50 flex flex-col items-center">
+                          <Film className="w-5 h-5 text-[#D4AF37] mb-1 opacity-60" />
                           <span>Kadr {scene.time}</span>
                         </div>
                       )}
-                      <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/75 text-[9px] font-mono text-amber-300 font-bold">
+                      <div className="absolute top-1.5 left-1.5 px-2 py-0.5 rounded-md bg-black/80 text-[0.625rem] font-mono-label text-[#FDE047] font-bold">
                         {scene.time}
                       </div>
                     </div>
 
-                    <div className="p-2 flex-1 flex flex-col justify-between">
-                      <div className="text-[11px] font-bold text-white truncate">
+                    <div className="flex-1 flex flex-col justify-between">
+                      <div className="text-xs font-serif-luxury font-bold text-white truncate">
                         {scene.elementName}
                       </div>
-                      <div className="text-[9px] text-slate-400 line-clamp-1 mt-0.5">
+                      <div className="text-[0.6875rem] font-sans-modern opacity-75 line-clamp-1 mt-0.5">
                         {scene.action}
                       </div>
+                      {scene.directorNote && (
+                        <div className="text-[0.625rem] text-[#FDE047] italic line-clamp-1 mt-1 font-medium border-t border-white/10 pt-1">
+                          📝 {scene.directorNote}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -1167,17 +1176,17 @@ export function AutoMontageModal({
           </div>
         )}
 
-        {/* Base Video Selector & Options (when in baseVideo mode) */}
+        {/* 5. BASE VIDEO SELECTOR (when in baseVideo mode) */}
         {!isRendering && !renderedVideoUrl && montageMode === 'baseVideo' && (
-          <div className="bg-slate-900/90 rounded-3xl p-4 sm:p-5 border border-slate-800 space-y-4">
+          <div className="glass-panel rounded-3xl p-5 sm:p-6 space-y-4">
             
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between pb-2 border-b border-white/10">
               <div>
-                <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-                  <Video className="w-4 h-4 text-rose-400" />
+                <h4 className="text-xs font-bold text-white font-mono-label uppercase tracking-wider flex items-center gap-2">
+                  <Video className="w-4 h-4 text-[#D4AF37]" />
                   Wybierz wideo bazowe
                 </h4>
-                <p className="text-[11px] text-slate-400 mt-0.5">
+                <p className="text-xs font-sans-modern opacity-75 mt-0.5">
                   {userVideoFiles.length > 0 
                     ? `Dostępne ${userVideoFiles.length} wideo w projekcie` 
                     : 'Nie wgrałeś jeszcze pliku wideo'}
@@ -1186,58 +1195,46 @@ export function AutoMontageModal({
             </div>
 
             {userVideoFiles.length > 0 ? (
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 {userVideoFiles.map((vf, idx) => (
                   <button
                     key={idx}
                     onClick={() => { triggerHaptic(15); setSelectedBaseVideoIndex(idx); }}
-                    className={`w-full p-3 rounded-2xl border text-left flex items-center justify-between transition ${
+                    className={`w-full p-3.5 rounded-2xl border text-left flex items-center justify-between transition ${
                       selectedBaseVideoIndex === idx
-                        ? 'bg-rose-950/60 border-rose-500 text-white ring-1 ring-rose-500/50'
-                        : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-900'
+                        ? 'glass-panel-gold border-[#D4AF37] text-[#FDE047] font-bold shadow-md'
+                        : 'glass-card text-white/80 hover:border-[#D4AF37]/40'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-rose-500/20 flex items-center justify-center text-rose-400">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-[#D4AF37]/20 flex items-center justify-center text-[#D4AF37]">
                         <Video className="w-4 h-4" />
                       </div>
                       <div>
-                        <div className="text-xs font-bold truncate max-w-[200px] sm:max-w-xs">{vf.name}</div>
-                        <div className="text-[10px] text-slate-400">Główne nagranie ślubne</div>
+                        <div className="text-xs font-bold font-serif-luxury truncate max-w-[12.5rem] sm:max-w-xs">{vf.name}</div>
+                        <div className="text-[0.625rem] font-mono-label opacity-75">Główne nagranie ślubne</div>
                       </div>
                     </div>
                     {selectedBaseVideoIndex === idx && (
-                      <CheckCircle2 className="w-4 h-4 text-rose-400" />
+                      <CheckCircle2 className="w-5 h-5 text-[#FDE047]" />
                     )}
                   </button>
                 ))}
               </div>
             ) : (
-              <div className="p-4 rounded-2xl bg-amber-950/30 border border-amber-500/30 text-center">
-                <p className="text-xs text-amber-200">
+              <div className="p-5 rounded-2xl glass-card text-center border border-amber-500/30">
+                <p className="text-xs font-mono-label text-[#FDE047]">
                   Wgraj plik wideo ze ślubu, aby silnik zmontował go z kinowymi nakładkami.
                 </p>
               </div>
             )}
 
-            {/* Duration Selector for Base Video */}
-            <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
-              <span className="text-xs text-slate-300 font-medium">Czas trwania montażu:</span>
-              <div className="flex items-center gap-1">
-                {(['full', '60s', '30s'] as const).map(opt => (
-                  <button
-                    key={opt}
-                    onClick={() => { triggerHaptic(10); setBaseVideoDurationOption(opt); }}
-                    className={`text-xs px-2.5 py-1 rounded-lg border font-medium transition ${
-                      baseVideoDurationOption === opt
-                        ? 'bg-rose-600 text-white border-rose-400 font-bold'
-                        : 'bg-slate-800 text-slate-300 border-slate-700'
-                    }`}
-                  >
-                    {opt === 'full' ? 'Cały film' : opt}
-                  </button>
-                ))}
-              </div>
+            {/* Original Format & Duration Indicator */}
+            <div className="pt-3 border-t border-white/10 flex items-center justify-between">
+              <span className="text-xs font-mono-label uppercase font-bold text-white/80">Format i czas trwania:</span>
+              <span className="text-xs font-mono-label font-bold text-[#FDE047] bg-[#D4AF37]/10 border border-[#D4AF37]/30 px-3 py-1 rounded-xl">
+                Oryginalny z nagrania (pełny film)
+              </span>
             </div>
 
           </div>
@@ -1247,38 +1244,29 @@ export function AutoMontageModal({
         {!isRendering && !renderedVideoUrl && (
           <div className="space-y-4">
             {/* Format & Audio Toggles */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-slate-900/90 p-3.5 rounded-2xl border border-slate-800 flex items-center justify-between">
-                <span className="text-xs text-slate-300">Format wideo:</span>
-                <div className="flex gap-1">
-                  <button
-                    onClick={() => setAspectRatio('9:16')}
-                    className={`text-[11px] px-2 py-1 rounded-lg font-bold transition ${
-                      aspectRatio === '9:16' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-400'
-                    }`}
-                  >
-                    9:16 (Pion)
-                  </button>
-                  <button
-                    onClick={() => setAspectRatio('16:9')}
-                    className={`text-[11px] px-2 py-1 rounded-lg font-bold transition ${
-                      aspectRatio === '16:9' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-400'
-                    }`}
-                  >
-                    16:9 (Kino)
-                  </button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="glass-panel p-4 rounded-2xl flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-mono-label uppercase font-bold text-white/90 block">Format wideo:</span>
+                  <span className="text-[0.6875rem] font-sans-modern opacity-70 block">Oryginalny format z danego filmu</span>
                 </div>
+                <span className="text-xs font-mono-label font-bold text-[#FDE047] bg-white/10 border border-white/20 px-3 py-1.5 rounded-xl">
+                  Oryginalny (100% kadru)
+                </span>
               </div>
 
-              <div className="bg-slate-900/90 p-3.5 rounded-2xl border border-slate-800 flex items-center justify-between">
-                <span className="text-xs text-slate-300">Muzyka w tle:</span>
+              <div className="glass-panel p-4 rounded-2xl flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-mono-label uppercase font-bold text-white/90 block">Dźwięk w filmie:</span>
+                  <span className="text-[0.6875rem] font-sans-modern opacity-70 block">Oryginalny dźwięk lub wgrany utwór</span>
+                </div>
                 <button
                   onClick={() => { triggerHaptic(10); setIncludeAudio(!includeAudio); }}
-                  className={`text-xs font-bold px-3 py-1 rounded-lg transition ${
-                    includeAudio ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-400'
+                  className={`text-xs font-mono-label uppercase font-bold px-4 py-1.5 rounded-xl transition cursor-pointer ${
+                    includeAudio ? 'luxury-btn-primary' : 'glass-card text-white/60'
                   }`}
                 >
-                  {includeAudio ? 'ON' : 'OFF'}
+                  {includeAudio ? 'Włączony (ON)' : 'Wyciszony (OFF)'}
                 </button>
               </div>
             </div>
@@ -1287,13 +1275,13 @@ export function AutoMontageModal({
             <button
               id="start-montage-btn"
               onClick={startAutomaticMontage}
-              className="min-h-[52px] w-full bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 hover:from-rose-500 hover:to-amber-400 text-white font-bold text-sm sm:text-base py-3 px-6 rounded-2xl shadow-xl shadow-rose-950/60 flex items-center justify-center gap-2.5 active:scale-98 transition transform"
+              className="w-full py-4 rounded-2xl luxury-btn-primary text-xs sm:text-sm font-mono-label uppercase font-extrabold tracking-widest flex items-center justify-center gap-2.5 shadow-2xl cursor-pointer"
             >
-              <Film className="w-5 h-5 stroke-[2.5]" />
+              <Film className="w-5 h-5 text-black" />
               <span>
                 {montageMode === 'baseVideo' 
-                  ? 'Zmontuj Film Bazowy z Dodatkami' 
-                  : 'Zmontuj Teledysk ze Scen z Twojego Filmu'}
+                  ? 'Zmontuj Film Bazowy z Efektami' 
+                  : 'Zmontuj Teledysk ze Scen z Efektami'}
               </span>
             </button>
           </div>
@@ -1305,10 +1293,32 @@ export function AutoMontageModal({
             <button
               id="download-montage-btn"
               onClick={downloadRenderedVideo}
-              className="min-h-[52px] w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold text-sm sm:text-base py-3 px-6 rounded-2xl shadow-xl flex items-center justify-center gap-2.5 active:scale-98 transition"
+              className="w-full py-4 rounded-2xl luxury-btn-primary text-xs sm:text-sm font-mono-label uppercase font-extrabold tracking-widest flex items-center justify-center gap-2.5 shadow-2xl cursor-pointer"
             >
-              <Download className="w-5 h-5" />
+              <Download className="w-5 h-5 text-black" />
               <span>Pobierz Gotowy Film (.mp4 / .webm)</span>
+            </button>
+
+            <button
+              onClick={async () => {
+                setIsExportingPdf(true);
+                try {
+                  await downloadStoryboardPdfFile(storyboard, mediaItems);
+                } catch (e: any) {
+                  console.error(e);
+                } finally {
+                  setIsExportingPdf(false);
+                }
+              }}
+              disabled={isExportingPdf}
+              className="luxury-btn-ghost w-full py-3.5 rounded-2xl text-xs font-mono-label uppercase font-bold flex items-center justify-center gap-2 border border-[#D4AF37]/50 text-[#D4AF37] hover:bg-[#D4AF37]/10 cursor-pointer disabled:opacity-50"
+            >
+              {isExportingPdf ? (
+                <Loader2 className="w-4 h-4 animate-spin text-[#D4AF37]" />
+              ) : (
+                <FileDown className="w-4 h-4 text-[#D4AF37]" />
+              )}
+              <span>Pobierz Scenariusz Reżyserski (PDF)</span>
             </button>
 
             <button
@@ -1316,9 +1326,9 @@ export function AutoMontageModal({
                 setRenderedVideoUrl(null);
                 setRenderedVideoBlob(null);
               }}
-              className="w-full text-xs text-slate-400 hover:text-white py-2 flex items-center justify-center gap-1.5 transition"
+              className="luxury-btn-ghost w-full py-3 rounded-2xl text-xs font-mono-label uppercase font-bold flex items-center justify-center gap-2 text-white/80 hover:text-white"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
+              <RefreshCw className="w-4 h-4 text-[#D4AF37]" />
               <span>Zmontuj ponownie z innymi ustawieniami</span>
             </button>
           </div>
