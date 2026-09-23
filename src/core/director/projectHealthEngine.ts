@@ -139,7 +139,10 @@ export async function runRealRuntimeHealthCheck(project: ProjectState): Promise<
   let hasTimelineAutoFix = false;
 
   if (project.timelineItems.length === 0) {
-    timelineIssues.push('Oś czasu jest pusta - brak klipów do wyrenderowania.');
+    timelineIssues.push('Oś czasu jest pusta - dodaj materiały z biblioteki do montażu.');
+    if (project.mediaLibrary.length > 0) {
+      hasTimelineAutoFix = true;
+    }
     blockers.push('Brak klipów na osi czasu');
   }
 
@@ -389,7 +392,7 @@ export function autoFixProjectHealthIssues(project: ProjectState): {
   let fixedCount = 0;
 
   // 1. Repair timeline items
-  const validItems: TimelineItem[] = [];
+  let validItems: TimelineItem[] = [];
 
   project.timelineItems.forEach(item => {
     const clip = clipMap.get(item.clipId);
@@ -434,6 +437,49 @@ export function autoFixProjectHealthIssues(project: ProjectState): {
     } : item);
   });
 
+  // If timeline is empty but media library has items, automatically populate timeline!
+  if (validItems.length === 0 && project.mediaLibrary.length > 0) {
+    let currentStart = 0;
+    project.mediaLibrary.forEach((clip, idx) => {
+      const clipDuration = clip.type === 'video' ? Math.max(1, clip.duration || 5) : 4;
+      validItems.push({
+        id: `tl_auto_${Date.now()}_${idx}`,
+        clipId: clip.id,
+        trackId: 'v1',
+        timelineStart: Number(currentStart.toFixed(2)),
+        duration: Number(clipDuration.toFixed(2)),
+        sourceStart: 0,
+        sourceEnd: Number(clipDuration.toFixed(2)),
+        speed: 1,
+        volume: 1,
+        fadeIn: 0,
+        fadeOut: 0,
+        muted: false,
+        fitMode: 'fit',
+        scale: 1,
+        rotation: 0
+      });
+      currentStart += clipDuration;
+    });
+    fixedItems.push(`Automatycznie dodano ${project.mediaLibrary.length} klipów z biblioteki na oś czasu`);
+    fixedCount += project.mediaLibrary.length;
+  }
+
+  // Ensure sequential timeline items without overlaps/collisions
+  if (validItems.length > 0) {
+    let playhead = 0;
+    validItems = validItems.map((item) => {
+      const alignedStart = playhead;
+      const safeDuration = Math.max(0.2, item.duration);
+      playhead += safeDuration;
+      return {
+        ...item,
+        timelineStart: Number(alignedStart.toFixed(2)),
+        duration: Number(safeDuration.toFixed(2))
+      };
+    });
+  }
+
   // 2. Repair audio tracks
   const updatedAudioTracks = project.audioTracks.map(track => {
     let trackModified = false;
@@ -457,7 +503,35 @@ export function autoFixProjectHealthIssues(project: ProjectState): {
     return trackModified ? { ...track, timelineStart: newStart, duration: newDur } : track;
   });
 
-  // 3. Unmute video track if needed
+  // 3. Repair text layers if any
+  const totalFilmDuration = validItems.reduce((acc, it) => Math.max(acc, it.timelineStart + it.duration), 0);
+  const updatedTextLayers = (project.textLayers || []).map((tl, i) => {
+    let modified = false;
+    let start = tl.timelineStart;
+    let dur = tl.duration;
+
+    if (start < 0) {
+      start = 0;
+      modified = true;
+    }
+    if (dur <= 0) {
+      dur = 4;
+      modified = true;
+    }
+    if (totalFilmDuration > 0 && start >= totalFilmDuration) {
+      start = 0;
+      dur = Math.min(4, totalFilmDuration);
+      modified = true;
+    }
+    if (modified) {
+      fixedItems.push(`Dopasowano czas wyświetlania tekstu #${i + 1}`);
+      fixedCount++;
+      return { ...tl, timelineStart: start, duration: dur };
+    }
+    return tl;
+  });
+
+  // 4. Unmute video track if needed
   let updatedTracks = project.tracks;
   const hasMusic = updatedAudioTracks.length > 0;
   const v1 = project.tracks.find(t => t.id === 'v1');
@@ -472,6 +546,7 @@ export function autoFixProjectHealthIssues(project: ProjectState): {
     tracks: updatedTracks,
     timelineItems: validItems,
     audioTracks: updatedAudioTracks,
+    textLayers: updatedTextLayers,
     updatedAt: new Date().toISOString()
   };
 

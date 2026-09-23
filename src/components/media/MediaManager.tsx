@@ -618,9 +618,9 @@ export function MediaManager({
   }, [filteredClips, isGroupedBySimilarity]);
 
   return (
-    <div className="flex flex-col h-full space-y-4 overflow-y-auto overflow-x-hidden custom-scrollbar pb-6">
+    <div className="flex flex-col h-full space-y-5 overflow-y-auto overflow-x-hidden custom-scrollbar pb-6 px-1">
       
-      {/* Import Options Grid */}
+      {/* Cinematic Import Stage (Haute Couture Film Vault) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0">
         
         {/* Local Disk Upload Card */}
@@ -628,36 +628,52 @@ export function MediaManager({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`md:col-span-2 relative border-2 border-dashed rounded-2xl p-5 flex flex-col items-center justify-center transition-all ${
+          className={`md:col-span-2 relative atelier-card rounded-2xl p-6 flex flex-col items-center justify-center transition-all group overflow-hidden ${
             isDragging 
-              ? 'border-[#D4AF37] bg-[#D4AF37]/10' 
-              : 'border-[#2A2824] bg-[#121212] hover:border-[#D4AF37]/40'
+              ? 'border-[#FDE047] bg-[#D4AF37]/15 shadow-[0_0_35px_rgba(212,175,55,0.3)]' 
+              : 'hover:border-[#D4AF37]/60'
           }`}
         >
-          <div className="text-center space-y-2">
-            <div className="bg-[#1A1A1A] p-3 rounded-full inline-block mx-auto border border-[#2A2824]">
-              {isProcessing ? (
-                <Loader2 className="w-6 h-6 text-[#D4AF37] animate-spin" />
-              ) : (
-                <UploadCloud className="w-6 h-6 text-[#D4AF37]" />
-              )}
+          {/* Subtle Corner Light Glow */}
+          <div className="absolute top-0 right-0 w-48 h-48 bg-[#D4AF37]/10 rounded-full blur-3xl pointer-events-none group-hover:bg-[#D4AF37]/20 transition-all" />
+          
+          <div className="text-center space-y-3 relative z-10">
+            <div className="relative inline-block mx-auto">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#2F2714] to-[#14120D] border border-[#D4AF37]/50 flex items-center justify-center shadow-[0_0_20px_rgba(212,175,55,0.25)] group-hover:scale-105 transition-transform">
+                {isProcessing ? (
+                  <Loader2 className="w-7 h-7 text-[#FDE047] animate-spin" />
+                ) : (
+                  <UploadCloud className="w-7 h-7 text-[#FDE047]" />
+                )}
+              </div>
+              <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#1A1812] border border-[#D4AF37]/60 flex items-center justify-center text-[10px] text-[#FDE047]">
+                ✦
+              </span>
             </div>
+
             <div>
-              <p className="text-sm font-semibold text-white">
-                {isProcessing ? processingStatus : 'Wybierz nagrania lub zdjęcia z komputera / telefonu'}
+              <h3 className="font-cinematic font-bold text-base text-transparent bg-clip-text bg-gradient-to-r from-[#FFF5C0] via-[#E8D288] to-[#D4AF37] tracking-wider">
+                {isProcessing ? processingStatus : 'ATELIER FILMOWE: IMPORT UJĘĆ'}
+              </h3>
+              <p className="text-xs text-[#C5BCA8] mt-1 max-w-md mx-auto">
+                Przeciągnij i upuść lub kliknij, aby wczytać nagrania wideo i zdjęcia ślubne
               </p>
-              <p className="text-[11px] text-[#AAA69D] mt-0.5">
-                Obsługuje kilkadziesiąt plików jednocześnie: MP4, MOV, WEBM, JPG, PNG
-              </p>
+              <div className="flex flex-wrap items-center justify-center gap-2 mt-2.5">
+                <span className="px-2 py-0.5 rounded-md bg-[#1B1812] border border-[#3A3222] text-[10px] font-mono text-[#D4AF37]">4K UHD / 1080p</span>
+                <span className="px-2 py-0.5 rounded-md bg-[#1B1812] border border-[#3A3222] text-[10px] font-mono text-[#AAA08B]">MP4 • MOV • WEBM</span>
+                <span className="px-2 py-0.5 rounded-md bg-[#1B1812] border border-[#3A3222] text-[10px] font-mono text-[#AAA08B]">JPG • PNG • HEVC</span>
+              </div>
             </div>
+
             {isProcessing && (
-              <div className="w-48 h-1.5 bg-[#222] rounded-full mx-auto overflow-hidden mt-2 border border-[#333]">
+              <div className="w-64 h-2 bg-[#1A1813] rounded-full mx-auto overflow-hidden mt-3 border border-[#3E3422] shadow-inner">
                 <div 
-                  className="h-full bg-[#D4AF37] transition-all duration-200"
+                  className="h-full bg-gradient-to-r from-[#D4AF37] via-[#FDE047] to-[#C59B48] transition-all duration-200 shadow-[0_0_10px_rgba(253,224,71,0.5)]"
                   style={{ width: `${uploadProgress}%` }}
                 />
               </div>
             )}
+
             <input 
               type="file" 
               multiple 
@@ -665,26 +681,33 @@ export function MediaManager({
               onChange={handleFileInput}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               disabled={isProcessing}
-              title="Wybierz pliki z dysku lokalnego"
+              title="Wybierz pliki z dysku komputera lub pamięci telefonu"
             />
           </div>
         </div>
 
-        {/* Google Drive Import Card */}
-        <div className="border border-[#2A2824] bg-[#121212] hover:border-[#D4AF37]/40 rounded-2xl p-5 flex flex-col items-center justify-center text-center space-y-3 transition-all">
-          <div className="p-3 bg-[#1A1A1A] rounded-full border border-[#2A2824]">
-            <GoogleDriveIcon className="w-6 h-6" />
+        {/* Google Drive Import Card (Cloud Vault) */}
+        <div className="atelier-card rounded-2xl p-6 flex flex-col items-center justify-between text-center relative group overflow-hidden">
+          <div className="absolute -bottom-10 -left-10 w-36 h-36 bg-blue-500/10 rounded-full blur-2xl pointer-events-none" />
+          
+          <div className="space-y-3 relative z-10 w-full flex flex-col items-center">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#1C202B] to-[#12141A] border border-[#3A4560] flex items-center justify-center shadow-[0_0_20px_rgba(66,133,244,0.2)] group-hover:scale-105 transition-transform">
+              <GoogleDriveIcon className="w-7 h-7" />
+            </div>
+            <div>
+              <h3 className="font-cinematic font-bold text-sm text-[#F5F2EA] tracking-wider">SKARBIEC DYSKU GOOGLE</h3>
+              <p className="text-[11px] text-[#A69E8D] mt-1 max-w-xs mx-auto">
+                Bezpośredni transfer i streaming ujęć ślubnych z chmury Google Drive
+              </p>
+            </div>
           </div>
-          <div>
-            <h3 className="text-sm font-semibold text-white">Dysk Google</h3>
-            <p className="text-[11px] text-[#AAA69D] mt-0.5">Importuj nagrania weselne z chmury Google</p>
-          </div>
+
           <button
             onClick={() => setIsDriveModalOpen(true)}
-            className="w-full bg-[#1C1A17] hover:bg-[#D4AF37] text-[#D4AF37] hover:text-black border border-[#D4AF37]/30 hover:border-[#D4AF37] px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wide flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md"
+            className="w-full mt-4 bg-gradient-to-r from-[#242016] to-[#171510] hover:from-[#D4AF37] hover:to-[#FDE047] text-[#FDE047] hover:text-black border border-[#D4AF37]/40 hover:border-[#D4AF37] px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer shadow-[0_4px_15px_rgba(0,0,0,0.5)] hover:shadow-[0_0_20px_rgba(212,175,55,0.35)]"
           >
             <Cloud className="w-4 h-4" />
-            <span>Zgraj z Dysku Google</span>
+            <span>Otwórz Dysk Google</span>
           </button>
         </div>
       </div>
@@ -697,92 +720,92 @@ export function MediaManager({
         existingClips={clips}
       />
 
-      {/* Filter and Search Bar */}
-      <div className="flex flex-col gap-3 bg-[#121212] p-3 sm:p-4 rounded-xl border border-[#2A2824] shrink-0 shadow-md">
+      {/* Filter and Search Bar (Haute Couture Director's Console) */}
+      <div className="flex flex-col gap-3.5 bg-gradient-to-r from-[#14120D] via-[#100F0C] to-[#14120D] p-3.5 sm:p-4 rounded-2xl border border-[#2D261A] shrink-0 shadow-[0_8px_30px_rgba(0,0,0,0.5)] backdrop-blur-xl">
         
         {/* Row 1: Search + Filter Tabs */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           {/* Search */}
-          <div className="relative flex-1 min-w-[200px] max-w-md">
-            <Search className="w-3.5 h-3.5 text-[#777] absolute left-3 top-1/2 -translate-y-1/2" />
+          <div className="relative flex-1 min-w-[220px] max-w-md">
+            <Search className="w-3.5 h-3.5 text-[#D4AF37]/70 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Szukaj ujęcia lub kategorii..."
+              placeholder="Szukaj ujęcia lub kategorii weselnej..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-[#181818] border border-[#2A2824] rounded-lg pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-[#D4AF37]"
+              className="w-full bg-[#18150F] border border-[#2D261A] focus:border-[#D4AF37] rounded-xl pl-8 pr-3 py-1.5 text-xs text-[#F5F2EA] focus:outline-none focus:ring-1 focus:ring-[#D4AF37]/50 shadow-inner"
             />
           </div>
 
           {/* Filter Tabs */}
-          <div className="flex items-center gap-1 bg-[#181818] p-1 rounded-lg border border-[#2A2824] text-[11px] overflow-x-auto touch-pan-x custom-scrollbar max-w-full">
+          <div className="flex items-center gap-1 bg-[#16130D] p-1 rounded-xl border border-[#2D261A] text-[11px] overflow-x-auto touch-pan-x custom-scrollbar max-w-full">
             <button
               onClick={() => handleFilterTabChange('all')}
-              className={`px-2.5 py-1 rounded-md whitespace-nowrap transition-colors ${filterTab === 'all' ? 'bg-[#D4AF37] text-black font-bold' : 'text-[#AAA69D] hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition-all font-medium cursor-pointer ${filterTab === 'all' ? 'bg-gradient-to-r from-[#D4AF37] to-[#FDE047] text-black font-bold shadow-[0_0_12px_rgba(212,175,55,0.3)]' : 'text-[#A69C87] hover:text-white hover:bg-white/[0.04]'}`}
             >
               Wszystkie ({clips.length})
             </button>
             <button
               onClick={() => handleFilterTabChange('video')}
-              className={`px-2.5 py-1 rounded-md whitespace-nowrap transition-colors flex items-center gap-1 ${filterTab === 'video' ? 'bg-[#D4AF37] text-black font-bold' : 'text-[#AAA69D] hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition-all font-medium flex items-center gap-1 cursor-pointer ${filterTab === 'video' ? 'bg-gradient-to-r from-[#D4AF37] to-[#FDE047] text-black font-bold shadow-[0_0_12px_rgba(212,175,55,0.3)]' : 'text-[#A69C87] hover:text-white hover:bg-white/[0.04]'}`}
             >
               <Film className="w-3 h-3" />
               <span>Wideo ({clips.filter(c => c.type === 'video').length})</span>
             </button>
             <button
               onClick={() => handleFilterTabChange('image')}
-              className={`px-2.5 py-1 rounded-md whitespace-nowrap transition-colors flex items-center gap-1 ${filterTab === 'image' ? 'bg-[#D4AF37] text-black font-bold' : 'text-[#AAA69D] hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition-all font-medium flex items-center gap-1 cursor-pointer ${filterTab === 'image' ? 'bg-gradient-to-r from-[#D4AF37] to-[#FDE047] text-black font-bold shadow-[0_0_12px_rgba(212,175,55,0.3)]' : 'text-[#A69C87] hover:text-white hover:bg-white/[0.04]'}`}
             >
               <ImageIcon className="w-3 h-3" />
               <span>Zdjęcia ({clips.filter(c => c.type === 'image').length})</span>
             </button>
             <button
               onClick={() => handleFilterTabChange('audio')}
-              className={`px-2.5 py-1 rounded-md whitespace-nowrap transition-colors flex items-center gap-1 ${filterTab === 'audio' ? 'bg-[#D4AF37] text-black font-bold' : 'text-[#AAA69D] hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition-all font-medium flex items-center gap-1 cursor-pointer ${filterTab === 'audio' ? 'bg-gradient-to-r from-[#D4AF37] to-[#FDE047] text-black font-bold shadow-[0_0_12px_rgba(212,175,55,0.3)]' : 'text-[#A69C87] hover:text-white hover:bg-white/[0.04]'}`}
             >
               <Music className="w-3 h-3" />
               <span>Audio ({clips.filter(c => c.type === 'audio').length})</span>
             </button>
-            <div className="w-px h-4 bg-[#333] mx-1" />
+            <div className="w-px h-4 bg-[#332A1C] mx-1" />
             <button
               onClick={() => handleFilterTabChange('best')}
-              className={`px-2 py-1 rounded-md whitespace-nowrap transition-colors flex items-center gap-1 ${filterTab === 'best' ? 'bg-emerald-500 text-black font-bold' : 'text-emerald-400/90 hover:text-emerald-300'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition-all font-bold flex items-center gap-1 cursor-pointer ${filterTab === 'best' ? 'bg-emerald-500 text-black shadow-[0_0_12px_rgba(16,185,129,0.4)]' : 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/30'}`}
               title="Pokaż ujęcia ocenione jako Złote Momenty (BEST / Jakość >= 75%)"
             >
               ★ Złote momenty
             </button>
             <button
               onClick={() => handleFilterTabChange('duplicates')}
-              className={`px-2 py-1 rounded-md whitespace-nowrap transition-colors flex items-center gap-1 ${filterTab === 'duplicates' ? 'bg-amber-500 text-black font-bold' : 'text-amber-400/90 hover:text-amber-300'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition-all font-semibold flex items-center gap-1 cursor-pointer ${filterTab === 'duplicates' ? 'bg-amber-500 text-black shadow-[0_0_12px_rgba(245,158,11,0.4)]' : 'text-amber-400 hover:text-amber-300 hover:bg-amber-950/30'}`}
               title="Pokaż serie ujęć i wykryte duble"
             >
               <Copy className="w-3 h-3" />
-              <span>Duplikaty i serie</span>
+              <span>Duplikaty & serie</span>
             </button>
             <button
               onClick={() => handleFilterTabChange('problem')}
-              className={`px-2 py-1 rounded-md whitespace-nowrap transition-colors flex items-center gap-1 ${filterTab === 'problem' ? 'bg-red-500 text-white font-bold' : 'text-red-400/90 hover:text-red-300'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition-all font-semibold flex items-center gap-1 cursor-pointer ${filterTab === 'problem' ? 'bg-rose-500 text-white shadow-[0_0_12px_rgba(244,63,94,0.4)]' : 'text-rose-400 hover:text-rose-300 hover:bg-rose-950/30'}`}
               title="Pokaż ujęcia z problemami technicznymi"
             >
               <ShieldAlert className="w-3 h-3" />
               <span>Do poprawy</span>
             </button>
-            <div className="w-px h-4 bg-[#333] mx-1" />
+            <div className="w-px h-4 bg-[#332A1C] mx-1" />
             <button
               onClick={() => handleFilterTabChange('unused')}
-              className={`px-2.5 py-1 rounded-md whitespace-nowrap transition-colors ${filterTab === 'unused' ? 'bg-[#D4AF37] text-black font-bold' : 'text-[#AAA69D] hover:text-white'}`}
+              className={`px-2.5 py-1.5 rounded-lg whitespace-nowrap transition-all font-medium cursor-pointer ${filterTab === 'unused' ? 'bg-[#D4AF37] text-black font-bold' : 'text-[#A69C87] hover:text-white'}`}
             >
               Nieużyte
             </button>
             <button
               onClick={() => handleFilterTabChange('used')}
-              className={`px-2.5 py-1 rounded-md whitespace-nowrap transition-colors ${filterTab === 'used' ? 'bg-[#D4AF37] text-black font-bold' : 'text-[#AAA69D] hover:text-white'}`}
+              className={`px-2.5 py-1.5 rounded-lg whitespace-nowrap transition-all font-medium cursor-pointer ${filterTab === 'used' ? 'bg-[#D4AF37] text-black font-bold' : 'text-[#A69C87] hover:text-white'}`}
             >
               Na osi
             </button>
             <button
               onClick={() => handleFilterTabChange('favorites')}
-              className={`px-2.5 py-1 rounded-md whitespace-nowrap transition-colors ${filterTab === 'favorites' ? 'bg-[#D4AF37] text-black font-bold' : 'text-[#AAA69D] hover:text-white'}`}
+              className={`px-2.5 py-1.5 rounded-lg whitespace-nowrap transition-all font-medium cursor-pointer ${filterTab === 'favorites' ? 'bg-[#D4AF37] text-black font-bold' : 'text-[#A69C87] hover:text-white'}`}
             >
               ★ Ulubione
             </button>
@@ -1103,14 +1126,14 @@ export function MediaManager({
                     return (
                       <div 
                         key={clip.id} 
-                        className={`bg-[#121212] border rounded-xl overflow-hidden group relative flex flex-col transition-all ${
+                        className={`atelier-card rounded-2xl overflow-hidden group relative flex flex-col transition-all hover:scale-[1.02] duration-300 ${
                           isSelected
-                            ? 'border-[#D4AF37] ring-1 ring-[#D4AF37] bg-[#1A1813]'
+                            ? 'border-[#FDE047] ring-2 ring-[#D4AF37]/60 shadow-[0_0_20px_rgba(212,175,55,0.35)]'
                             : isMissing 
-                            ? 'border-red-500/60 bg-red-950/10' 
+                            ? 'border-rose-500/60 bg-rose-950/20' 
                             : clip.status === 'used'
-                            ? 'border-emerald-500/30'
-                            : 'border-[#2A2824] hover:border-[#D4AF37]/50'
+                            ? 'border-emerald-500/40 shadow-[0_4px_15px_rgba(16,185,129,0.1)]'
+                            : 'hover:border-[#D4AF37]/70 hover:shadow-[0_10px_30px_rgba(0,0,0,0.8),0_0_20px_rgba(212,175,55,0.2)]'
                         }`}
                       >
                         {/* Thumbnail Container */}
@@ -1221,19 +1244,19 @@ export function MediaManager({
                           </div>
 
                           {/* Duration Badge */}
-                          <div className={`absolute bottom-2 right-2 text-[10px] font-mono font-bold px-1.5 py-0.5 rounded backdrop-blur-sm ${
+                          <div className={`absolute bottom-2 right-2 text-[10px] font-mono font-bold px-2 py-0.5 rounded-lg backdrop-blur-md shadow-md ${
                             clip.type === 'video' && clip.duration === 10
                               ? 'bg-amber-950/90 text-amber-300 border border-amber-500/50'
-                              : 'bg-black/70 text-white'
+                              : 'bg-black/85 text-[#FDE047] border border-[#D4AF37]/30'
                           }`} title={clip.type === 'video' && clip.duration === 10 ? 'Domyślna długość 10s (niezweryfikowana) - kliknij Zbadaj czasy wideo' : undefined}>
                             {formatDuration(clip.duration)}
                             {clip.type === 'video' && clip.duration === 10 && ' ⚠️'}
                           </div>
 
                           {/* Status Badge */}
-                          <div className="absolute bottom-2 left-2 text-[10px] font-mono font-bold bg-black/70 px-1.5 py-0.5 rounded backdrop-blur-sm">
+                          <div className="absolute bottom-2 left-2 text-[9.5px] font-mono font-bold bg-black/85 border border-white/10 px-2 py-0.5 rounded-lg backdrop-blur-md shadow-md">
                             {isMissing ? (
-                              <span className="text-red-400 flex items-center gap-1">
+                              <span className="text-rose-400 flex items-center gap-1">
                                 <AlertTriangle className="w-3 h-3" /> BRAK PLIKU
                               </span>
                             ) : clip.status === 'used' ? (
@@ -1241,8 +1264,8 @@ export function MediaManager({
                                 <CheckCircle2 className="w-3 h-3" /> NA OSI ({usageNum}x)
                               </span>
                             ) : (
-                              <span className="text-stone-300 flex items-center gap-1">
-                                {clip.type === 'video' ? <Film className="w-2.5 h-2.5" /> : <ImageIcon className="w-2.5 h-2.5" />}
+                              <span className="text-[#C5BCA8] flex items-center gap-1">
+                                {clip.type === 'video' ? <Film className="w-2.5 h-2.5 text-[#D4AF37]" /> : <ImageIcon className="w-2.5 h-2.5 text-[#D4AF37]" />}
                                 {clip.type === 'video' ? 'WIDEO' : 'FOTO'}
                               </span>
                             )}
@@ -1250,15 +1273,15 @@ export function MediaManager({
                         </div>
                         
                         {/* Info & Metadata Area */}
-                        <div className="p-3 flex-1 flex flex-col justify-between gap-2">
+                        <div className="p-3.5 flex-1 flex flex-col justify-between gap-2 bg-[#12100C]/80">
                           <div>
-                            <p className="text-xs font-medium text-white truncate" title={clip.name}>
+                            <p className="text-xs font-semibold text-[#F5F2EA] truncate group-hover:text-[#FDE047] transition-colors" title={clip.name}>
                               {clip.name}
                             </p>
 
                             {/* Technical Metadata Strip */}
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 text-[10px] text-[#888] font-mono">
-                              <span>{clip.width}x{clip.height}</span>
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-[10px] text-[#A69C87] font-mono">
+                              <span className="text-[#D4AF37]">{clip.width}x{clip.height}</span>
                               <span>•</span>
                               <span>{formatSize(clip.size)}</span>
                               <span>•</span>

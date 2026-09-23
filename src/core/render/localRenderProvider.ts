@@ -261,7 +261,8 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
             (currentClipTime) => {
               renderedTime += frameDurationSec;
               this.drawOverlays(ctx, project, renderedTime, width, height);
-            }
+            },
+            clip
           );
         }
       }
@@ -374,21 +375,98 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
     audioDest: MediaStreamAudioDestinationNode,
     masterClipVolume: number,
     signal?: AbortSignal,
-    onFrameRendered?: (time: number) => void
+    onFrameRendered?: (time: number) => void,
+    clip?: MediaClip
   ): Promise<void> {
     const video = document.createElement('video');
     video.src = url;
     video.muted = item.muted;
     video.playsInline = true;
-    if (url.startsWith('http://') || url.startsWith('https://')) {
+    
+    const isExternal = url.startsWith('http://') || url.startsWith('https://');
+    const isSameOrigin = typeof window !== 'undefined' && url.startsWith(window.location.origin);
+    if (isExternal && !isSameOrigin) {
       video.crossOrigin = 'anonymous';
     }
 
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error('Nie można załadować wideo do renderowania.'));
-      video.load();
-    });
+    const waitForVideo = (vid: HTMLVideoElement): Promise<boolean> => {
+      if (vid.readyState >= 1 && vid.videoWidth > 0) return Promise.resolve(true);
+
+      return new Promise<boolean>((resolve) => {
+        let done = false;
+        const onReady = () => {
+          if (done) return;
+          done = true;
+          cleanup();
+          resolve(true);
+        };
+        const onErr = () => {
+          if (done) return;
+          done = true;
+          cleanup();
+          resolve(false);
+        };
+        const cleanup = () => {
+          vid.removeEventListener('loadedmetadata', onReady);
+          vid.removeEventListener('canplay', onReady);
+          vid.removeEventListener('error', onErr);
+        };
+
+        vid.addEventListener('loadedmetadata', onReady);
+        vid.addEventListener('canplay', onReady);
+        vid.addEventListener('error', onErr);
+        vid.load();
+
+        setTimeout(() => {
+          if (!done) {
+            done = true;
+            cleanup();
+            resolve(vid.videoWidth > 0 || vid.readyState >= 1);
+          }
+        }, 12000);
+      });
+    };
+
+    let loaded = await waitForVideo(video);
+
+    // If failed with crossOrigin, retry without crossOrigin
+    if (!loaded && video.crossOrigin) {
+      video.removeAttribute('crossorigin');
+      video.src = url;
+      loaded = await waitForVideo(video);
+    }
+
+    // If failed and clip.file exists, try creating direct fresh blob URL
+    if (!loaded && clip?.file) {
+      try {
+        const freshUrl = URL.createObjectURL(clip.file);
+        video.src = freshUrl;
+        loaded = await waitForVideo(video);
+      } catch (e) {}
+    }
+
+    // If failed and proxy exists, try proxy
+    if (!loaded && clip?.proxyUrl) {
+      try {
+        video.src = clip.proxyUrl;
+        loaded = await waitForVideo(video);
+      } catch (e) {}
+    }
+
+    if (!loaded && (video.videoWidth === 0 && video.readyState < 1)) {
+      // If video codec is unsupported by device decoder, fall back to high-res thumbnail frame
+      if (clip?.thumbnailUrl && clip.thumbnailUrl.length > 5) {
+        console.warn(`[localRender] Video decoder failed for "${clip.name}". Falling back to clip frame image.`);
+        await this.renderImageClip(ctx, clip.thumbnailUrl, item, targetWidth, targetHeight, fps, signal, () => {
+          if (onFrameRendered) onFrameRendered(0);
+        });
+        return;
+      }
+
+      const err = video.error;
+      const detail = err ? `Code ${err.code}: ${err.message}` : 'Timeout';
+      throw new Error(`Nie można załadować wideo do renderowania (${detail}).`);
+    }
 
     let audioSource: MediaElementAudioSourceNode | null = null;
     let gainNode: GainNode | null = null;

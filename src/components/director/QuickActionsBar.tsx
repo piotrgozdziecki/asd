@@ -197,53 +197,53 @@ export function QuickActionsBar({
   return (
     <>
       {/* Action buttons bar */}
-      <div className="flex flex-wrap items-center gap-2 p-2 bg-[#161614] border border-[#262420] rounded-xl shadow-inner text-xs">
-        <span className="text-[11px] font-bold text-[#D4AF37] uppercase tracking-wider px-2 flex items-center gap-1.5 shrink-0">
-          <Sparkles className="w-3.5 h-3.5" /> Szybkie Akcje:
+      <div className="flex flex-wrap items-center gap-2 p-2 bg-gradient-to-r from-[#14120D] via-[#100F0C] to-[#14120D] border border-[#2D261A] rounded-2xl shadow-[0_8px_24px_rgba(0,0,0,0.6)] text-xs backdrop-blur-xl">
+        <span className="text-[11px] font-bold text-[#FDE047] tracking-[0.12em] px-2.5 py-1 rounded-xl bg-[#241D0E] border border-[#D4AF37]/30 flex items-center gap-1.5 shrink-0 shadow-[0_0_12px_rgba(212,175,55,0.15)] font-cinematic">
+          <Sparkles className="w-3.5 h-3.5 text-[#FDE047]" /> KONSOLA REŻYSERSKA
         </span>
 
         {/* 1. Analyze Project */}
         <button
           onClick={handleAnalyzeProject}
           disabled={isRunning}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1E1E1C] hover:bg-[#252420] border border-[#2E2C26] text-white hover:text-[#D4AF37] cursor-pointer transition-all font-medium disabled:opacity-50"
+          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#16130D] hover:bg-[#201A10] border border-[#2D261A] hover:border-[#D4AF37]/50 text-[#F5F2EA] hover:text-[#FDE047] cursor-pointer transition-all font-medium disabled:opacity-50 shadow-sm"
           title="Przeanalizuj stabilność, jakość i oświetlenie każdego ujęcia"
         >
           <RotateCw className="w-3 h-3 text-[#D4AF37]" />
-          <span>Analyze Project</span>
+          <span>Analiza Ujęć & Jakości</span>
         </button>
 
         {/* 2. Find Best Moments */}
         <button
           onClick={handleFindBestMoments}
           disabled={isRunning}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1E1E1C] hover:bg-[#252420] border border-[#2E2C26] text-white hover:text-amber-300 cursor-pointer transition-all font-medium disabled:opacity-50"
+          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#16130D] hover:bg-[#201A10] border border-[#2D261A] hover:border-amber-400/50 text-[#F5F2EA] hover:text-amber-300 cursor-pointer transition-all font-medium disabled:opacity-50 shadow-sm"
           title="Pokaż wyłącznie najwyżej ocenione ujęcia"
         >
           <Star className="w-3 h-3 text-amber-400 fill-amber-400/20" />
-          <span>Find Best Moments</span>
+          <span>Najlepsze Chwile (Best)</span>
         </button>
 
         {/* 4. Optimize Project */}
         <button
           onClick={handleOptimizeProject}
           disabled={isRunning}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1E1E1C] hover:bg-[#252420] border border-[#2E2C26] text-white hover:text-cyan-300 cursor-pointer transition-all font-medium disabled:opacity-50"
+          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#16130D] hover:bg-[#201A10] border border-[#2D261A] hover:border-cyan-400/50 text-[#F5F2EA] hover:text-cyan-300 cursor-pointer transition-all font-medium disabled:opacity-50 shadow-sm"
           title="Generuj lekkie proxy 540p dla płynnego montażu"
         >
           <Zap className="w-3 h-3 text-cyan-400" />
-          <span>Optimize Project (Proxy)</span>
+          <span>Optymalizacja Proxy 540p</span>
         </button>
 
         {/* 6. Prepare for Export */}
         <button
           onClick={handlePrepareForExport}
           disabled={isRunning}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/60 border border-emerald-500/40 text-emerald-300 cursor-pointer transition-all font-semibold ml-auto disabled:opacity-50"
+          className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-950/80 to-[#122A1E] hover:from-emerald-900/90 hover:to-[#173827] border border-emerald-500/50 text-emerald-300 hover:text-emerald-200 cursor-pointer transition-all font-semibold ml-auto disabled:opacity-50 shadow-[0_0_15px_rgba(16,185,129,0.15)]"
           title="Przetestuj projekt i przygotuj do finalnego eksportu"
         >
           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-          <span>Prepare for Export</span>
+          <span>Przygotuj do Eksportu</span>
         </button>
       </div>
 

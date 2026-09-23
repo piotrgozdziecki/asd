@@ -19,7 +19,7 @@ import type { ProjectState } from '../../types/project';
 import { useAuth } from '../../lib/firebase/AuthContext';
 import { GoogleDriveIcon } from '../GoogleDriveModal';
 import { checkProjectHealth, ProjectCheckResult } from '../../core/validation/projectValidator';
-import { runRealRuntimeHealthCheck, ProjectHealthReport } from '../../core/director/projectHealthEngine';
+import { runRealRuntimeHealthCheck, autoFixProjectHealthIssues, ProjectHealthReport } from '../../core/director/projectHealthEngine';
 import { sanitizeProjectForStorage } from '../../core/validation/projectMigration';
 import { safeStringify } from '../../lib/safeJson';
 import { renderManager } from '../../core/render/renderManager';
@@ -27,9 +27,10 @@ import { RenderProgress, RenderResult } from '../../core/render/renderTypes';
 
 interface ExportViewProps {
   project: ProjectState;
+  onUpdateProject?: (project: ProjectState) => void;
 }
 
-export function ExportView({ project }: ExportViewProps) {
+export function ExportView({ project, onUpdateProject }: ExportViewProps) {
   const { accessToken, login } = useAuth();
 
   // Export & Render States
@@ -96,6 +97,16 @@ export function ExportView({ project }: ExportViewProps) {
   }, [project]);
 
   const isReadyToExport = healthCheck.canExport && runtimeReport?.exportReadiness.status !== 'FIX BEFORE EXPORT' && project.timelineItems.length > 0;
+  const [fixSuccessMessage, setFixSuccessMessage] = useState<string | null>(null);
+
+  const handleAutoFixProject = () => {
+    const { updatedProject, fixedCount, fixedItems } = autoFixProjectHealthIssues(project);
+    if (onUpdateProject) {
+      onUpdateProject(updatedProject);
+      setFixSuccessMessage(`Naprawiono projekt (${fixedCount} zmian): ${fixedItems.join(', ')}`);
+      setTimeout(() => setFixSuccessMessage(null), 6000);
+    }
+  };
 
   // Clean up object URLs on unmount
   useEffect(() => {
@@ -180,7 +191,28 @@ export function ExportView({ project }: ExportViewProps) {
 
   // 2. VIDEO EXPORT (.mp4)
   const handleStartMovieRender = async (diagnosticMode = false) => {
-    if (!healthCheck.canExport) return;
+    let projectToRender = project;
+
+    // If timeline is empty but media library has items, automatically populate timeline!
+    if (projectToRender.timelineItems.length === 0 && projectToRender.mediaLibrary.length > 0) {
+      const { updatedProject } = autoFixProjectHealthIssues(projectToRender);
+      projectToRender = updatedProject;
+      if (onUpdateProject) {
+        onUpdateProject(updatedProject);
+      }
+    } else if (!healthCheck.canExport && projectToRender.timelineItems.length > 0) {
+      // Auto-fix any timing / collision / track issues
+      const { updatedProject } = autoFixProjectHealthIssues(projectToRender);
+      projectToRender = updatedProject;
+      if (onUpdateProject) {
+        onUpdateProject(updatedProject);
+      }
+    }
+
+    if (projectToRender.timelineItems.length === 0) {
+      setRenderError('Brak ujęć na osi czasu. Dodaj filmy lub zdjęcia w zakładce Media.');
+      return;
+    }
 
     setIsExporting(true);
     setRenderError(null);
@@ -190,10 +222,10 @@ export function ExportView({ project }: ExportViewProps) {
     try {
       // Diagnostic mode reduces complexity for testing
       const testProject = diagnosticMode ? {
-        ...project,
-        timelineItems: project.timelineItems.slice(0, 1).map(item => ({ ...item, duration: 3, sourceEnd: item.sourceStart + 3 })),
+        ...projectToRender,
+        timelineItems: projectToRender.timelineItems.slice(0, 1).map(item => ({ ...item, duration: 3, sourceEnd: item.sourceStart + 3 })),
         audioTracks: []
-      } : project;
+      } : projectToRender;
 
       const result = await renderManager.startRender(
         testProject,
@@ -212,7 +244,8 @@ export function ExportView({ project }: ExportViewProps) {
       setRenderResult(result);
       
       // Perform verification
-      performExportVerification(result, totalDuration);
+      const computedDuration = testProject.timelineItems.reduce((acc, it) => Math.max(acc, it.timelineStart + it.duration), 0);
+      performExportVerification(result, computedDuration);
     } catch (err: any) {
       console.error('Render error:', err);
       const diagnosticInfo = renderProgress?.diagnostics ? `\n[Stage: ${renderProgress.stage}] ${renderProgress.diagnostics.stageDetails || ''}` : '';
@@ -538,15 +571,30 @@ export function ExportView({ project }: ExportViewProps) {
 
               <div className="flex items-center gap-2">
                 {isValidatingRuntime && <Loader2 className="w-4 h-4 text-[#D4AF37] animate-spin" />}
-                <span className={`text-xs font-mono font-bold px-3 py-1 rounded-full uppercase tracking-wider shadow-md border ${
-                  isReadyToExport 
-                    ? 'bg-emerald-950 text-emerald-300 border-emerald-500/50 shadow-emerald-950/40' 
-                    : 'bg-red-950 text-red-300 border-red-500/50 shadow-red-950/40'
-                }`}>
-                  {isReadyToExport ? '✓ READY TO EXPORT' : '✕ FIX BEFORE EXPORT'}
-                </span>
+                {isReadyToExport ? (
+                  <span className="text-xs font-mono font-bold px-3 py-1 rounded-full uppercase tracking-wider shadow-md border bg-emerald-950 text-emerald-300 border-emerald-500/50 shadow-emerald-950/40">
+                    ✓ READY TO EXPORT
+                  </span>
+                ) : (
+                  <button
+                    onClick={handleAutoFixProject}
+                    title="Kliknij, aby automatycznie naprawić projekt"
+                    className="text-xs font-mono font-bold px-3 py-1 rounded-full uppercase tracking-wider shadow-md border bg-red-950 hover:bg-red-900 text-red-200 border-red-500/70 shadow-red-950/40 cursor-pointer flex items-center gap-1.5 transition-all hover:scale-105 active:scale-95"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                    <span>✕ FIX BEFORE EXPORT (KLIKNIJ ABY NAPRAWIĆ)</span>
+                  </button>
+                )}
               </div>
             </div>
+
+            {/* Notification if auto-fixed */}
+            {fixSuccessMessage && (
+              <div className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-500/50 text-emerald-300 text-xs flex items-center gap-2 animate-fadeIn">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{fixSuccessMessage}</span>
+              </div>
+            )}
 
             {/* 7-Point Pre-Flight Verification Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs font-mono">
@@ -567,7 +615,7 @@ export function ExportView({ project }: ExportViewProps) {
 
               {/* 2. Konflikty timeline */}
               <div className={`p-2 rounded-lg border flex items-center justify-between ${
-                runtimeReport?.modules.timeline.status === 'OK' 
+                project.timelineItems.length > 0 && runtimeReport?.modules.timeline.status === 'OK' 
                   ? 'bg-[#121212] border-[#2A2824] text-[#AAA69D]' 
                   : 'bg-amber-950/20 border-amber-800/40 text-amber-300'
               }`}>
@@ -576,13 +624,15 @@ export function ExportView({ project }: ExportViewProps) {
                   <span>2. Konflikty timeline:</span>
                 </span>
                 <span className="font-bold text-[11px]">
-                  {runtimeReport?.modules.timeline.status === 'OK' ? 'OK (Brak kolizji)' : 'Wykryto kolizje'}
+                  {project.timelineItems.length === 0
+                    ? 'Oś pusta (0 klipów)'
+                    : (runtimeReport?.modules.timeline.status === 'OK' ? 'OK (Brak kolizji)' : 'Wykryto kolizje')}
                 </span>
               </div>
 
               {/* 3. Błędne czasy */}
               <div className={`p-2 rounded-lg border flex items-center justify-between ${
-                runtimeReport?.modules.timeline.status !== 'ERROR' 
+                totalDuration > 0 && runtimeReport?.modules.timeline.status !== 'ERROR' 
                   ? 'bg-[#121212] border-[#2A2824] text-[#AAA69D]' 
                   : 'bg-red-950/20 border-red-800/40 text-red-300'
               }`}>
@@ -591,7 +641,9 @@ export function ExportView({ project }: ExportViewProps) {
                   <span>3. Poprawność czasów:</span>
                 </span>
                 <span className="font-bold text-[11px]">
-                  {runtimeReport?.modules.timeline.status !== 'ERROR' ? 'OK (Wszystkie > 0)' : 'Błędne czasy'}
+                  {totalDuration > 0 && runtimeReport?.modules.timeline.status !== 'ERROR' 
+                    ? 'OK (Wszystkie > 0)' 
+                    : (totalDuration === 0 ? 'Czas 0:00 (Brak ujęć)' : 'Błędne czasy')}
                 </span>
               </div>
 
@@ -643,6 +695,28 @@ export function ExportView({ project }: ExportViewProps) {
                 </span>
               </div>
             </div>
+
+            {/* Quick action banner if timeline is empty but media exists */}
+            {project.timelineItems.length === 0 && project.mediaLibrary.length > 0 && (
+              <div className="p-3 rounded-xl bg-gradient-to-r from-amber-950/40 via-[#1C1A17] to-amber-950/40 border border-[#D4AF37]/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg">
+                <div className="space-y-0.5">
+                  <div className="text-xs font-bold text-white flex items-center gap-1.5 font-serif-luxury">
+                    <Sparkles className="w-4 h-4 text-[#D4AF37]" />
+                    <span>Automatyczne połączenie ujęć na osi czasu</span>
+                  </div>
+                  <p className="text-[11px] text-[#AAA69D]">
+                    W bibliotece znajduje się <strong className="text-white">{project.mediaLibrary.length} mediów</strong>. Kliknij poniżej, aby jednym kliknięciem ułożyć je w sekwencję wideo do eksportu.
+                  </p>
+                </div>
+                <button
+                  onClick={handleAutoFixProject}
+                  className="px-3.5 py-2 bg-[#D4AF37] hover:bg-[#FDE047] text-black font-bold text-xs rounded-lg transition-all flex items-center gap-1.5 shrink-0 cursor-pointer shadow-md hover:scale-105 active:scale-95"
+                >
+                  <Film className="w-3.5 h-3.5" />
+                  <span>Połącz ujęcia ({project.mediaLibrary.length} szt.)</span>
+                </button>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-1">
               <div className="bg-[#1C1A17] p-2.5 rounded-lg border border-[#2A2824]">
@@ -780,12 +854,21 @@ export function ExportView({ project }: ExportViewProps) {
                 </div>
               )}
 
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3">
                 <button
                   onClick={() => handleStartMovieRender(false)}
                   className="px-4 py-2 bg-[#D4AF37] text-black text-xs font-bold rounded-lg hover:bg-[#FDE047] transition-all cursor-pointer"
                 >
                   Spróbuj ponownie
+                </button>
+                <button
+                  onClick={() => {
+                    setSelectedProviderId('local_canvas_recorder');
+                    setTimeout(() => handleStartMovieRender(false), 50);
+                  }}
+                  className="px-4 py-2 bg-emerald-600/90 text-white text-xs font-bold rounded-lg hover:bg-emerald-500 transition-all cursor-pointer flex items-center gap-1.5"
+                >
+                  Eksportuj silnikiem zgodności (MediaRecorder)
                 </button>
                 <button
                   onClick={() => handleStartMovieRender(true)}
@@ -1058,15 +1141,28 @@ export function ExportView({ project }: ExportViewProps) {
               <div className="pt-2">
                 <button 
                   onClick={() => handleStartMovieRender(false)}
-                  disabled={!isReadyToExport || totalDuration === 0}
+                  disabled={project.timelineItems.length === 0 && project.mediaLibrary.length === 0}
                   className="w-full bg-[#D4AF37] text-black px-6 py-4 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-[#FDE047] transition-all transform hover:scale-[1.01] shadow-[0_0_20px_rgba(212,175,55,0.2)] disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none cursor-pointer"
                 >
                   <Film className="w-5 h-5" />
-                  Rozpocznij renderowanie i wygeneruj film MP4
+                  {project.timelineItems.length === 0 && project.mediaLibrary.length > 0
+                    ? `Połącz media (${project.mediaLibrary.length} szt.) i wygeneruj film MP4`
+                    : 'Rozpocznij renderowanie i wygeneruj film MP4'}
                 </button>
-                {!isReadyToExport && (
+                {!isReadyToExport && project.timelineItems.length > 0 && (
+                  <p className="text-[11px] text-amber-400 text-center font-mono mt-2 flex items-center justify-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Projekt zawiera kwestie do optymalizacji. <button onClick={handleAutoFixProject} className="underline font-bold hover:text-white cursor-pointer ml-1">Kliknij tutaj, aby naprawić automatycznie</button>.
+                  </p>
+                )}
+                {project.timelineItems.length === 0 && project.mediaLibrary.length > 0 && (
+                  <p className="text-[11px] text-[#D4AF37] text-center font-mono mt-2">
+                    Ujęcia z biblioteki mediów zostaną automatycznie połączone w sekwencję wideo.
+                  </p>
+                )}
+                {project.timelineItems.length === 0 && project.mediaLibrary.length === 0 && (
                   <p className="text-[11px] text-red-400 text-center font-mono mt-2">
-                    Przycisk jest zablokowany: projekt wymaga poprawy przed eksportem (FIX BEFORE EXPORT).
+                    Dodaj pliki wideo lub zdjęcia w zakładce Media, aby rozpocząć montaż i eksport.
                   </p>
                 )}
               </div>

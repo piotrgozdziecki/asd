@@ -342,7 +342,7 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
           heartbeat();
 
           try {
-            const src = await resolveClipMediaUrl(clip);
+            let src = await resolveClipMediaUrl(clip);
             if (!src) throw new Error(`Brak źródła dla ${clip.name}`);
 
             if (clip.type === 'video') {
@@ -350,36 +350,116 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
               video.muted = true;
               video.playsInline = true;
               video.preload = 'auto';
-              if (src.startsWith('http')) video.crossOrigin = 'anonymous';
-              video.src = src;
-              
-              // Check if metadata is already loaded before adding listener
-              if (video.readyState >= 1) {
-                mediaElements.set(clip.id, video);
-                heartbeat();
-                continue;
+
+              const isExternal = src.startsWith('http://') || src.startsWith('https://');
+              const isSameOrigin = typeof window !== 'undefined' && src.startsWith(window.location.origin);
+              if (isExternal && !isSameOrigin) {
+                video.crossOrigin = 'anonymous';
               }
-              
-              // Wait for metadata to ensure videoWidth is available
-              await new Promise<void>((resolve, reject) => {
-                const onMetadata = () => {
-                  cleanup();
-                  resolve();
-                };
-                const onError = () => {
-                  cleanup();
-                  reject(new Error(`Błąd ładowania wideo (Metadata Error): ${clip.name}`));
-                };
-                const cleanup = () => {
-                  video.removeEventListener('loadedmetadata', onMetadata);
-                  video.removeEventListener('error', onError);
-                };
-                video.addEventListener('loadedmetadata', onMetadata);
-                video.addEventListener('error', onError);
-                video.load();
-                // Increased timeout for slow mobile storage
-                setTimeout(onMetadata, 10000); 
-              });
+              video.src = src;
+
+              const loadVideoWithFallback = (vidEl: HTMLVideoElement): Promise<boolean> => {
+                if (vidEl.readyState >= 1 && vidEl.videoWidth > 0) return Promise.resolve(true);
+
+                return new Promise<boolean>((resolve) => {
+                  let settled = false;
+                  const onMetadata = () => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    resolve(true);
+                  };
+                  const onError = () => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    resolve(false);
+                  };
+                  const cleanup = () => {
+                    vidEl.removeEventListener('loadedmetadata', onMetadata);
+                    vidEl.removeEventListener('canplay', onMetadata);
+                    vidEl.removeEventListener('error', onError);
+                  };
+
+                  vidEl.addEventListener('loadedmetadata', onMetadata);
+                  vidEl.addEventListener('canplay', onMetadata);
+                  vidEl.addEventListener('error', onError);
+                  vidEl.load();
+
+                  setTimeout(() => {
+                    if (!settled) {
+                      settled = true;
+                      cleanup();
+                      resolve(vidEl.videoWidth > 0 || vidEl.readyState >= 1);
+                    }
+                  }, 12000);
+                });
+              };
+
+              let loaded = await loadVideoWithFallback(video);
+
+              // Retry 1: If crossOrigin caused CORS rejection, remove it and retry
+              if (!loaded && video.crossOrigin) {
+                video.removeAttribute('crossorigin');
+                video.src = src;
+                loaded = await loadVideoWithFallback(video);
+              }
+
+              // Retry 2: If primary source failed, fallback to proxyUrl
+              if (!loaded && clip.proxyUrl && clip.proxyUrl !== src) {
+                console.warn(`[webCodecsMp4Provider] Re-trying with proxyUrl for clip: ${clip.name}`);
+                video.src = clip.proxyUrl;
+                loaded = await loadVideoWithFallback(video);
+              }
+
+              // Retry 2.5: If clip.file exists in memory, generate fresh direct blob URL
+              if (!loaded && clip.file) {
+                try {
+                  const directUrl = URL.createObjectURL(clip.file);
+                  video.src = directUrl;
+                  loaded = await loadVideoWithFallback(video);
+                } catch (e) {}
+              }
+
+              // Retry 3: Try restoring directly from IndexedDB with typed blob
+              if (!loaded) {
+                try {
+                  const blob = await localIndexedDB.getMediaBlob(clip.id);
+                  if (blob && blob.size > 0) {
+                    const mime = (blob.type && blob.type.startsWith('video/')) ? blob.type : 'video/mp4';
+                    const typedBlob = new Blob([blob], { type: mime });
+                    const freshUrl = urlRegistry.create(typedBlob);
+                    video.src = freshUrl;
+                    loaded = await loadVideoWithFallback(video);
+                  }
+                } catch (e) {
+                  // ignore
+                }
+              }
+
+              if (!loaded && video.videoWidth === 0 && video.readyState < 1) {
+                // If the device video decoder cannot decode this format (e.g. Android HEVC / Format error),
+                // fall back to the clip frame thumbnail rather than halting the entire wedding render
+                if (clip.thumbnailUrl && clip.thumbnailUrl.length > 5) {
+                  console.warn(`[webCodecsMp4Provider] Video decoder failed for "${clip.name}" (Codec/Format issue). Falling back to clip frame image.`);
+                  const fallbackImg = new Image();
+                  if (clip.thumbnailUrl.startsWith('http')) fallbackImg.crossOrigin = 'anonymous';
+                  fallbackImg.src = clip.thumbnailUrl;
+                  await new Promise<void>((resolve) => {
+                    fallbackImg.onload = () => resolve();
+                    fallbackImg.onerror = () => resolve();
+                    setTimeout(resolve, 3000);
+                  });
+                  mediaElements.set(clip.id, fallbackImg);
+                  heartbeat();
+                  continue;
+                }
+
+                const err = video.error;
+                const errDetail = err ? `Code ${err.code}: ${err.message || 'Format unsupported'}` : 'Brak odpowiedzi metadanych';
+                throw new Error(`Błąd ładowania wideo (${errDetail}): ${clip.name}`);
+              }
+
               mediaElements.set(clip.id, video);
               heartbeat();
             } else {

@@ -198,43 +198,59 @@ export function StudioLayout({
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#090909] text-[#F2EFE8]">
+    <div className="min-h-screen flex flex-col bg-[#070707] text-[#F5F2EA] relative selection:bg-[#D4AF37] selection:text-black">
+      {/* Subtle Cinematic Ambient Lighting */}
+      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[350px] bg-gradient-to-b from-[#D4AF37]/10 via-[#9A7B1C]/5 to-transparent blur-[120px] pointer-events-none z-0" />
+      <div className="fixed -bottom-40 -right-40 w-[600px] h-[600px] bg-[#9A7B1C]/5 blur-[140px] pointer-events-none z-0" />
       
       {/* Session Recovery Banner */}
       {recoveryAvailable && (
-        <div className="bg-[#1C1708] border-b border-[#D4AF37]/40 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-[#F2EFE8] z-50 shadow-lg">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-[#D4AF37] shrink-0" />
-            <span>Wykryto zapisany szkic projektu. Czy chcesz go przywrócić, czy zacząć na nowo z czystym projektem?</span>
+        <div className="relative bg-gradient-to-r from-[#241A08] via-[#1A1406] to-[#241A08] border-b border-[#D4AF37]/50 px-5 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-[#F5F2EA] z-50 shadow-[0_8px_30px_rgba(0,0,0,0.8)] backdrop-blur-md">
+          <div className="flex items-center gap-2.5">
+            <span className="p-1 rounded-full bg-[#D4AF37]/20 border border-[#D4AF37]/40 text-[#FDE047]">
+              <AlertCircle className="w-3.5 h-3.5" />
+            </span>
+            <span className="font-medium tracking-wide">Wykryto zapisaną sesję projektu ślubnego. Czy chcesz przywrócić ostatni stan montażu?</span>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               onClick={onRestoreRecovery}
-              className="px-3 py-1 bg-[#D4AF37] text-black font-bold rounded-lg text-[11px] hover:bg-[#FDE047] transition-colors cursor-pointer shadow"
+              className="px-3.5 py-1.5 luxury-btn-primary rounded-lg text-[11px] font-bold tracking-wider uppercase cursor-pointer"
             >
               Przywróć szkic
             </button>
             <button
               onClick={onDismissRecovery}
-              className="px-2.5 py-1 bg-[#221C18] text-[#AAA69D] hover:text-red-400 border border-[#3A2A20] rounded-lg text-[11px] transition-colors cursor-pointer"
+              className="px-3 py-1.5 bg-[#181310] text-[#A89E8D] hover:text-rose-400 border border-[#3E2C1A] rounded-lg text-[11px] transition-colors cursor-pointer hover:border-rose-500/30"
               title="Usuwa stary szkic ze startu aplikacji i rozpoczyna czysty projekt"
             >
-              Usuń stare i zacznij na czysto
+              Zacznij na czysto
             </button>
           </div>
         </div>
       )}
 
-      {/* Top Header - Desktop */}
-      <header className="hidden lg:flex h-16 border-b border-[#2A2824] bg-[#121212] items-center justify-between px-6 shrink-0 z-40">
+      {/* Top Header - Desktop (Haute Couture Atelier Console) */}
+      <header className="hidden lg:flex h-16 border-b border-[#26221A] bg-[#0E0D0B]/85 backdrop-blur-2xl items-center justify-between px-6 shrink-0 z-40 shadow-[0_4px_30px_rgba(0,0,0,0.6)]">
         
         {/* Left: Brand & Editable Project Name */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 text-[#D4AF37]">
-            <Film className="w-5 h-5" />
-            <span className="font-serif-luxury font-bold tracking-wider text-sm">NIEZAPOMNIANE CHWILE</span>
+        <div className="flex items-center gap-3.5">
+          <div className="flex items-center gap-2.5">
+            <div className="relative w-9 h-9 rounded-xl bg-gradient-to-br from-[#2D2411] to-[#12100A] border border-[#D4AF37]/40 flex items-center justify-center shadow-[0_0_15px_rgba(212,175,55,0.2)]">
+              <Film className="w-4 h-4 text-[#FDE047]" />
+              <div className="absolute inset-0 rounded-xl bg-[#D4AF37]/10 animate-pulse-subtle pointer-events-none" />
+            </div>
+            <div>
+              <span className="font-cinematic font-bold tracking-[0.14em] text-sm text-transparent bg-clip-text bg-gradient-to-r from-[#FFF5C0] via-[#D4AF37] to-[#E3C368] drop-shadow-sm block leading-none">
+                NIEZAPOMNIANE CHWILE
+              </span>
+              <span className="text-[8.5px] uppercase tracking-[0.24em] text-[#9E9070] font-semibold mt-1 block">
+                ATELIER MONTAŻU ŚLUBNEGO • 4K HDR
+              </span>
+            </div>
           </div>
-          <div className="h-5 w-px bg-[#2A2824] mx-1" />
+
+          <div className="h-6 w-px bg-gradient-to-b from-transparent via-[#3A3222] to-transparent mx-1" />
           
           {isEditingName ? (
             <input 
@@ -244,52 +260,57 @@ export function StudioLayout({
               onBlur={handleFinishNameEdit}
               onKeyDown={(e) => e.key === 'Enter' && handleFinishNameEdit()}
               autoFocus
-              className="bg-[#181818] border border-[#D4AF37] rounded px-2 py-0.5 text-xs text-white focus:outline-none"
+              className="bg-[#16130D] border border-[#D4AF37] rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none shadow-[0_0_15px_rgba(212,175,55,0.25)] font-medium"
             />
           ) : (
             <button 
               onClick={() => { setTempName(projectName); setIsEditingName(true); }}
-              className="font-medium text-xs text-[#F2EFE8] hover:text-[#D4AF37] truncate max-w-[180px] text-left cursor-pointer"
-              title="Kliknij, aby zmienić nazwę projektu"
+              className="group flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#14120D] border border-[#2D261A] hover:border-[#D4AF37]/50 text-xs text-[#EADFC9] hover:text-[#FDE047] transition-all cursor-pointer max-w-[200px]"
+              title="Kliknij, aby zmienić nazwę filmu ślubnego"
             >
-              {projectName || 'Projekt_Weselny'}
+              <span className="truncate font-medium">{projectName || 'Film_Weselny'}</span>
+              <span className="text-[10px] text-[#8C7D5B] opacity-0 group-hover:opacity-100 transition-opacity">✎</span>
             </button>
           )}
 
-          {/* Autosave badge */}
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#1A1A1A] border border-[#2A2824] text-[#AAA69D]">
-            {hasUnsavedChanges ? 'Autozapis (IndexedDB)...' : 'Zsynchronizowano'}
+          {/* Sync indicator */}
+          <span className="text-[9.5px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#18150F] border border-[#2A2317] text-[#A69777] flex items-center gap-1">
+            <span className={`w-1.5 h-1.5 rounded-full ${hasUnsavedChanges ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'}`} />
+            {hasUnsavedChanges ? 'Zapisywanie...' : 'Zsynchronizowano'}
           </span>
         </div>
 
-        {/* Center Tabs */}
-        <div className="flex items-center gap-1 bg-[#0D0D0D] p-1 rounded-xl border border-[#222]">
-          {tabs.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => onTabChange(tab.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-                activeTab === tab.id 
-                  ? 'bg-[#1E1C17] text-[#D4AF37] border border-[#D4AF37]/30 shadow-sm' 
-                  : 'text-[#AAA69D] hover:text-[#F2EFE8] hover:bg-[#151515]'
-              }`}
-            >
-              <div className="flex items-center gap-1.5">
-                <tab.icon className="w-3.5 h-3.5" />
-                <span>{tab.label}</span>
-              </div>
-            </button>
-          ))}
+        {/* Center Tabs - Floating Glass Dock */}
+        <div className="flex items-center gap-1 p-1 rounded-2xl dock-pill">
+          {tabs.map(tab => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => onTabChange(tab.id)}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold tracking-wide transition-all cursor-pointer relative ${
+                  isActive 
+                    ? 'dock-pill-active text-[#FDE047]' 
+                    : 'text-[#A09886] hover:text-[#F5F2EA] hover:bg-white/[0.04]'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 relative z-10">
+                  <tab.icon className={`w-3.5 h-3.5 ${isActive ? 'text-[#FDE047]' : 'text-[#8E8675]'}`} />
+                  <span>{tab.label}</span>
+                </div>
+              </button>
+            );
+          })}
         </div>
 
         {/* Right Tools: Voiceover, AI, History, Diagnostics, Help & Auth */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
           
           {/* Quick Voiceover trigger */}
           {onOpenVoiceRecorder && (
             <button
               onClick={onOpenVoiceRecorder}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-[#1A1A1A] border border-[#2A2824] text-[#AAA69D] hover:text-[#D4AF37] hover:border-[#D4AF37]/40 transition-colors cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-[#16130D] border border-[#2D261A] text-[#B0A590] hover:text-[#FDE047] hover:border-[#D4AF37]/40 transition-all cursor-pointer font-medium"
               title="Nagraj głos lektora lub przysięgę ślubną"
             >
               <Mic className="w-3.5 h-3.5 text-[#D4AF37]" />
@@ -301,10 +322,10 @@ export function StudioLayout({
           {onOpenDirector && (
             <button
               onClick={onOpenDirector}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-gradient-to-r from-[#D4AF37]/20 to-[#D4AF37]/10 border border-[#D4AF37] text-[#D4AF37] hover:bg-[#D4AF37]/25 transition-all cursor-pointer font-bold shadow-[0_0_12px_rgba(212,175,55,0.15)]"
+              className="animate-gold-shimmer flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs bg-gradient-to-r from-[#3D3012] via-[#2A210C] to-[#1E1708] border border-[#D4AF37]/60 text-[#FDE047] hover:border-[#D4AF37] transition-all cursor-pointer font-bold shadow-[0_0_18px_rgba(212,175,55,0.22)]"
               title="Otwórz moduł Reżysera AI (Najlepsze ujęcia, eliminacja dubli, propozycje)"
             >
-              <Sparkles className="w-3.5 h-3.5 text-[#D4AF37]" />
+              <Sparkles className="w-3.5 h-3.5 text-[#FDE047]" />
               <span>Reżyser AI</span>
             </button>
           )}
@@ -313,10 +334,10 @@ export function StudioLayout({
           {onToggleHealthPanel && (
             <button
               onClick={onToggleHealthPanel}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border transition-colors cursor-pointer ${
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs border transition-all cursor-pointer ${
                 isHealthPanelOpen 
-                  ? 'bg-emerald-950/40 border-emerald-500/60 text-emerald-300' 
-                  : 'bg-[#1A1A1A] border-[#2A2824] text-[#AAA69D] hover:text-white'
+                  ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.25)]' 
+                  : 'bg-[#16130D] border-[#2D261A] text-[#A69C87] hover:text-white hover:border-[#3E3424]'
               }`}
               title="Stan integralności projektu (Health Check)"
             >
@@ -329,7 +350,7 @@ export function StudioLayout({
           {onOpenAiAssistant && (
             <button
               onClick={onOpenAiAssistant}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-[#1C1A14] border border-[#2A2824] text-[#AAA69D] hover:text-[#D4AF37] hover:border-[#D4AF37]/50 transition-all cursor-pointer font-medium"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-[#16130D] border border-[#2D261A] text-[#A69C87] hover:text-[#FDE047] hover:border-[#D4AF37]/40 transition-all cursor-pointer font-medium"
               title="Otwórz Asystenta Montażu AI"
             >
               <Wand2 className="w-3.5 h-3.5" />
@@ -338,11 +359,11 @@ export function StudioLayout({
           )}
 
           {/* History Undo / Redo */}
-          <div className="flex items-center gap-0.5 bg-[#1A1A1A] p-0.5 rounded-lg border border-[#2A2824]">
+          <div className="flex items-center gap-0.5 bg-[#14120D] p-0.5 rounded-xl border border-[#262117]">
             <button
               onClick={onUndo}
               disabled={!canUndo}
-              className="p-1.5 rounded hover:bg-[#252525] text-[#AAA69D] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer"
+              className="p-1.5 rounded-lg hover:bg-white/[0.06] text-[#A69C87] hover:text-white disabled:opacity-25 disabled:hover:bg-transparent cursor-pointer transition-colors"
               title="Cofnij (Ctrl+Z)"
             >
               <Undo2 className="w-3.5 h-3.5" />
@@ -350,14 +371,14 @@ export function StudioLayout({
             <button
               onClick={onRedo}
               disabled={!canRedo}
-              className="p-1.5 rounded hover:bg-[#252525] text-[#AAA69D] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer"
+              className="p-1.5 rounded-lg hover:bg-white/[0.06] text-[#A69C87] hover:text-white disabled:opacity-25 disabled:hover:bg-transparent cursor-pointer transition-colors"
               title="Ponów (Ctrl+Y)"
             >
               <Redo2 className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          <div className="h-5 w-px bg-[#2A2824]" />
+          <div className="h-5 w-px bg-gradient-to-b from-transparent via-[#3A3222] to-transparent mx-0.5" />
 
           {onResetProject && (
             <button
@@ -366,11 +387,11 @@ export function StudioLayout({
                   onResetProject();
                 }
               }}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-[#AAA69D] hover:text-amber-400 hover:bg-[#1C1710] transition-colors border border-[#2A2824] cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium text-[#A69C87] hover:text-amber-300 hover:bg-[#1C170E] transition-all border border-[#2A2317] hover:border-amber-500/40 cursor-pointer"
               title="Rozpocznij nowy, czysty projekt bez starych filmów"
             >
               <RotateCcw className="w-3.5 h-3.5 text-amber-500" />
-              <span className="hidden xl:inline">Nowy projekt</span>
+              <span className="hidden xl:inline">Nowy</span>
             </button>
           )}
 
@@ -381,15 +402,15 @@ export function StudioLayout({
           <button 
             onClick={onSave}
             disabled={isSaving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium text-[#AAA69D] hover:bg-[#191919] transition-colors border border-[#2A2824] cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-[#A69C87] hover:text-white hover:bg-white/[0.05] transition-all border border-[#2A2317] cursor-pointer"
           >
             {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D4AF37]" /> : <Save className="w-3.5 h-3.5 text-[#D4AF37]" />}
-            <span>{isSaving ? 'Zapisywanie...' : 'Zapisz'}</span>
+            <span>{isSaving ? 'Zapis...' : 'Zapisz'}</span>
           </button>
           
           <button 
             onClick={() => onTabChange('export')}
-            className="luxury-btn-primary px-4 py-1.5 rounded-lg text-xs font-bold uppercase cursor-pointer"
+            className="luxury-btn-primary px-4 py-1.5 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer shadow-[0_4px_20px_rgba(212,175,55,0.35)]"
           >
             Eksportuj
           </button>
@@ -397,10 +418,12 @@ export function StudioLayout({
       </header>
 
       {/* Top Header - Mobile / Tablet */}
-      <header className="lg:hidden h-14 border-b border-[#2A2824] bg-[#121212] flex items-center justify-between px-3 shrink-0 z-40">
+      <header className="lg:hidden h-14 border-b border-[#26221A] bg-[#0E0D0B]/90 backdrop-blur-xl flex items-center justify-between px-3.5 shrink-0 z-40 shadow-lg">
         <div className="flex items-center gap-2 text-[#D4AF37]">
-          <Film className="w-4 h-4 shrink-0" />
-          <span className="font-serif-luxury font-bold text-xs tracking-wider truncate max-w-[100px]">{projectName}</span>
+          <div className="w-7 h-7 rounded-lg bg-[#241D0E] border border-[#D4AF37]/40 flex items-center justify-center">
+            <Film className="w-3.5 h-3.5 text-[#FDE047]" />
+          </div>
+          <span className="font-cinematic font-bold text-xs tracking-wider truncate max-w-[120px] text-transparent bg-clip-text bg-gradient-to-r from-[#FFF0A0] to-[#D4AF37]">{projectName}</span>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -459,7 +482,7 @@ export function StudioLayout({
           <button 
             onClick={onSave}
             disabled={isSaving}
-            className="flex items-center gap-1 px-2 py-1 rounded-full bg-[#191919] border border-[#2A2824] text-[11px] font-medium text-[#AAA69D]"
+            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#18150F] border border-[#2D261A] text-[11px] font-medium text-[#C8BDA6]"
           >
             {isSaving ? <Loader2 className="w-3 h-3 animate-spin text-[#D4AF37]" /> : <Save className="w-3 h-3 text-[#D4AF37]" />}
             <span>{isSaving ? '...' : 'Zapisz'}</span>
@@ -477,17 +500,17 @@ export function StudioLayout({
       </main>
 
       {/* Bottom Navigation - Mobile Only (Scrollable horizontally on narrow screens) */}
-      <nav className="lg:hidden min-h-16 h-[calc(4rem+env(safe-area-inset-bottom))] border-t border-[#2A2824] bg-[#121212] flex items-start pt-2 justify-start sm:justify-around px-2 shrink-0 z-40 pb-safe overflow-x-auto touch-pan-x no-scrollbar">
+      <nav className="lg:hidden min-h-16 h-[calc(4rem+env(safe-area-inset-bottom))] border-t border-[#26221A] bg-[#0E0D0B]/95 backdrop-blur-2xl flex items-start pt-2 justify-start sm:justify-around px-2 shrink-0 z-40 pb-safe overflow-x-auto touch-pan-x no-scrollbar">
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
             className={`flex flex-col items-center justify-center min-w-[56px] px-2 h-12 gap-1 transition-colors shrink-0 ${
-              activeTab === tab.id ? 'text-[#D4AF37]' : 'text-[#AAA69D]'
+              activeTab === tab.id ? 'text-[#FDE047]' : 'text-[#8C8370]'
             }`}
           >
-            <tab.icon className={`w-4 h-4 ${activeTab === tab.id ? 'fill-[#D4AF37]/10' : ''}`} />
-            <span className="text-[9px] font-medium whitespace-nowrap">{tab.label}</span>
+            <tab.icon className={`w-4 h-4 ${activeTab === tab.id ? 'fill-[#D4AF37]/20 drop-shadow-[0_0_8px_rgba(212,175,55,0.4)]' : ''}`} />
+            <span className="text-[9.5px] font-semibold whitespace-nowrap tracking-wide">{tab.label}</span>
           </button>
         ))}
       </nav>

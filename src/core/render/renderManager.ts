@@ -106,6 +106,52 @@ class RenderManager {
       this.notify();
       return result;
     } catch (err: any) {
+      // If WebCodecs failed and it was not an intentional user cancellation,
+      // attempt fallback to localBrowserRenderProvider (MediaRecorder)
+      const wasAborted = this.activeAbortController?.signal.aborted;
+      if (!wasAborted && provider.id === 'webcodecs_mp4_muxer' && localBrowserRenderProvider.isSupported()) {
+        console.warn('[renderManager] WebCodecs napotkał problem. Uruchamiam silnik awaryjny (MediaRecorder)...', err);
+        this.activeProviderId = localBrowserRenderProvider.id;
+        this.activeProgress = {
+          stage: 'preparing',
+          percent: 5,
+          currentFrame: 0,
+          totalFrames: 100,
+          fps: options.fps,
+          targetFps: options.fps,
+          statusMessage: 'Przełączanie na silnik kompatybilny (MediaRecorder)...',
+          diagnostics: {
+            fallbackReason: err?.message || String(err),
+            primaryProvider: 'webcodecs_mp4_muxer'
+          }
+        };
+        this.notify();
+
+        try {
+          const fallbackResult = await localBrowserRenderProvider.render(
+            project,
+            options,
+            (progress) => {
+              this.activeProgress = progress;
+              this.notify();
+              onProgress(progress);
+            },
+            this.activeAbortController?.signal
+          );
+
+          this.activeProgress = {
+            ...(this.activeProgress || {}),
+            stage: 'completed',
+            percent: 100,
+            statusMessage: 'Renderowanie ukończone sukcesem (silnik kompatybilny)!'
+          } as RenderProgress;
+          this.notify();
+          return fallbackResult;
+        } catch (fallbackErr: any) {
+          err = fallbackErr;
+        }
+      }
+
       this.activeProgress = {
         ...(this.activeProgress || {}),
         stage: 'error',

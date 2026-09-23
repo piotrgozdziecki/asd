@@ -146,12 +146,13 @@ export function PreviewView({ project }: PreviewViewProps) {
   const getMediaUrl = useCallback((clip: MediaClip): string | null => {
     if (!clip) return null;
     if (clip.objectUrl && (clip.objectUrl.startsWith('blob:') || clip.objectUrl.startsWith('http:') || clip.objectUrl.startsWith('https:') || clip.objectUrl.startsWith('data:'))) {
-      return clip.objectUrl;
+      if (!clip.objectUrl.startsWith('blob:') || urlRegistry.isAlive(clip.objectUrl)) {
+        return clip.objectUrl;
+      }
     }
     if (clip.file) {
       try {
         const url = urlRegistry.create(clip.file);
-        createdUrlsRef.current.add(url);
         clip.objectUrl = url;
         return url;
       } catch (err) {
@@ -240,12 +241,6 @@ export function PreviewView({ project }: PreviewViewProps) {
         } catch (e) {}
       });
       audioPool.clear();
-
-      createdUrls.forEach(url => {
-        try {
-          urlRegistry.release(url);
-        } catch (e) {}
-      });
       createdUrls.clear();
     };
   }, []);

@@ -347,7 +347,7 @@ export function StudioApp() {
           {/* TAB 6: Export & Drive */}
           {activeTab === 'export' && (
             <div className="h-full rounded-2xl overflow-hidden shadow-2xl border border-[#2A2824]">
-              <ExportView project={project} />
+              <ExportView project={project} onUpdateProject={pushState} />
             </div>
           )}
         </div>

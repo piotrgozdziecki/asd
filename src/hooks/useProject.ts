@@ -39,8 +39,12 @@ export function useProject(initialState?: ProjectState) {
     let modified = false;
     const updatedClips = await Promise.all(
       proj.mediaLibrary.map(async clip => {
-        // If clip has file and valid objectUrl, keep it
-        if (clip.file && clip.objectUrl && !clip.objectUrl.startsWith('blob:null')) {
+        // If clip has file and valid objectUrl, keep it (or recreate URL if expired)
+        if (clip.file) {
+          if (!clip.objectUrl || !urlRegistry.isAlive(clip.objectUrl)) {
+            clip.objectUrl = urlRegistry.create(clip.file);
+            modified = true;
+          }
           return clip;
         }
 
@@ -48,8 +52,12 @@ export function useProject(initialState?: ProjectState) {
         try {
           const blob = await localIndexedDB.getMediaBlob(clip.id);
           if (blob && blob.size > 0) {
-            const freshUrl = urlRegistry.create(blob);
-            const restoredFile = new File([blob], clip.name || 'video.mp4', { type: blob.type || 'video/mp4' });
+            const mime = (blob.type && (blob.type.startsWith('video/') || blob.type.startsWith('image/'))) 
+              ? blob.type 
+              : (clip.type === 'image' ? 'image/jpeg' : 'video/mp4');
+            const typedBlob = new Blob([blob], { type: mime });
+            const restoredFile = new File([typedBlob], clip.name || (clip.type === 'image' ? 'photo.jpg' : 'video.mp4'), { type: mime });
+            const freshUrl = urlRegistry.create(restoredFile);
             modified = true;
             return {
               ...clip,

@@ -55,6 +55,8 @@ export interface RenderProgress {
     failureStage?: 'initialization' | 'loading' | 'decoding' | 'rendering' | 'encoding_video' | 'encoding_audio' | 'muxing' | 'validating';
     failureDetails?: any;
     browserInfo?: string;
+    fallbackReason?: string;
+    [key: string]: any;
   };
 }
 
