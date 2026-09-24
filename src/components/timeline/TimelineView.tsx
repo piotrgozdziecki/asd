@@ -157,22 +157,21 @@ export function TimelineView({
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>, id: string, type: 'video' | 'audio' | 'text', startTime: number) => {
     e.dataTransfer.setData('text/plain', id);
     e.dataTransfer.effectAllowed = 'move';
-    
     const dragImg = new Image();
     dragImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
     e.dataTransfer.setDragImage(dragImg, 0, 0);
-
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    
-    setDraggedItem({
-      id,
-      type,
-      startOffset: x,
-      initialTime: startTime
-    });
+    setDraggedItem({ id, type, startOffset: 0, initialTime: startTime });
   };
 
+  // Visual constants for professional look
+  const trackHeight = 80;
+  const itemHeight = 60;
+  const playheadColor = '#FDE047';
+
+  // Memoized styles for performance (Req 26)
+  const timelineStyle = useMemo(() => ({
+    width: `${totalSeconds * pixelsPerSecond}px`
+  }), [totalSeconds, pixelsPerSecond]);
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
   };

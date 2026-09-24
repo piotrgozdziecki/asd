@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { StudioLayout } from './layout/StudioLayout';
+import { ProjectOverviewView } from './project/ProjectOverviewView';
 import { MediaManager } from './media/MediaManager';
-import { EditorView } from './editor/EditorView';
+import { MontageView } from './montage/MontageView';
 import { ExportView } from './export/ExportView';
-import { PreviewView } from './preview/PreviewView';
-import { QuickMontageView } from './quickmontage/QuickMontageView';
-import { ChaptersManager } from './chapters/ChaptersManager';
+import { SettingsDiagnosticsView } from './settings/SettingsDiagnosticsView';
 import { AiAssistantModal } from './ai/AiAssistantModal';
 import { VoiceRecorderModal } from './VoiceRecorderModal';
 import { AiWeddingDirectorModal } from './director/AiWeddingDirectorModal';
@@ -16,15 +15,18 @@ import { useAuth } from '../lib/firebase/AuthContext';
 import { saveProject, loadProject, deleteProjectFromCloud } from '../lib/firebase/api';
 import { onFirestoreConnectionChange, isFirestoreConnected } from '../lib/firebase/config';
 import { useStudioToast } from './common/ToastContext';
+import { probeVideoMetadata } from '../core/media/metadataProber';
+import { urlRegistry } from '../core/media/urlRegistry';
 import type { MediaClip, TimelineItem, AudioTrackItem, TextLayer, WeddingChapter } from '../types/project';
 
 export function StudioApp() {
-  const [activeTab, setActiveTab] = useState<string>('media');
+  const [activeTab, setActiveTab] = useState<string>('project');
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isDirectorModalOpen, setIsDirectorModalOpen] = useState(false);
   const [isHealthPanelOpen, setIsHealthPanelOpen] = useState(false);
   const [isVoiceRecorderOpen, setIsVoiceRecorderOpen] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
+  const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   
   const { 
     project, 
@@ -64,6 +66,7 @@ export function StudioApp() {
   const { user, loading: authLoading, login } = useAuth();
   const [isSaving, setIsSaving] = useState(false);
   const [isDbConnected, setIsDbConnected] = useState(true);
+  const toast = useStudioToast();
 
   // Sync DB connection status
   useEffect(() => {
@@ -73,14 +76,22 @@ export function StudioApp() {
 
   const handleResetProject = useCallback(async () => {
     try {
+      urlRegistry.releaseAll();
       await resetToCleanProject();
       if (user) {
         await deleteProjectFromCloud('main-project');
       }
+      setActiveTab('project');
+      toast.showSuccess("Projekt został zresetowany do stanu początkowego.");
     } catch (err) {
       console.error("Failed to reset project:", err);
     }
-  }, [resetToCleanProject, user]);
+  }, [resetToCleanProject, user, toast]);
+
+  const handleClearCache = useCallback(() => {
+    urlRegistry.releaseAll();
+    toast.showSuccess("Pamięć podręczna została pomyślnie wyczyszczona.");
+  }, [toast]);
 
   // Initial load
   useEffect(() => {
@@ -105,23 +116,20 @@ export function StudioApp() {
     initLoad();
   }, [user, authLoading, hasLoaded]);
 
-  // Global Keyboard Shortcuts
+  // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger when user is typing in input or textarea
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
         return;
       }
 
-      // Ctrl+Z: Undo
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault();
         if (canUndo) undo();
         return;
       }
 
-      // Ctrl+Y or Ctrl+Shift+Z: Redo
       if (((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) || 
           ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'z' || e.key === 'Z'))) {
         e.preventDefault();
@@ -134,8 +142,7 @@ export function StudioApp() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [canUndo, canRedo, undo, redo]);
 
-  const toast = useStudioToast();
-
+  // Save Project
   const handleSave = async () => {
     if (!user) {
       toast.showWarning("Zaloguj się, aby zsynchronizować projekt w chmurze.");
@@ -152,6 +159,111 @@ export function StudioApp() {
       setIsSaving(false);
     }
   };
+
+  // Add files from device
+  const handleAddFiles = useCallback(async (files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    if (fileArray.length === 0) return;
+
+    setIsProcessingFiles(true);
+    const newClips: MediaClip[] = [];
+
+    for (let i = 0; i < fileArray.length; i++) {
+      const file = fileArray[i];
+      try {
+        const meta = await probeVideoMetadata(file);
+        const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const objectUrl = urlRegistry.create(file);
+
+        const clip: MediaClip = {
+          id: clipId,
+          file,
+          objectUrl,
+          type: 'video',
+          name: file.name,
+          duration: meta.duration,
+          width: meta.width,
+          height: meta.height,
+          aspectRatio: meta.aspectRatio,
+          orientation: meta.orientation,
+          fps: meta.fps,
+          hasAudio: meta.hasAudio,
+          size: file.size,
+          thumbnailUrl: meta.thumbnailUrl,
+          category: 'unassigned',
+          status: 'READY',
+          isFavorite: false,
+          tags: [],
+          createdAt: new Date().toISOString()
+        };
+        newClips.push(clip);
+      } catch (e: any) {
+        console.error(`Błąd wczytywania ${file.name}:`, e);
+        toast.showError(`"${file.name}": Ten film nie może zostać przetworzony w tym środowisku (${e.message || 'Nieobsługiwany format'}).`);
+      }
+    }
+
+    if (newClips.length > 0) {
+      // Create sequence timeline items automatically
+      let start = project.timelineItems.length > 0
+        ? project.timelineItems[project.timelineItems.length - 1].timelineStart + project.timelineItems[project.timelineItems.length - 1].duration
+        : 0;
+
+      const newTimelineItems: TimelineItem[] = newClips.map((clip, idx) => {
+        const item: TimelineItem = {
+          id: `ti_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+          clipId: clip.id,
+          trackId: 'v1',
+          sourceStart: 0,
+          sourceEnd: clip.duration,
+          timelineStart: start,
+          duration: clip.duration,
+          speed: 1,
+          volume: 1,
+          fadeIn: 0,
+          fadeOut: 0,
+          muted: false,
+          scale: 1,
+          rotation: 0,
+          fitMode: 'fit'
+        };
+        start += clip.duration;
+        return item;
+      });
+
+      pushState({
+        ...project,
+        mediaLibrary: [...project.mediaLibrary, ...newClips],
+        timelineItems: [...project.timelineItems, ...newTimelineItems]
+      });
+
+      toast.showSuccess(`Pomyślnie dodano ${newClips.length} filmów do projektu.`);
+      setActiveTab('media');
+    }
+
+    setIsProcessingFiles(false);
+  }, [project, pushState, toast]);
+
+  // Resequence timeline clips order
+  const handleMoveTimelineItemOrder = useCallback((fromIndex: number, toIndex: number) => {
+    const sorted = [...project.timelineItems].sort((a, b) => a.timelineStart - b.timelineStart);
+    if (fromIndex < 0 || fromIndex >= sorted.length || toIndex < 0 || toIndex >= sorted.length) return;
+    
+    const [item] = sorted.splice(fromIndex, 1);
+    sorted.splice(toIndex, 0, item);
+
+    let currentStart = 0;
+    const resequenced = sorted.map(i => {
+      const updated = { ...i, timelineStart: currentStart };
+      currentStart += i.duration;
+      return updated;
+    });
+
+    pushState({
+      ...project,
+      timelineItems: resequenced
+    });
+  }, [project, pushState]);
 
   const handleAddToTimeline = (clip: MediaClip, customRange?: { start: number; end: number }) => {
     const lastItem = project.timelineItems[project.timelineItems.length - 1];
@@ -176,11 +288,12 @@ export function StudioApp() {
       muted: false,
       scale: 1,
       rotation: 0,
+      fitMode: 'fit',
       transitionIn: 'cut'
     };
     
     addTimelineItem(newItem);
-    setActiveTab('timeline');
+    setActiveTab('montage');
   };
 
   const handleVoiceoverSave = (audioBlob: Blob, audioUrl: string, durationSeconds: number) => {
@@ -189,7 +302,7 @@ export function StudioApp() {
 
     const newVoiceTrack: AudioTrackItem = {
       id: `vo_${Date.now()}`,
-      name: `Lektor / Przysięga (${durationSeconds}s)`,
+      name: `Lektor / Dźwięk (${durationSeconds}s)`,
       objectUrl: audioUrl,
       duration: Math.max(1, durationSeconds),
       sourceStart: 0,
@@ -201,21 +314,13 @@ export function StudioApp() {
     };
 
     addAudioTrack(newVoiceTrack);
-    setActiveTab('timeline');
+    setActiveTab('montage');
   };
 
   const handleProjectNameChange = (name: string) => {
     pushState({
       ...project,
       name,
-      updatedAt: new Date().toISOString()
-    });
-  };
-
-  const handleUpdateChapters = (chapters: WeddingChapter[]) => {
-    pushState({
-      ...project,
-      chapters,
       updatedAt: new Date().toISOString()
     });
   };
@@ -252,7 +357,7 @@ export function StudioApp() {
       >
         <div className="flex-1 w-full min-h-0 overflow-y-auto overflow-x-hidden relative custom-scrollbar flex flex-col gap-3 p-2 sm:p-4 md:p-6 max-w-full">
           
-          {/* Quick Actions Bar - Director Suite */}
+          {/* Quick Actions Bar */}
           <div className="shrink-0 w-full max-w-full">
             <QuickActionsBar
               project={project}
@@ -273,15 +378,77 @@ export function StudioApp() {
             </div>
           )}
 
-          {/* TAB 1: Media Library */}
+          {/* TAB 1: PROJEKT (Start Screen & Overview) */}
+          {activeTab === 'project' && (
+            <div className="min-h-full h-full px-1 md:px-0">
+              <ProjectOverviewView
+                project={project}
+                onNavigateTab={setActiveTab}
+                onAddFiles={handleAddFiles}
+                onResetProject={handleResetProject}
+                onClearCache={handleClearCache}
+                isProcessing={isProcessingFiles}
+              />
+            </div>
+          )}
+
+          {/* TAB 2: MEDIA (Media Library & Clip Cards) */}
           {activeTab === 'media' && (
             <div className="min-h-full h-full px-1 md:px-0">
               <MediaManager 
                 clips={project.mediaLibrary}
-                onAddClips={addMediaClips}
+                onAddClips={(newClips) => {
+                  addMediaClips(newClips);
+                  // Ensure timeline is also populated
+                  const start = project.timelineItems.length > 0
+                    ? project.timelineItems[project.timelineItems.length - 1].timelineStart + project.timelineItems[project.timelineItems.length - 1].duration
+                    : 0;
+                  const newItems: TimelineItem[] = newClips.map((c, i) => ({
+                    id: `ti_${Date.now()}_${i}`,
+                    clipId: c.id,
+                    trackId: 'v1',
+                    sourceStart: 0,
+                    sourceEnd: c.duration,
+                    timelineStart: start + (i * c.duration),
+                    duration: c.duration,
+                    speed: 1,
+                    volume: 1,
+                    fadeIn: 0,
+                    fadeOut: 0,
+                    muted: false,
+                    scale: 1,
+                    rotation: 0,
+                    fitMode: 'fit'
+                  }));
+                  pushState({
+                    ...project,
+                    mediaLibrary: [...project.mediaLibrary, ...newClips],
+                    timelineItems: [...project.timelineItems, ...newItems]
+                  });
+                }}
                 onUpdateClip={updateMediaClip}
-                onRemoveClip={removeMediaClip}
+                onRemoveClip={(id) => {
+                  removeMediaClip(id);
+                  // Also remove from timeline
+                  const filteredTimeline = project.timelineItems.filter(i => i.clipId !== id);
+                  let t = 0;
+                  const resequenced = filteredTimeline.map(item => {
+                    const up = { ...item, timelineStart: t };
+                    t += item.duration;
+                    return up;
+                  });
+                  pushState({
+                    ...project,
+                    mediaLibrary: project.mediaLibrary.filter(c => c.id !== id),
+                    timelineItems: resequenced
+                  });
+                }}
                 onAddToTimeline={handleAddToTimeline}
+                onEditClip={(clip) => {
+                  handleAddToTimeline(clip);
+                  setActiveTab('montage');
+                }}
+                onMoveClipOrder={handleMoveTimelineItemOrder}
                 onRelinkSource={relinkMediaSource}
                 onVerifyDurations={verifyAndRepairAllClipDurations}
                 onClearFavorites={clearFavorites}
@@ -291,69 +458,42 @@ export function StudioApp() {
             </div>
           )}
 
-          {/* TAB 2: Quick Montage & Stitching Studio */}
-          {activeTab === 'quick' && (
-            <div className="h-full rounded-2xl overflow-hidden shadow-2xl border border-[#2A2824] mt-14 md:mt-0">
-              <QuickMontageView 
-                project={project}
-                onApplyMontage={(newState, targetTab = 'preview') => {
-                  pushState(newState);
-                  setActiveTab(targetTab);
-                }}
-                onSwitchToProMode={() => setActiveTab('timeline')}
-              />
-            </div>
-          )}
-          
-          {/* TAB 3: Pro Timeline Editor */}
-          {activeTab === 'timeline' && (
-            <div className="h-full rounded-2xl overflow-hidden shadow-2xl border border-[#2A2824] mt-14 md:mt-0">
-              <EditorView 
+          {/* TAB 3: MONTAŻ (Pro Montage & Sequence Editor) */}
+          {activeTab === 'montage' && (
+            <div className="h-full rounded-2xl overflow-hidden shadow-2xl border border-[#2A2824]">
+              <MontageView 
                 project={project}
                 onUpdateTimelineItem={updateTimelineItem}
-                onSplitTimelineItem={splitTimelineItem}
-                onDuplicateTimelineItem={duplicateTimelineItem}
                 onDeleteTimelineItem={removeTimelineItem}
-                onMoveTimelineItem={moveTimelineItem}
-                onAddMarker={addMarker}
-                onDeleteMarker={removeMarker}
-                onAddTextLayer={addTextLayer}
-                onUpdateTextLayer={updateTextLayer}
-                onDeleteTextLayer={removeTextLayer}
-                onAddAudioTrack={addAudioTrack}
-                onUpdateAudioTrack={updateAudioTrack}
-                onDeleteAudioTrack={removeAudioTrack}
+                onMoveTimelineItemOrder={handleMoveTimelineItemOrder}
+                onNavigateTab={setActiveTab}
               />
             </div>
           )}
 
-          {/* TAB 4: Wedding Chapters */}
-          {activeTab === 'chapters' && (
-            <div className="h-full rounded-2xl overflow-hidden shadow-2xl border border-[#2A2824] mt-14 md:mt-0 max-w-4xl mx-auto">
-              <ChaptersManager 
-                project={project}
-                onUpdateChapters={handleUpdateChapters}
-                onAddTextLayer={addTextLayer}
-                onSeek={(time) => {
-                  setActiveTab('preview');
-                }}
-              />
-            </div>
-          )}
-
-          {/* TAB 5: Preview */}
-          {activeTab === 'preview' && (
-            <div className="h-full rounded-2xl overflow-hidden shadow-2xl border border-[#2A2824] mt-14 md:mt-0">
-              <PreviewView project={project} />
-            </div>
-          )}
-
-          {/* TAB 6: Export & Drive */}
+          {/* TAB 4: EKSPORT (Final ISO MP4 Export) */}
           {activeTab === 'export' && (
             <div className="h-full rounded-2xl overflow-hidden shadow-2xl border border-[#2A2824]">
-              <ExportView project={project} onUpdateProject={pushState} />
+              <ExportView 
+                project={project} 
+                onUpdateProject={pushState}
+                onNavigateTab={setActiveTab}
+              />
             </div>
           )}
+
+          {/* TAB 5: USTAWIENIA & DIAGNOSTYKA */}
+          {activeTab === 'settings' && (
+            <div className="h-full rounded-2xl overflow-hidden shadow-2xl border border-[#2A2824]">
+              <SettingsDiagnosticsView 
+                project={project}
+                onUpdateProject={pushState}
+                onClearCache={handleClearCache}
+                onResetProject={handleResetProject}
+              />
+            </div>
+          )}
+
         </div>
       </StudioLayout>
       
@@ -364,7 +504,7 @@ export function StudioApp() {
         onClose={() => setIsAiModalOpen(false)}
         onApplyUpdatedProject={(updated) => {
           pushState(updated);
-          setActiveTab('preview');
+          setActiveTab('montage');
         }}
       />
 
@@ -375,7 +515,7 @@ export function StudioApp() {
         project={project}
         onApplyProject={(updated) => {
           pushState(updated);
-          setActiveTab('timeline');
+          setActiveTab('montage');
         }}
         onUpdateClipAnalysis={(clipId, analysis) => {
           updateMediaClip(clipId, { analysis });
@@ -387,7 +527,7 @@ export function StudioApp() {
         isOpen={isVoiceRecorderOpen}
         onClose={() => setIsVoiceRecorderOpen(false)}
         onSaveVoiceover={handleVoiceoverSave}
-        defaultText="Ślubuję Ci miłość, wierność i uczciwość małżeńską, oraz że Cię nie opuszczę aż do śmierci..."
+        defaultText="Głos lektora i narracja do filmu..."
       />
     </>
   );

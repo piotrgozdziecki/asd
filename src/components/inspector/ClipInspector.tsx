@@ -147,6 +147,58 @@ export function ClipInspector({ item, media, onUpdate, onSplit }: ClipInspectorP
           </div>
         </div>
 
+        {/* Framing & Normalization (Req 10: FIT, FILL, ORIGINAL) */}
+        <div className="space-y-3 pt-4 border-t border-[#2A2824]">
+          <h4 className="text-xs font-bold text-[#D4AF37] uppercase flex items-center gap-1.5 font-mono">
+            <Move className="w-3.5 h-3.5" /> Kadr i Dopasowanie
+          </h4>
+          
+          <div className="space-y-2">
+            <label className="text-[10px] font-mono text-[#AAA69D] uppercase">Tryb Kadrowania</label>
+            <div className="grid grid-cols-3 gap-1.5 bg-[#181818] p-1 rounded-lg border border-[#2E2E2E]">
+              {(['fit', 'fill', 'original'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => handleUpdate('fitMode', mode)}
+                  className={`py-1.5 text-xs font-semibold rounded-md transition-all uppercase cursor-pointer ${
+                    (item.fitMode || 'fit') === mode
+                      ? 'bg-[#D4AF37] text-black shadow-md'
+                      : 'text-[#888] hover:text-white'
+                  }`}
+                >
+                  {mode === 'fit' ? 'FIT' : (mode === 'fill' ? 'FILL' : 'ORIG')}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-[#777] font-mono">
+              {(item.fitMode || 'fit') === 'fit' && 'Cały obraz widoczny bez przycinania.'}
+              {item.fitMode === 'fill' && 'Wypełnia cały kadr (może przyciąć krawędzie).'}
+              {item.fitMode === 'original' && 'Oryginalne proporcje bez skalowania.'}
+            </p>
+          </div>
+
+          <div className="space-y-1.5 pt-1">
+            <label className="text-[10px] font-mono text-[#AAA69D] uppercase">Obrót (Stopnie)</label>
+            <div className="grid grid-cols-4 gap-1.5 bg-[#181818] p-1 rounded-lg border border-[#2E2E2E]">
+              {[0, 90, 180, 270].map((deg) => (
+                <button
+                  key={deg}
+                  type="button"
+                  onClick={() => handleUpdate('rotation', deg)}
+                  className={`py-1 text-xs font-mono font-bold rounded-md transition-all cursor-pointer ${
+                    (item.rotation || 0) === deg
+                      ? 'bg-[#D4AF37] text-black'
+                      : 'text-[#888] hover:text-white'
+                  }`}
+                >
+                  {deg}°
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
         {/* Transitions (Basic) */}
         <div className="space-y-3 pt-4 border-t border-[#2A2824]">
           <h4 className="text-xs font-bold text-[#D4AF37] uppercase flex items-center gap-1.5">

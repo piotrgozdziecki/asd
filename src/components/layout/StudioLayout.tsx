@@ -22,7 +22,9 @@ import {
   Check,
   RotateCcw,
   ShieldCheck,
-  Zap
+  Zap,
+  Scissors,
+  Settings
 } from 'lucide-react';
 import { useAuth } from '../../lib/firebase/AuthContext';
 import { PWAInstallButton } from '../common/PWAInstallButton';
@@ -184,12 +186,11 @@ export function StudioLayout({
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
 
   const tabs = [
-    { id: 'media', label: 'Filmy', icon: Layout },
-    { id: 'quick', label: 'Szybki Montaż', icon: Zap },
-    { id: 'timeline', label: 'Edytor', icon: Film },
-    { id: 'chapters', label: 'Plan', icon: Bookmark },
-    { id: 'preview', label: 'Podgląd', icon: Search },
-    { id: 'export', label: 'Zapisz', icon: Download },
+    { id: 'project', label: 'Projekt', icon: Layout },
+    { id: 'media', label: 'Media', icon: Film },
+    { id: 'montage', label: 'Montaż', icon: Scissors },
+    { id: 'export', label: 'Eksport', icon: Download },
+    { id: 'settings', label: 'Ustawienia', icon: Settings },
   ];
 
   const handleFinishNameEdit = () => {
@@ -497,18 +498,18 @@ export function StudioLayout({
         {children}
       </main>
 
-      {/* Bottom Navigation - Mobile Only (Even 6-col grid fitting all screens without scrolling right) */}
-      <nav className="lg:hidden min-h-16 h-[calc(4rem+env(safe-area-inset-bottom))] border-t border-[#26221A] bg-[#0E0D0B]/95 backdrop-blur-2xl grid grid-cols-6 items-center px-1 shrink-0 z-40 pb-safe w-full max-w-full">
+      {/* Bottom Navigation - Mobile Only (Even 5-col grid for the 5 main sections with 44px+ touch targets) */}
+      <nav className="lg:hidden min-h-16 h-[calc(4rem+env(safe-area-inset-bottom))] border-t border-[#26221A] bg-[#0E0D0B]/95 backdrop-blur-2xl grid grid-cols-5 items-center px-1 shrink-0 z-40 pb-safe w-full max-w-full">
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
-            className={`flex flex-col items-center justify-center py-1.5 px-0.5 h-12 gap-0.5 transition-colors w-full min-w-0 ${
+            className={`flex flex-col items-center justify-center py-2 px-1 h-14 gap-1 transition-colors w-full min-w-0 min-h-[44px] cursor-pointer ${
               activeTab === tab.id ? 'text-[#FDE047]' : 'text-[#8C8370]'
             }`}
           >
             <tab.icon className={`w-4 h-4 shrink-0 ${activeTab === tab.id ? 'fill-[#D4AF37]/20 drop-shadow-[0_0_8px_rgba(212,175,55,0.4)]' : ''}`} />
-            <span className="text-[9px] font-semibold truncate max-w-full text-center tracking-tight">{tab.label}</span>
+            <span className="text-[10px] font-semibold truncate max-w-full text-center tracking-tight">{tab.label}</span>
           </button>
         ))}
       </nav>

@@ -198,42 +198,94 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
 
     // 4. Setup VideoEncoder
     failureStage = 'encoding_video';
-    // Select H.264 profile - Main profile is usually safe, but let's ensure compatibility
-    let avcCodec = 'avc1.4D401F'; // Main Profile Level 3.1
-    if (options.resolution === '1080p') avcCodec = 'avc1.4D4028'; // Main Level 4.0
-    if (options.resolution === '4k') avcCodec = 'avc1.640033'; // High Level 5.1
-
     const defaultBitrate = width >= 3840 ? 40000 : (width >= 1920 ? 12000 : 5000);
-    const videoConfig: any = {
-      codec: avcCodec,
-      width,
-      height,
-      bitrate: (options.bitrateKbps || defaultBitrate) * 1000,
-      framerate: fps,
-      latencyMode: 'quality' as const, // We don't need real-time latency
-      hardwareAcceleration: 'prefer-hardware' as const,
-      avc: { format: 'avc' as const }
-    };
+    const targetBitrate = (options.bitrateKbps || defaultBitrate) * 1000;
+
+    const candidateCodecs = [
+      'avc1.420028',
+      'avc1.42001f',
+      'avc1.42E028',
+      'avc1.4D4028',
+      'avc1.4D401F'
+    ];
+
+    let videoConfig: any = null;
+
+    const probeScratchCanvas = document.createElement('canvas');
+    probeScratchCanvas.width = 16;
+    probeScratchCanvas.height = 16;
+
+    if (typeof (window as any).VideoEncoder.isConfigSupported === 'function') {
+      for (const accel of ['no-preference', 'prefer-software', 'prefer-hardware']) {
+        for (const codec of candidateCodecs) {
+          try {
+            const testConfig = {
+              codec,
+              width,
+              height,
+              bitrate: targetBitrate,
+              framerate: fps,
+              hardwareAcceleration: accel,
+              avc: { format: 'avc' as const }
+            };
+            const support = await (window as any).VideoEncoder.isConfigSupported(testConfig);
+            if (support && support.supported) {
+              const fullCandidate = {
+                ...(support.config || testConfig),
+                avc: { format: 'avc' as const }
+              };
+
+              // Quick live probe to verify hardware/software encoder doesn't reject frame 0
+              let probeOk = false;
+              try {
+                const probeEnc = new (window as any).VideoEncoder({
+                  output: () => {},
+                  error: () => {}
+                });
+                probeEnc.configure(fullCandidate);
+                if (probeEnc.state === 'configured') {
+                  const probeFrame = new (window as any).VideoFrame(probeScratchCanvas, {
+                    timestamp: 0,
+                    duration: 33333
+                  });
+                  probeEnc.encode(probeFrame, { keyFrame: true });
+                  probeFrame.close();
+                  await probeEnc.flush();
+                  if (probeEnc.state !== 'closed') {
+                    probeOk = true;
+                  }
+                }
+                if (probeEnc.state !== 'closed') probeEnc.close();
+              } catch {
+                probeOk = false;
+              }
+
+              if (probeOk) {
+                videoConfig = fullCandidate;
+                break;
+              }
+            }
+          } catch {}
+        }
+        if (videoConfig) break;
+      }
+    }
+
+    if (!videoConfig) {
+      videoConfig = {
+        codec: 'avc1.420028',
+        width,
+        height,
+        bitrate: targetBitrate,
+        framerate: fps,
+        hardwareAcceleration: 'no-preference',
+        avc: { format: 'avc' as const }
+      };
+    }
 
     let encoderError: any = null;
     let videoChunksProduced = 0;
     let audioChunksProduced = 0;
-
-    // STAGE 2 — source loading & configuration validation
-    try {
-      const support = await (window as any).VideoEncoder.isConfigSupported(videoConfig);
-      if (!support.supported) {
-        console.warn('Config not supported with hardware acceleration, trying software fallback...', videoConfig);
-        const softwareConfig = { ...videoConfig, hardwareAcceleration: 'prefer-software' as const };
-        const softwareSupport = await (window as any).VideoEncoder.isConfigSupported(softwareConfig);
-        if (!softwareSupport.supported) {
-          throw new Error(`VideoEncoder nie obsługuje żądanej konfiguracji: ${avcCodec} ${width}x${height}`);
-        }
-        videoConfig.hardwareAcceleration = 'prefer-software';
-      }
-    } catch (e: any) {
-      console.error('VideoEncoder config check failed:', e);
-    }
 
     videoEncoder = new (window as any).VideoEncoder({
       output: (chunk: any, meta: any) => {
@@ -682,9 +734,17 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
           duration: Math.round(frameIntervalSec * 1_000_000)
         });
 
-        const isKeyFrame = frameIndex % (fps * 2) === 0;
-        videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
-        videoFrame.close(); // IMMEDIATE CLEANUP
+        try {
+          if (videoEncoder.state !== 'configured') {
+            throw new Error(encoderError?.message || `VideoEncoder nie jest gotowy (stan: ${videoEncoder.state})`);
+          }
+          const isKeyFrame = frameIndex % (fps * 2) === 0;
+          videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
+        } catch (encErr: any) {
+          throw new Error(encoderError?.message || encErr.message || 'Błąd kodowania klatki wideo.');
+        } finally {
+          videoFrame.close();
+        }
         framesProcessed++;
         heartbeat(); // Crucial: progress heartbeat on EVERY completed frame
 

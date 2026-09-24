@@ -25,7 +25,9 @@ import {
   Layers,
   ShieldAlert,
   Image as ImageIcon,
-  Music
+  Music,
+  Play,
+  X
 } from 'lucide-react';
 import type { MediaClip, ClipCategory } from '../../types/project';
 import { GoogleDriveModal, GoogleDriveIcon } from '../GoogleDriveModal';
@@ -46,6 +48,8 @@ interface MediaManagerProps {
   onClearFavorites?: () => void;
   onClearAllMedia?: () => void;
   onResetProject?: () => void;
+  onEditClip?: (clip: MediaClip) => void;
+  onMoveClipOrder?: (fromIndex: number, toIndex: number) => void;
   externalFilterTab?: string;
   onFilterTabChange?: (tab: any) => void;
 }
@@ -61,6 +65,8 @@ export function MediaManager({
   onClearFavorites,
   onClearAllMedia,
   onResetProject,
+  onEditClip,
+  onMoveClipOrder,
   externalFilterTab,
   onFilterTabChange
 }: MediaManagerProps) {
@@ -85,6 +91,7 @@ export function MediaManager({
   const [isGroupedBySimilarity, setIsGroupedBySimilarity] = useState<boolean>(false);
   const [isConfirmClearAllOpen, setIsConfirmClearAllOpen] = useState(false);
   const [isConfirmBatchDeleteOpen, setIsConfirmBatchDeleteOpen] = useState(false);
+  const [previewingClip, setPreviewingClip] = useState<MediaClip | null>(null);
   const toast = useStudioToast();
 
   // Sync with externalFilterTab if provided
@@ -1128,7 +1135,7 @@ export function MediaManager({
                 )}
 
                 <div className="grid grid-cols-1 min-[480px]:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
-                  {group.clips.map(clip => {
+                  {group.clips.map((clip, clipIndex) => {
                     const isMissing = clip.status === 'missing' || (!clip.objectUrl && !clip.file && !clip.driveFileId);
                     const isVertical = clip.orientation === 'portrait';
                     const isSelected = selectedIds.has(clip.id);
@@ -1138,7 +1145,23 @@ export function MediaManager({
                     return (
                       <div 
                         key={clip.id} 
-                        className={`atelier-card rounded-2xl overflow-hidden group relative flex flex-col transition-all hover:scale-[1.02] duration-300 ${
+                        draggable={Boolean(onMoveClipOrder)}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', String(clipIndex));
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = 'move';
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const fromIdx = Number(e.dataTransfer.getData('text/plain'));
+                          if (!isNaN(fromIdx) && fromIdx !== clipIndex && onMoveClipOrder) {
+                            onMoveClipOrder(fromIdx, clipIndex);
+                          }
+                        }}
+                        className={`atelier-card rounded-2xl overflow-hidden group relative flex flex-col transition-all hover:scale-[1.01] duration-200 cursor-grab active:cursor-grabbing ${
                           isSelected
                             ? 'border-[#FDE047] ring-2 ring-[#D4AF37]/60 shadow-[0_0_20px_rgba(212,175,55,0.35)]'
                             : isMissing 
@@ -1148,13 +1171,17 @@ export function MediaManager({
                             : 'hover:border-[#D4AF37]/70 hover:shadow-[0_10px_30px_rgba(0,0,0,0.8),0_0_20px_rgba(212,175,55,0.2)]'
                         }`}
                       >
-                        {/* Thumbnail Container */}
-                        <div className="relative aspect-video bg-black overflow-hidden flex items-center justify-center">
+                        {/* Thumbnail Container with Click to Preview */}
+                        <div 
+                          onClick={() => setPreviewingClip(clip)}
+                          className="relative aspect-video bg-black overflow-hidden flex items-center justify-center cursor-pointer group/thumb"
+                          title="Kliknij, aby otworzyć podgląd wideo"
+                        >
                           {clip.thumbnailUrl ? (
                             <img 
                               src={clip.thumbnailUrl} 
                               alt={clip.name} 
-                              className="w-full h-full object-cover" 
+                              className="w-full h-full object-cover transition-transform group-hover/thumb:scale-105" 
                               loading="lazy"
                             />
                           ) : (
@@ -1171,21 +1198,33 @@ export function MediaManager({
                           
                           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/40 opacity-80" />
                           
-                          {/* Selection Checkbox */}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleSelectClip(clip.id);
-                            }}
-                            className={`absolute top-2 left-2 z-20 p-1 rounded backdrop-blur-md transition-colors cursor-pointer ${
-                              isSelected 
-                                ? 'bg-[#D4AF37] text-black shadow-md' 
-                                : 'bg-black/60 text-white hover:bg-black/90'
-                            }`}
-                            title={isSelected ? "Odznacz ujęcie" : "Zaznacz ujęcie do akcji masowej"}
-                          >
-                            {isSelected ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5 opacity-70" />}
-                          </button>
+                          {/* Play overlay on hover */}
+                          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity bg-black/40">
+                            <div className="w-10 h-10 rounded-full bg-[#D4AF37] text-black flex items-center justify-center shadow-lg transform scale-90 group-hover/thumb:scale-100 transition-transform">
+                              <Play className="w-5 h-5 fill-black ml-0.5" />
+                            </div>
+                          </div>
+                          
+                          {/* Selection Checkbox & Clip Number */}
+                          <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleSelectClip(clip.id);
+                              }}
+                              className={`p-1 rounded backdrop-blur-md transition-colors cursor-pointer ${
+                                isSelected 
+                                  ? 'bg-[#D4AF37] text-black shadow-md' 
+                                  : 'bg-black/60 text-white hover:bg-black/90'
+                              }`}
+                              title={isSelected ? "Odznacz ujęcie" : "Zaznacz ujęcie do akcji masowej"}
+                            >
+                              {isSelected ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5 opacity-70" />}
+                            </button>
+                            <span className="px-1.5 py-0.5 rounded bg-black/80 border border-white/10 text-[10px] font-mono font-bold text-white">
+                              #{clipIndex + 1}
+                            </span>
+                          </div>
 
                           {/* Action buttons on hover */}
                           <div className="absolute top-2 right-2 flex flex-col gap-1 z-10">
@@ -1347,36 +1386,49 @@ export function MediaManager({
                             </div>
                           )}
                           
-                          {/* Stage Category Selector & Remove */}
-                          <div className="flex items-center justify-between pt-2 border-t border-[#2A2824]">
-                            <select 
-                              value={clip.category}
-                              onChange={(e) => onUpdateClip(clip.id, { category: e.target.value as any })}
-                              className="bg-[#181818] border border-[#2A2824] rounded px-1.5 py-0.5 text-[10px] text-[#AAA69D] focus:outline-none focus:border-[#D4AF37] cursor-pointer hover:text-white max-w-[125px] truncate"
+                          {/* Actions Bar (Req 19: EDYTUJ, PRZESUŃ, USUŃ) */}
+                          <div className="flex items-center justify-between pt-2 border-t border-[#2A2824] gap-1.5">
+                            <button
+                              onClick={() => {
+                                onAddToTimeline(clip);
+                                if (onEditClip) onEditClip(clip);
+                              }}
+                              className="px-2.5 py-1 bg-[#222] hover:bg-[#D4AF37] text-white hover:text-black font-semibold text-[10px] rounded-md transition-all uppercase flex items-center gap-1 cursor-pointer font-mono"
+                              title="Edytuj i przytnij ujęcie na osi montażu"
                             >
-                              <option value="unassigned">Kategoria...</option>
-                              <option value="opening">I. Wstęp</option>
-                              <option value="preparations">I. Przygotowania</option>
-                              <option value="ceremony">II. Ceremonia</option>
-                              <option value="congratulations">III. Życzenia</option>
-                              <option value="first_dance">IV. Pierwszy taniec</option>
-                              <option value="toast">V. Toasty</option>
-                              <option value="party">VI. Zabawa</option>
-                              <option value="guests">VII. Goście</option>
-                              <option value="family">VIII. Rodzina</option>
-                              <option value="cake">IX. Tort</option>
-                              <option value="climax">IX. Oczepiny</option>
-                              <option value="ending">X. Zakończenie</option>
-                              <option value="outdoor">Plener</option>
-                            </select>
-                            
-                            <button 
-                              onClick={() => onRemoveClip(clip.id)}
-                              className="text-[#666] hover:text-red-400 transition-colors p-1 cursor-pointer"
-                              title="Usuń materiał z biblioteki"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              EDYTUJ
                             </button>
+
+                            <div className="flex items-center gap-1">
+                              {onMoveClipOrder && (
+                                <>
+                                  <button
+                                    onClick={() => onMoveClipOrder(clipIndex, Math.max(0, clipIndex - 1))}
+                                    disabled={clipIndex === 0}
+                                    className="px-1.5 py-1 bg-[#181818] hover:bg-[#252525] disabled:opacity-30 text-white rounded text-[10px] font-mono cursor-pointer"
+                                    title="Przesuń ujęcie wcześniej"
+                                  >
+                                    ▲
+                                  </button>
+                                  <button
+                                    onClick={() => onMoveClipOrder(clipIndex, Math.min(clips.length - 1, clipIndex + 1))}
+                                    disabled={clipIndex >= clips.length - 1}
+                                    className="px-1.5 py-1 bg-[#181818] hover:bg-[#252525] disabled:opacity-30 text-white rounded text-[10px] font-mono cursor-pointer"
+                                    title="Przesuń ujęcie później"
+                                  >
+                                    ▼
+                                  </button>
+                                </>
+                              )}
+
+                              <button 
+                                onClick={() => onRemoveClip(clip.id)}
+                                className="text-[#666] hover:text-red-400 transition-colors p-1 cursor-pointer ml-1"
+                                title="Usuń materiał z biblioteki"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1412,6 +1464,60 @@ export function MediaManager({
         onConfirm={executeBatchRemove}
         onCancel={() => setIsConfirmBatchDeleteOpen(false)}
       />
+
+      {/* Media Quick Preview Modal */}
+      {previewingClip && (
+        <div 
+          onClick={() => setPreviewingClip(null)}
+          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#121212] border border-[#333] rounded-2xl overflow-hidden shadow-2xl max-w-3xl w-full flex flex-col"
+          >
+            <div className="flex items-center justify-between p-4 border-b border-[#222]">
+              <div className="truncate mr-4">
+                <h3 className="text-sm font-bold text-white truncate">{previewingClip.name}</h3>
+                <p className="text-xs text-[#888] font-mono">
+                  {previewingClip.width}×{previewingClip.height} • {previewingClip.duration.toFixed(1)}s • {previewingClip.fps || 30} FPS
+                </p>
+              </div>
+              <button
+                onClick={() => setPreviewingClip(null)}
+                className="p-1.5 rounded-lg bg-[#222] hover:bg-[#333] text-[#AAA] hover:text-white transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="relative aspect-video bg-black flex items-center justify-center">
+              <video
+                src={previewingClip.objectUrl || (previewingClip.file ? URL.createObjectURL(previewingClip.file) : '')}
+                controls
+                autoPlay
+                playsInline
+                className="w-full h-full object-contain"
+              />
+            </div>
+
+            <div className="p-4 bg-[#181818] flex items-center justify-between">
+              <span className="text-xs font-mono text-[#888]">
+                {previewingClip.hasAudio ? 'Dźwięk: Dostępny (Stereo)' : 'Dźwięk: Brak'}
+              </span>
+              <button
+                onClick={() => {
+                  onAddToTimeline(previewingClip);
+                  setPreviewingClip(null);
+                  if (onEditClip) onEditClip(previewingClip);
+                }}
+                className="px-4 py-2 bg-[#D4AF37] hover:bg-[#E5C158] text-black font-bold text-xs rounded-xl cursor-pointer"
+              >
+                EDYTUJ NA OSI MONTAŻU
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

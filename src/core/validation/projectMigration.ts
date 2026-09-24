@@ -49,19 +49,7 @@ export function createInitialProject(id: string = `proj_${Date.now()}`): Project
     tracks: [...DEFAULT_TRACKS],
     timelineItems: [],
     audioTracks: [],
-    textLayers: [
-      {
-        id: `t_intro_${Date.now()}`,
-        text: '14.09.2024',
-        type: 'title',
-        style: 'cinematic',
-        timelineStart: 2,
-        duration: 5,
-        position: { x: 0.5, y: 0.6 },
-        fontSize: 24,
-        color: '#F7F4EE'
-      }
-    ],
+    textLayers: [],
     markers: [],
     chapters: [...DEFAULT_CHAPTERS],
     versions: []

@@ -1,5 +1,6 @@
 import { ClipOrientation } from '../../types/project';
 import { urlRegistry } from './urlRegistry';
+import { thumbnailCache } from './thumbnailCache';
 
 export interface ProbedMediaMetadata {
   duration: number;
@@ -144,70 +145,22 @@ export async function probeVideoMetadata(fileOrBlobOrUrl: Blob | File | string, 
         ? (video as any).mozHasAudio 
         : Boolean((video as any).audioTracks?.length || (video as any).webkitAudioDecodedByteCount !== 0);
 
-      // Seek to 10% (or 0.5s) to capture non-black frame
-      const seekTarget = Math.min(Math.max(0.5, duration * 0.1), Math.max(0.1, duration - 0.1));
-
-      video.onseeked = () => {
-        try {
-          const canvas = document.createElement('canvas');
-          const thumbWidth = 320;
-          const thumbHeight = Math.round((height / width) * thumbWidth);
-          canvas.width = thumbWidth;
-          canvas.height = thumbHeight;
-
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(video, 0, 0, thumbWidth, thumbHeight);
-            canvas.toBlob((thumbBlob) => {
-              let thumbUrl: string | undefined = undefined;
-              if (thumbBlob) {
-                thumbUrl = urlRegistry.create(thumbBlob);
-              }
-              cleanup();
-              resolve({
-                duration,
-                width,
-                height,
-                orientation,
-                aspectRatio,
-                fps: 30,
-                hasAudio,
-                thumbnailUrl: thumbUrl,
-                thumbnailBlob: thumbBlob || undefined,
-                size: fileSize
-              });
-            }, 'image/jpeg', 0.7);
-          } else {
-            cleanup();
-            resolve({
-              duration,
-              width,
-              height,
-              orientation,
-              aspectRatio,
-              fps: 30,
-              hasAudio,
-              size: fileSize
-            });
-          }
-        } catch (e) {
-          cleanup();
-          resolve({
-            duration,
-            width,
-            height,
-            orientation,
-            aspectRatio,
-            fps: 30,
-            hasAudio,
-            size: fileSize
-          });
-        }
-      };
-
-      // Trigger seek
+      // Capture high-quality non-black thumbnail via intelligent cache
       try {
-        video.currentTime = seekTarget;
+        const thumbResult = await thumbnailCache.captureOptimalThumbnail(video, duration);
+        cleanup();
+        resolve({
+          duration,
+          width,
+          height,
+          orientation,
+          aspectRatio,
+          fps: 30,
+          hasAudio,
+          thumbnailUrl: thumbResult?.url,
+          thumbnailBlob: thumbResult?.blob,
+          size: fileSize
+        });
       } catch (e) {
         cleanup();
         resolve({
