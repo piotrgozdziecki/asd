@@ -259,7 +259,7 @@ export function QuickMontageView({
     });
 
     if (sequenceClips.length === 0) {
-      alert("Brak zaznaczonych ujęć w aktywnych etapach scenariusza. Przypisz i zaznacz ujęcia przed sklejeniem filmu.");
+      showNotification("Brak zaznaczonych ujęć w aktywnych etapach scenariusza. Przypisz i zaznacz ujęcia przed sklejeniem filmu.");
       return;
     }
 
@@ -472,24 +472,24 @@ export function QuickMontageView({
     <div className="flex-1 flex flex-col h-full bg-[#0A0A0A] text-[#F2EFE8] overflow-hidden">
       
       {/* Top Banner & Notification Bar */}
-      <div className="border-b border-[#2A2824] bg-gradient-to-r from-[#141310] via-[#101010] to-[#141310] px-6 py-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shrink-0">
+      <div className="border-b border-[#2A2824] bg-gradient-to-r from-[#141310] via-[#101010] to-[#141310] px-4 sm:px-6 py-3.5 sm:py-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 sm:gap-4 shrink-0">
         <div className="space-y-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[#D4AF37] font-mono text-[10px] font-bold uppercase tracking-wider">
               <Sparkles className="w-3 h-3" /> Reżyser Scenariusza & Sklejanie
             </span>
-            <span className="text-xs text-[#777]">•</span>
+            <span className="text-xs text-[#777] hidden sm:inline">•</span>
             <span className="text-xs text-[#AAA69D]">
               {selectedClipIds.length} ujęć w {activeStagesCount} etapach wesela
             </span>
           </div>
-          <h2 className="font-serif-luxury text-xl md:text-2xl font-bold text-white tracking-wide flex items-center gap-2">
+          <h2 className="font-serif-luxury text-lg sm:text-xl md:text-2xl font-bold text-white tracking-wide flex items-center gap-2">
             <span>Kompletny Montaż Filmu Ślubnego</span>
           </h2>
         </div>
 
         {/* Step Navigation Tabs */}
-        <div className="flex items-center gap-1.5 bg-[#141414] p-1 rounded-xl border border-[#2A2824] text-xs">
+        <div className="flex items-center gap-1.5 bg-[#141414] p-1 rounded-xl border border-[#2A2824] text-xs overflow-x-auto max-w-full no-scrollbar">
           <button
             onClick={() => setActiveStep('definition')}
             className={`px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer flex items-center gap-1.5 ${

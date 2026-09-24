@@ -212,6 +212,176 @@ export class IndexedDBStorageProvider implements IStorageProvider {
     });
   }
 
+  async saveMasterRenderBlob(
+    projectId: string, 
+    blob: Blob, 
+    meta: {
+      fileName: string;
+      duration: number;
+      width: number;
+      height: number;
+      sizeBytes: number;
+      mimeType: string;
+      resolution?: string;
+      aspectRatio?: string;
+      verifiedPlayable: boolean;
+      diagnostics?: any;
+    }
+  ): Promise<void> {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORES.PREVIEW_CACHE, 'readwrite');
+        const store = tx.objectStore(STORES.PREVIEW_CACHE);
+        const key = `master_render_${projectId || 'default'}`;
+        const record = {
+          key,
+          blob,
+          meta,
+          createdAt: Date.now()
+        };
+        const req = store.put(record);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async getMasterRenderBlob(projectId: string): Promise<{ blob: Blob; meta: any; createdAt: number } | null> {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORES.PREVIEW_CACHE, 'readonly');
+        const store = tx.objectStore(STORES.PREVIEW_CACHE);
+        const key = `master_render_${projectId || 'default'}`;
+        const req = store.get(key);
+        req.onsuccess = () => {
+          if (!req.result || !req.result.blob) {
+            resolve(null);
+          } else {
+            resolve({
+              blob: req.result.blob,
+              meta: req.result.meta || {},
+              createdAt: req.result.createdAt || Date.now()
+            });
+          }
+        };
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async clearMasterRenderBlob(projectId: string): Promise<void> {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORES.PREVIEW_CACHE, 'readwrite');
+        const store = tx.objectStore(STORES.PREVIEW_CACHE);
+        const key = `master_render_${projectId || 'default'}`;
+        const req = store.delete(key);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async saveRenderCheckpoint(checkpoint: {
+    projectId: string;
+    currentFrame: number;
+    totalFrames: number;
+    percent: number;
+    stage: string;
+    options: any;
+    statusMessage?: string;
+    timestamp: number;
+  }): Promise<void> {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORES.PREVIEW_CACHE, 'readwrite');
+        const store = tx.objectStore(STORES.PREVIEW_CACHE);
+        const key = `render_checkpoint_${checkpoint.projectId || 'default'}`;
+        const req = store.put({
+          key,
+          checkpoint,
+          createdAt: checkpoint.timestamp || Date.now()
+        });
+        req.onsuccess = () => {
+          // Also save lightweight reference in localStorage for instant sync
+          try {
+            localStorage.setItem('wedding_studio_active_render_checkpoint', JSON.stringify(checkpoint));
+          } catch (e) {}
+          resolve();
+        };
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async getRenderCheckpoint(projectId: string): Promise<any | null> {
+    // Try localStorage first for synchronous fast read
+    try {
+      const local = localStorage.getItem('wedding_studio_active_render_checkpoint');
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (parsed && (parsed.projectId === projectId || !projectId)) {
+          // Check if checkpoint is not stale (less than 2 hours old)
+          if (Date.now() - (parsed.timestamp || 0) < 7200000) {
+            return parsed;
+          }
+        }
+      }
+    } catch (e) {}
+
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORES.PREVIEW_CACHE, 'readonly');
+        const store = tx.objectStore(STORES.PREVIEW_CACHE);
+        const key = `render_checkpoint_${projectId || 'default'}`;
+        const req = store.get(key);
+        req.onsuccess = () => {
+          if (req.result && req.result.checkpoint) {
+            resolve(req.result.checkpoint);
+          } else {
+            resolve(null);
+          }
+        };
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async clearRenderCheckpoint(projectId: string): Promise<void> {
+    try {
+      localStorage.removeItem('wedding_studio_active_render_checkpoint');
+    } catch (e) {}
+
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORES.PREVIEW_CACHE, 'readwrite');
+        const store = tx.objectStore(STORES.PREVIEW_CACHE);
+        const key = `render_checkpoint_${projectId || 'default'}`;
+        const req = store.delete(key);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
   async getStorageStats(): Promise<StorageUsageStats> {
     let quotaBytes = 1024 * 1024 * 1024; // Default 1GB estimate
     let usedBytes = 0;

@@ -230,7 +230,7 @@ export function EditorView({
       </div>
 
       {/* Right: Inspector */}
-      <div className={`md:block ${selectedItemId ? 'block absolute md:relative inset-0 md:inset-auto z-50 bg-[#090909]/90 md:bg-transparent backdrop-blur-md md:backdrop-blur-none' : 'hidden'}`}>
+      <div className={`md:block ${selectedItemId ? 'block fixed md:relative inset-0 md:inset-auto z-50 bg-[#090909]/95 md:bg-transparent backdrop-blur-md md:backdrop-blur-none max-w-full overflow-y-auto' : 'hidden'}`}>
         
         {/* Mobile close button */}
         {selectedItemId && (

@@ -265,13 +265,13 @@ export function TimelineView({
     <div className="flex flex-col h-full bg-[#0D0D0D] border-t border-[#2A2824] overflow-hidden select-none">
       
       {/* Timeline Toolbar */}
-      <div className="h-11 border-b border-[#2A2824] flex items-center px-4 justify-between shrink-0 bg-[#0A0A0A] text-xs">
+      <div className="h-11 border-b border-[#2A2824] flex items-center px-2 sm:px-4 justify-between shrink-0 bg-[#0A0A0A] text-xs overflow-x-auto no-scrollbar touch-pan-x w-full max-w-full gap-2">
         
         {/* Left: Timecode and Quick Tools */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-[#161514] px-2.5 py-1 rounded-lg border border-[#2A2824]">
-            <span className="text-[10px] font-mono text-[#777]">POZYCJA:</span>
-            <span className="font-mono font-bold text-[#D4AF37]">{formatTimecode(currentTime)}</span>
+        <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 bg-[#161514] px-2 sm:px-2.5 py-1 rounded-lg border border-[#2A2824]">
+            <span className="text-[10px] font-mono text-[#777] hidden xs:inline">POZ:</span>
+            <span className="font-mono font-bold text-[#D4AF37] text-[11px] sm:text-xs">{formatTimecode(currentTime)}</span>
           </div>
 
           <div className="h-4 w-px bg-[#2A2824]" />
@@ -280,53 +280,53 @@ export function TimelineView({
           <button
             onClick={handleSplitAtPlayhead}
             disabled={!selectedItem || currentTime <= selectedItem.timelineStart || currentTime >= (selectedItem.timelineStart + selectedItem.duration)}
-            className="px-2 py-1 rounded bg-[#181818] hover:bg-[#252525] text-white disabled:opacity-30 disabled:hover:bg-[#181818] flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
+            className="p-1.5 sm:px-2 sm:py-1 rounded bg-[#181818] hover:bg-[#252525] text-white disabled:opacity-30 disabled:hover:bg-[#181818] flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
             title="Rozetnij zaznaczony klip w miejscu kursora (S)"
           >
             <Scissors className="w-3.5 h-3.5 text-[#D4AF37]" />
-            <span className="text-[11px]">Rozetnij</span>
+            <span className="text-[11px] hidden sm:inline">Rozetnij</span>
           </button>
 
           {/* Duplicate Tool */}
           <button
             onClick={() => selectedItem && onDuplicateItem && onDuplicateItem(selectedItem.id)}
             disabled={!selectedItem || !onDuplicateItem}
-            className="px-2 py-1 rounded bg-[#181818] hover:bg-[#252525] text-white disabled:opacity-30 disabled:hover:bg-[#181818] flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
+            className="p-1.5 sm:px-2 sm:py-1 rounded bg-[#181818] hover:bg-[#252525] text-white disabled:opacity-30 disabled:hover:bg-[#181818] flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
             title="Zduplikuj zaznaczony klip"
           >
             <Copy className="w-3.5 h-3.5 text-blue-400" />
-            <span className="text-[11px]">Duplikuj</span>
+            <span className="text-[11px] hidden sm:inline">Duplikuj</span>
           </button>
 
           {/* Delete Tool */}
           <button
             onClick={() => selectedItemId && onDeleteItem && onDeleteItem(selectedItemId)}
             disabled={!selectedItemId || !onDeleteItem}
-            className="px-2 py-1 rounded bg-[#181818] hover:bg-red-950/40 text-stone-300 hover:text-red-400 disabled:opacity-30 disabled:hover:bg-[#181818] flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
+            className="p-1.5 sm:px-2 sm:py-1 rounded bg-[#181818] hover:bg-red-950/40 text-stone-300 hover:text-red-400 disabled:opacity-30 disabled:hover:bg-[#181818] flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
             title="Usuń zaznaczony element z osi czasu (Delete)"
           >
             <Trash2 className="w-3.5 h-3.5 text-red-400" />
-            <span className="text-[11px]">Usuń</span>
+            <span className="text-[11px] hidden sm:inline">Usuń</span>
           </button>
 
           {/* Marker Tool */}
           <button
             onClick={handleAddMarkerAtPlayhead}
-            className="px-2 py-1 rounded bg-[#181818] hover:bg-[#252525] text-white flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
+            className="p-1.5 sm:px-2 sm:py-1 rounded bg-[#181818] hover:bg-[#252525] text-white flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
             title="Wstaw znacznik w miejscu kursora"
           >
             <Bookmark className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-[11px]">Znacznik</span>
+            <span className="text-[11px] hidden sm:inline">Znacznik</span>
           </button>
         </div>
 
         {/* Right: Snapping & Zoom Controls */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           
           {/* Snapping toggle */}
           <button
             onClick={() => setIsSnappingEnabled(!isSnappingEnabled)}
-            className={`px-2 py-1 rounded flex items-center gap-1 text-[11px] font-mono border transition-colors cursor-pointer ${
+            className={`p-1.5 sm:px-2 sm:py-1 rounded flex items-center gap-1 text-[11px] font-mono border transition-colors cursor-pointer ${
               isSnappingEnabled 
                 ? 'bg-[#D4AF37]/20 border-[#D4AF37]/50 text-[#D4AF37]' 
                 : 'bg-[#181818] border-[#2A2824] text-[#777]'
@@ -334,7 +334,7 @@ export function TimelineView({
             title="Włącz/wyłącz przyciąganie magnetyczne do krawędzi klipów i znaczników"
           >
             <Magnet className="w-3 h-3" />
-            <span>Magnes</span>
+            <span className="hidden sm:inline">Magnes</span>
           </button>
 
           <div className="h-4 w-px bg-[#2A2824]" />
@@ -348,8 +348,8 @@ export function TimelineView({
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
 
-          <span className="text-[10px] font-mono text-[#777] min-w-[32px] text-center">
-            {pixelsPerSecond}px
+          <span className="text-[10px] font-mono text-[#777] min-w-[28px] sm:min-w-[32px] text-center">
+            {pixelsPerSecond}p
           </span>
 
           <button
@@ -376,11 +376,11 @@ export function TimelineView({
                 setPixelsPerSecond(Math.round(calculatedPps));
               }
             }}
-            className="px-2 py-1 rounded bg-[#1C1A14] hover:bg-[#D4AF37]/20 text-[#D4AF37] border border-[#D4AF37]/40 flex items-center gap-1 text-[10px] font-mono font-bold cursor-pointer transition-colors"
+            className="px-1.5 sm:px-2 py-1 rounded bg-[#1C1A14] hover:bg-[#D4AF37]/20 text-[#D4AF37] border border-[#D4AF37]/40 flex items-center gap-1 text-[10px] font-mono font-bold cursor-pointer transition-colors"
             title="Autodopasowanie: zmieść cały film na ekranie"
           >
             <Maximize2 className="w-3 h-3" />
-            <span>Dopasuj</span>
+            <span>Auto</span>
           </button>
         </div>
 

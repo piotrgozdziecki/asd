@@ -2,6 +2,7 @@ import { ProjectState } from '../../types/project';
 import { IRenderProvider, RenderOptions, RenderProgress, RenderResult } from './renderTypes';
 import { localBrowserRenderProvider } from './localRenderProvider';
 import { webCodecsMp4RenderProvider } from './webCodecsMp4Provider';
+import { renderPersistence } from './renderPersistence';
 
 class RenderManager {
   private providers: Map<string, IRenderProvider> = new Map();
@@ -9,6 +10,8 @@ class RenderManager {
   private activeProgress: RenderProgress | null = null;
   private activeOptions: RenderOptions | null = null;
   private activeProviderId: string | null = null;
+  private activeProjectId: string | null = null;
+  private lastCheckpointTime: number = 0;
   private listeners: Set<(state: { progress: RenderProgress | null; options: RenderOptions | null; providerId: string | null; isRendering: boolean }) => void> = new Set();
 
   constructor() {
@@ -74,6 +77,14 @@ class RenderManager {
     const provider = this.getProvider(providerId);
     this.activeOptions = options;
     this.activeProviderId = provider.id;
+    this.activeProjectId = project.id || 'default';
+    this.lastCheckpointTime = Date.now();
+
+    // 1. Enable beforeunload protection so closing/refreshing page asks user confirmation
+    renderPersistence.enableUnloadProtection(() => 
+      `Trwa renderowanie Twojego filmu ślubnego (${this.activeProgress?.percent || 0}%). Opuszczenie lub odświeżenie strony przerwie eksport!`
+    );
+
     this.activeProgress = {
       stage: 'preparing',
       percent: 0,
@@ -85,6 +96,18 @@ class RenderManager {
     };
     this.notify();
 
+    // Save initial checkpoint
+    renderPersistence.saveCheckpoint({
+      projectId: this.activeProjectId,
+      currentFrame: 0,
+      totalFrames: 100,
+      percent: 0,
+      stage: 'preparing',
+      options,
+      statusMessage: 'Rozpoczęcie eksportu',
+      timestamp: Date.now()
+    });
+
     try {
       const result = await provider.render(
         project,
@@ -93,6 +116,22 @@ class RenderManager {
           this.activeProgress = progress;
           this.notify();
           onProgress(progress);
+
+          // Periodically save checkpoint (every ~2.5s) to allow seamless recovery on reload
+          const now = Date.now();
+          if (now - this.lastCheckpointTime > 2500) {
+            this.lastCheckpointTime = now;
+            renderPersistence.saveCheckpoint({
+              projectId: this.activeProjectId!,
+              currentFrame: progress.currentFrame,
+              totalFrames: progress.totalFrames,
+              percent: progress.percent,
+              stage: progress.stage,
+              options,
+              statusMessage: progress.statusMessage,
+              timestamp: now
+            });
+          }
         },
         this.activeAbortController.signal
       );
@@ -104,6 +143,11 @@ class RenderManager {
         statusMessage: 'Renderowanie ukończone sukcesem!'
       } as RenderProgress;
       this.notify();
+
+      // Clear in-progress checkpoint and persist master movie blob to IndexedDB
+      await renderPersistence.clearCheckpoint(this.activeProjectId);
+      await renderPersistence.saveCompletedMovie(this.activeProjectId, result, options);
+
       return result;
     } catch (err: any) {
       // If WebCodecs failed and it was not an intentional user cancellation,
@@ -146,6 +190,13 @@ class RenderManager {
             statusMessage: 'Renderowanie ukończone sukcesem (silnik kompatybilny)!'
           } as RenderProgress;
           this.notify();
+
+          // Save completed movie on fallback success
+          if (this.activeProjectId) {
+            await renderPersistence.clearCheckpoint(this.activeProjectId);
+            await renderPersistence.saveCompletedMovie(this.activeProjectId, fallbackResult, options);
+          }
+
           return fallbackResult;
         } catch (fallbackErr: any) {
           err = fallbackErr;
@@ -165,6 +216,7 @@ class RenderManager {
       throw err;
     } finally {
       this.activeAbortController = null;
+      renderPersistence.disableUnloadProtection();
       this.notify();
     }
   }
@@ -173,6 +225,10 @@ class RenderManager {
     if (this.activeAbortController) {
       this.activeAbortController.abort();
       this.activeAbortController = null;
+      renderPersistence.disableUnloadProtection();
+      if (this.activeProjectId) {
+        renderPersistence.clearCheckpoint(this.activeProjectId);
+      }
       
       this.activeProgress = {
         ...(this.activeProgress || {}),
@@ -189,3 +245,4 @@ class RenderManager {
 }
 
 export const renderManager = new RenderManager();
+

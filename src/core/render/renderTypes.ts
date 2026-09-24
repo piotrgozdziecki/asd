@@ -7,6 +7,8 @@ export interface RenderOptions {
   aspectRatio?: '16:9' | '9:16';
   bitrateKbps?: number;
   watermark?: boolean;
+  useProxyMedia?: boolean;
+  startFromFrame?: number;
 }
 
 export type RenderStage = 
@@ -42,6 +44,10 @@ export interface RenderProgress {
   fps: number; // Current rendering speed
   targetFps: number; // Desired output FPS
   statusMessage: string;
+  etaSeconds?: number; // Estimated seconds remaining
+  elapsedSeconds?: number; // Elapsed seconds so far
+  estimatedFinishTime?: string; // e.g. 15:42:10
+  speedMultiplier?: number; // Render speed ratio (e.g. 2.4x real-time)
   statistics?: RenderStatistics;
   diagnostics?: {
     lastClipName?: string;

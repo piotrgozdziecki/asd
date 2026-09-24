@@ -211,6 +211,7 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
     let renderedTime = 0;
     const frameDurationSec = 1 / fps;
     const frameDurationMs = 1000 / fps;
+    const renderStartTime = Date.now();
 
     try {
       for (let i = 0; i < sortedItems.length; i++) {
@@ -222,19 +223,31 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
         const clip = clipMap.get(item.clipId);
         if (!clip) continue;
 
-        const clipSourceUrl = await resolveClipMediaUrl(clip);
+        const clipSourceUrl = (options.useProxyMedia && clip.proxyUrl)
+          ? clip.proxyUrl
+          : await resolveClipMediaUrl(clip);
         if (!clipSourceUrl) {
           console.warn(`[localRender] Brak źródła dla klipu: "${clip.name}"`);
           continue;
         }
 
+        const elapsed = (Date.now() - renderStartTime) / 1000;
+        const currentFrame = Math.round(renderedTime * fps);
+        const percent = Math.min(95, Math.round((renderedTime / totalDuration) * 90) + 5);
+        const fraction = Math.max(0.01, percent / 100);
+        const etaSeconds = Math.max(0, Math.ceil((elapsed / fraction) * (1 - fraction)));
+        const elapsedSeconds = Math.round(elapsed);
+
         onProgress({
           stage: 'rendering',
-          percent: Math.min(95, Math.round((renderedTime / totalDuration) * 90) + 5),
-          currentFrame: Math.round(renderedTime * fps),
+          percent,
+          currentFrame,
           totalFrames,
           fps,
           targetFps: fps,
+          etaSeconds,
+          elapsedSeconds,
+          speedMultiplier: 1.0,
           statusMessage: `STAGE 4: Renderowanie ujęcia ${i + 1}/${sortedItems.length}: "${clip.name}"`,
           diagnostics: { lastClipName: clip.name, stageDetails: 'STAGE 4: frame-by-frame rendering' }
         });
@@ -589,65 +602,147 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
     const targetAspect = targetWidth / targetHeight;
     const fitMode = item.fitMode || 'fit';
 
-    // Clear background
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, targetWidth, targetHeight);
-
-    // Calculate fade in / fade out alpha
+    // 1. Calculate Transition and Fade Opacity & White Flash Glow
     let alpha = 1;
-    if (currentTimeInClip !== undefined) {
-      if (item.fadeIn && item.fadeIn > 0 && currentTimeInClip < item.fadeIn) {
-        alpha = Math.min(alpha, Math.max(0, currentTimeInClip / item.fadeIn));
-      }
-      const timeLeft = item.duration - currentTimeInClip;
-      if (item.fadeOut && item.fadeOut > 0 && timeLeft < item.fadeOut) {
-        alpha = Math.min(alpha, Math.max(0, timeLeft / item.fadeOut));
+    let whiteFlashAlpha = 0;
+
+    const transInType = item.transitionIn || (item.fadeIn ? 'fade' : 'cut');
+    const transInDuration = item.transitionDuration || item.fadeIn || 0;
+    if (currentTimeInClip !== undefined && transInDuration > 0 && currentTimeInClip < transInDuration) {
+      const progress = Math.max(0, Math.min(1, currentTimeInClip / transInDuration));
+      if (transInType === 'fade' || transInType === 'dissolve') {
+        alpha *= progress;
+      } else if (transInType === 'dip_black') {
+        alpha *= (progress * progress);
+      } else if (transInType === 'dip_white') {
+        whiteFlashAlpha = Math.max(whiteFlashAlpha, (1 - progress) * 0.95);
       }
     }
 
-    // Standard Fit / Fill (Original Colors - no color modifications or artificial overlays)
-    ctx.save();
-    ctx.globalAlpha = alpha;
+    if (currentTimeInClip !== undefined) {
+      const timeLeft = item.duration - currentTimeInClip;
+      const transOutType = item.transitionOut || (item.fadeOut ? 'fade' : 'cut');
+      const transOutDuration = item.transitionDuration || item.fadeOut || 0;
+      if (transOutDuration > 0 && timeLeft < transOutDuration) {
+        const progress = Math.max(0, Math.min(1, timeLeft / transOutDuration));
+        if (transOutType === 'fade' || transOutType === 'dissolve') {
+          alpha *= progress;
+        } else if (transOutType === 'dip_black') {
+          alpha *= (progress * progress);
+        } else if (transOutType === 'dip_white') {
+          whiteFlashAlpha = Math.max(whiteFlashAlpha, (1 - progress) * 0.95);
+        }
+      }
+    }
 
-    let renderW = targetWidth;
-    let renderH = targetHeight;
-    let renderX = 0;
-    let renderY = 0;
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+
+    // 2. Intelligent Kadrowanie (Aspect Ratio, Fit & Ambient Fill)
+    const aspectDiff = Math.abs(sourceAspect - targetAspect);
+
+    // If there is significant aspect ratio mismatch (e.g. 9:16 vertical on 16:9 widescreen)
+    // and fitMode is 'fit', render professional Wedding Studio Ambient Fill in background
+    if (fitMode === 'fit' && aspectDiff > 0.35) {
+      ctx.save();
+      ctx.filter = 'blur(28px) brightness(0.48) contrast(1.1)';
+      let bgW = targetWidth;
+      let bgH = targetHeight;
+      if (sourceAspect > targetAspect) {
+        bgH = targetHeight;
+        bgW = targetHeight * sourceAspect;
+      } else {
+        bgW = targetWidth;
+        bgH = targetWidth / sourceAspect;
+      }
+      const bgX = (targetWidth - bgW) / 2;
+      const bgY = (targetHeight - bgH) / 2;
+      ctx.drawImage(media, bgX, bgY, bgW, bgH);
+      ctx.restore();
+    }
+
+    // Determine Foreground Crop / Scale Bounds
+    let sX = 0, sY = 0, sW = sourceWidth, sH = sourceHeight;
+    let renderW = targetWidth, renderH = targetHeight;
+    let renderX = 0, renderY = 0;
+
+    if (item.crop) {
+      sX = Math.max(0, Math.min(sourceWidth, item.crop.x * sourceWidth));
+      sY = Math.max(0, Math.min(sourceHeight, item.crop.y * sourceHeight));
+      sW = Math.max(1, Math.min(sourceWidth - sX, item.crop.width * sourceWidth));
+      sH = Math.max(1, Math.min(sourceHeight - sY, item.crop.height * sourceHeight));
+    }
+
+    const effectiveAspect = sW / sH;
 
     if (fitMode === 'fit') {
-      if (sourceAspect > targetAspect) {
+      if (effectiveAspect > targetAspect) {
         renderW = targetWidth;
-        renderH = targetWidth / sourceAspect;
+        renderH = targetWidth / effectiveAspect;
         renderY = (targetHeight - renderH) / 2;
       } else {
         renderH = targetHeight;
-        renderW = targetHeight * sourceAspect;
+        renderW = targetHeight * effectiveAspect;
         renderX = (targetWidth - renderW) / 2;
       }
     } else if (fitMode === 'fill') {
-      if (sourceAspect > targetAspect) {
+      if (effectiveAspect > targetAspect) {
         renderH = targetHeight;
-        renderW = targetHeight * sourceAspect;
+        renderW = targetHeight * effectiveAspect;
         renderX = (targetWidth - renderW) / 2;
       } else {
         renderW = targetWidth;
-        renderH = targetWidth / sourceAspect;
-        renderY = (targetHeight - renderH) / 2;
+        renderH = targetWidth / effectiveAspect;
+        // Top-biased crop (0.32 from top instead of 0.5 center) to keep bride/groom faces in frame
+        renderY = (targetHeight - renderH) * 0.32;
       }
+    } else if (fitMode === 'original') {
+      renderW = sW;
+      renderH = sH;
+      renderX = (targetWidth - renderW) / 2;
+      renderY = (targetHeight - renderH) / 2;
     }
 
-    // Apply scale and rotation if any
+    // 3. Apply Custom Transforms: Scale, Position, Rotation
+    const centerX = renderX + renderW / 2;
+    const centerY = renderY + renderH / 2;
+
+    ctx.translate(centerX, centerY);
+
+    if (item.rotation) {
+      ctx.rotate((item.rotation * Math.PI) / 180);
+    }
+
+    if (item.position) {
+      const offsetX = item.position.x * targetWidth * 0.5;
+      const offsetY = item.position.y * targetHeight * 0.5;
+      ctx.translate(offsetX, offsetY);
+    }
+
     if (item.scale && item.scale !== 1) {
-      const centerX = renderX + renderW / 2;
-      const centerY = renderY + renderH / 2;
-      renderW *= item.scale;
-      renderH *= item.scale;
-      renderX = centerX - renderW / 2;
-      renderY = centerY - renderH / 2;
+      ctx.scale(item.scale, item.scale);
     }
 
-    ctx.drawImage(media, renderX, renderY, renderW, renderH);
+    // Shadow for fitted foreground on ambient background
+    if (fitMode === 'fit' && aspectDiff > 0.35) {
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
+      ctx.shadowBlur = 24;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 4;
+    }
+
+    ctx.drawImage(media, sX, sY, sW, sH, -renderW / 2, -renderH / 2, renderW, renderH);
     ctx.restore();
+
+    // 4. Dip to White Flash effect
+    if (whiteFlashAlpha > 0) {
+      ctx.save();
+      ctx.fillStyle = `rgba(255, 252, 240, ${whiteFlashAlpha})`;
+      ctx.fillRect(0, 0, targetWidth, targetHeight);
+      ctx.restore();
+    }
   }
 
   /**

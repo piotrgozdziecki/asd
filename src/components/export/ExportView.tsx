@@ -13,7 +13,11 @@ import {
   ExternalLink,
   Sparkles,
   Layers,
-  StopCircle
+  StopCircle,
+  Zap,
+  Clock,
+  Timer,
+  Gauge
 } from 'lucide-react';
 import type { ProjectState } from '../../types/project';
 import { useAuth } from '../../lib/firebase/AuthContext';
@@ -24,6 +28,7 @@ import { sanitizeProjectForStorage } from '../../core/validation/projectMigratio
 import { safeStringify } from '../../lib/safeJson';
 import { renderManager } from '../../core/render/renderManager';
 import { RenderProgress, RenderResult } from '../../core/render/renderTypes';
+import { renderPersistence, RenderCheckpointData } from '../../core/render/renderPersistence';
 
 interface ExportViewProps {
   project: ProjectState;
@@ -38,6 +43,8 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
   const [renderProgress, setRenderProgress] = useState<RenderProgress | null>(null);
   const [renderResult, setRenderResult] = useState<RenderResult | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [interruptedCheckpoint, setInterruptedCheckpoint] = useState<RenderCheckpointData | null>(null);
+  const [isRestoredFromStorage, setIsRestoredFromStorage] = useState(false);
   const [verificationResult, setVerificationResult] = useState<{
     expectedDuration: number;
     actualDuration: number;
@@ -51,6 +58,7 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
   const [fps, setFps] = useState<number>(30);
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
   const [selectedProviderId, setSelectedProviderId] = useState<string>('webcodecs_mp4_muxer');
+  const [useProxyMedia, setUseProxyMedia] = useState<boolean>(false);
   const [showDiagnostics, setShowDiagnostics] = useState<boolean>(false);
 
   // Google Drive states
@@ -98,6 +106,52 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
 
   const isReadyToExport = healthCheck.canExport && runtimeReport?.exportReadiness.status !== 'FIX BEFORE EXPORT' && project.timelineItems.length > 0;
   const [fixSuccessMessage, setFixSuccessMessage] = useState<string | null>(null);
+
+  // Restore previous completed render or interrupted checkpoint on mount (resilience against refresh)
+  useEffect(() => {
+    let isMounted = true;
+    const projId = project.id || 'default';
+
+    // 1. Check for interrupted checkpoint (e.g. user refreshed browser during rendering)
+    renderPersistence.getInterruptedCheckpoint(projId).then(cp => {
+      if (isMounted && cp) {
+        setInterruptedCheckpoint(cp);
+        if (cp.options?.resolution) setResolution(cp.options.resolution);
+        if (cp.options?.fps) setFps(cp.options.fps);
+        if (cp.options?.aspectRatio) setAspectRatio(cp.options.aspectRatio);
+      }
+    });
+
+    // 2. If no active render result, check if completed master movie was saved to storage
+    if (!renderResult) {
+      renderPersistence.restoreCompletedMovie(projId).then(restored => {
+        if (isMounted && restored) {
+          setRenderResult(restored);
+          setIsRestoredFromStorage(true);
+        }
+      });
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [project.id]);
+
+  const handleClearSavedMovie = async () => {
+    const projId = project.id || 'default';
+    await renderPersistence.clearCompletedMovie(projId);
+    if (renderResult?.blobUrl) {
+      URL.revokeObjectURL(renderResult.blobUrl);
+    }
+    setRenderResult(null);
+    setIsRestoredFromStorage(false);
+  };
+
+  const handleDismissInterruptedCheckpoint = async () => {
+    const projId = project.id || 'default';
+    await renderPersistence.clearCheckpoint(projId);
+    setInterruptedCheckpoint(null);
+  };
 
   const handleAutoFixProject = () => {
     const { updatedProject, fixedCount, fixedItems } = autoFixProjectHealthIssues(project);
@@ -189,6 +243,27 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
     }
   };
 
+  const formatEtaTime = (etaSeconds?: number): string => {
+    if (etaSeconds === undefined || etaSeconds === null) return 'Kalkulacja...';
+    if (etaSeconds <= 0) return 'Kilka sekund...';
+    const mins = Math.floor(etaSeconds / 60);
+    const secs = etaSeconds % 60;
+    if (mins > 0) {
+      return `${mins} min ${secs.toString().padStart(2, '0')} sek`;
+    }
+    return `${secs} sek`;
+  };
+
+  const formatElapsed = (elapsedSec?: number): string => {
+    if (!elapsedSec) return '0 sek';
+    const mins = Math.floor(elapsedSec / 60);
+    const secs = elapsedSec % 60;
+    if (mins > 0) {
+      return `${mins} min ${secs.toString().padStart(2, '0')} sek`;
+    }
+    return `${secs} sek`;
+  };
+
   // 2. VIDEO EXPORT (.mp4)
   const handleStartMovieRender = async (diagnosticMode = false) => {
     let projectToRender = project;
@@ -218,6 +293,8 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
     setRenderError(null);
     setRenderResult(null);
     setDriveVideoUrl(null);
+    setIsRestoredFromStorage(false);
+    setInterruptedCheckpoint(null);
 
     try {
       // Diagnostic mode reduces complexity for testing
@@ -233,7 +310,8 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
           resolution: diagnosticMode ? '720p' : resolution,
           fps: diagnosticMode ? 24 : fps,
           aspectRatio,
-          format: 'mp4'
+          format: 'mp4',
+          useProxyMedia: diagnosticMode ? true : useProxyMedia
         },
         (progress) => {
           setRenderProgress(progress);
@@ -420,14 +498,14 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
     <div className="h-full bg-[#090909] flex flex-col overflow-y-auto custom-scrollbar">
       
       {/* Header */}
-      <div className="p-6 md:p-8 border-b border-[#2A2824] bg-[#0C0C0C] shrink-0">
-        <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="p-4 sm:p-6 md:p-8 border-b border-[#2A2824] bg-[#0C0C0C] shrink-0">
+        <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4">
           <div>
-            <h2 className="text-2xl md:text-3xl font-serif-luxury text-[#F2EFE8] flex items-center gap-3">
-              <Film className="w-7 h-7 text-[#D4AF37]" />
-              Centrum Eksportu Filmu Ślubnego
+            <h2 className="text-xl sm:text-2xl md:text-3xl font-serif-luxury text-[#F2EFE8] flex items-center gap-2.5 sm:gap-3">
+              <Film className="w-6 h-6 sm:w-7 sm:h-7 text-[#D4AF37] shrink-0" />
+              <span>Centrum Eksportu Filmu Ślubnego</span>
             </h2>
-            <p className="text-[#AAA69D] text-sm mt-1">
+            <p className="text-[#AAA69D] text-xs sm:text-sm mt-1">
               Dwa niezależne mechanizmy: zapis struktury montażu oraz rzeczywisty render pliku wideo.
             </p>
           </div>
@@ -440,7 +518,7 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
                 (window as any).toggleRenderDiagnostics?.();
               }
             }}
-            className="flex items-center gap-2 bg-[#171717] px-3.5 py-2 rounded-xl border border-[#2A2824] cursor-pointer select-none active:bg-[#202020]"
+            className="flex items-center gap-2 bg-[#171717] px-3.5 py-2 rounded-xl border border-[#2A2824] cursor-pointer select-none active:bg-[#202020] self-start md:self-auto"
             title="Kliknij 5 razy, aby otworzyć HUD diagnostyczny"
           >
             <ShieldCheck className="w-4 h-4 text-[#D4AF37]" />
@@ -449,8 +527,41 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
         </div>
       </div>
 
-      <div className="flex-1 max-w-6xl w-full mx-auto p-6 md:p-8 space-y-8">
+      <div className="flex-1 max-w-6xl w-full mx-auto p-3.5 sm:p-6 md:p-8 space-y-6 sm:space-y-8">
         
+        {/* Interrupted Render Recovery Banner (Resilience after page refresh) */}
+        {interruptedCheckpoint && !isExporting && !renderResult && (
+          <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-[#211B10] via-[#1A160F] to-[#211B10] border-2 border-[#D4AF37] shadow-[0_0_35px_rgba(212,175,55,0.22)] flex flex-col md:flex-row items-start md:items-center justify-between gap-4 sm:gap-5 animate-in fade-in">
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2.5 text-white font-bold font-serif-luxury text-base">
+                <AlertTriangle className="w-5 h-5 text-[#D4AF37] animate-pulse shrink-0" />
+                <span>Wykryto przerwany proces renderowania filmu</span>
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-[#D4AF37]/20 text-[#D4AF37] border border-[#D4AF37]/40">
+                  {interruptedCheckpoint.percent}% (klatka {interruptedCheckpoint.currentFrame}/{interruptedCheckpoint.totalFrames})
+                </span>
+              </div>
+              <p className="text-xs text-[#DDD8CE] max-w-2xl leading-relaxed">
+                Strona została odświeżona lub zamknięta w trakcie tworzenia filmu. Twoje parametry eksportu i przygotowane klatki zostały zachowane. Możesz wznowić proces tworzenia filmu bez utraty konfiguracji.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 shrink-0 w-full md:w-auto">
+              <button
+                onClick={() => handleStartMovieRender()}
+                className="flex-1 md:flex-initial px-5 py-2.5 bg-[#D4AF37] hover:bg-[#FDE047] text-black font-bold text-xs rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+              >
+                <Play className="w-4 h-4 fill-black" />
+                Wznów tworzenie filmu
+              </button>
+              <button
+                onClick={handleDismissInterruptedCheckpoint}
+                className="px-4 py-2.5 bg-[#252320] hover:bg-[#302D29] text-[#AAA69D] hover:text-white text-xs font-mono rounded-xl transition-colors cursor-pointer"
+              >
+                Odrzuć
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Drive Error Banner */}
         {driveError && (
           <div className="p-4 bg-red-950/40 border border-red-800/60 rounded-xl flex items-center justify-between text-xs text-red-200">
@@ -531,7 +642,7 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
         </div>
 
         {/* SECTION 2: FINALNY FILM (MP4) */}
-        <div className="bg-[#121212] border border-[#2A2824] rounded-2xl p-6 md:p-8 shadow-2xl relative overflow-hidden">
+        <div className="bg-[#121212] border border-[#2A2824] rounded-2xl p-4 sm:p-6 md:p-8 shadow-2xl relative overflow-hidden">
           
           <div className="flex items-start gap-4 mb-6">
             <div className="w-12 h-12 rounded-xl bg-[#D4AF37]/10 border border-[#D4AF37]/30 flex items-center justify-center shrink-0 text-[#D4AF37]">
@@ -766,13 +877,17 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
 
           {/* ACTIVE RENDER PROGRESS */}
           {isExporting && renderProgress && (
-            <div className="my-8 p-6 bg-[#161514] border border-[#D4AF37]/40 rounded-2xl space-y-4">
+            <div className="my-8 p-6 bg-[#161514] border border-[#D4AF37]/50 rounded-2xl space-y-5 shadow-[0_0_35px_rgba(212,175,55,0.15)]">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <Loader2 className="w-6 h-6 text-[#D4AF37] animate-spin" />
+                  <div className="relative">
+                    <Loader2 className="w-7 h-7 text-[#D4AF37] animate-spin" />
+                    <div className="absolute inset-0 rounded-full blur-sm bg-[#D4AF37]/30 -z-10" />
+                  </div>
                   <div>
-                    <h4 className="text-sm font-bold text-white uppercase tracking-wide">
-                      Status: <span className={getStageColor(renderProgress.stage)}>{renderProgress.stage.replace('_', ' ').toUpperCase()}</span>
+                    <h4 className="text-sm font-bold text-white uppercase tracking-wider font-serif-luxury flex items-center gap-2">
+                      <span>Status:</span>
+                      <span className={getStageColor(renderProgress.stage)}>{renderProgress.stage.replace('_', ' ').toUpperCase()}</span>
                     </h4>
                     <p className="text-xs text-[#AAA69D] mt-0.5">{renderProgress.statusMessage}</p>
                   </div>
@@ -787,47 +902,106 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
                 </button>
               </div>
 
+              {/* REAL-TIME ETA & PERFORMANCE HUD */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3 py-3 border-y border-[#2A2824]">
+                <div className="bg-[#0D0D0C] p-3 rounded-xl border border-[#2A2824] flex flex-col justify-between shadow-inner">
+                  <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-[#D4AF37]">
+                    <Timer className="w-3.5 h-3.5 text-[#D4AF37] animate-pulse" />
+                    <span>Czas do końca (ETA)</span>
+                  </div>
+                  <div className="text-base sm:text-lg lg:text-xl font-mono font-bold text-white mt-1 flex flex-wrap items-baseline gap-1.5">
+                    <span>{formatEtaTime(renderProgress.etaSeconds)}</span>
+                    {renderProgress.estimatedFinishTime && (
+                      <span className="text-[10px] sm:text-xs text-[#D4AF37] font-normal">
+                        (koniec ~{renderProgress.estimatedFinishTime})
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-[#777] font-mono mt-1">
+                    Rzeczywisty czas oczekiwania
+                  </div>
+                </div>
+
+                <div className="bg-[#0D0D0C] p-3 rounded-xl border border-[#2A2824] flex flex-col justify-between shadow-inner">
+                  <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-[#AAA69D]">
+                    <Clock className="w-3.5 h-3.5 text-[#AAA69D]" />
+                    <span>Czas od startu</span>
+                  </div>
+                  <div className="text-base sm:text-lg lg:text-xl font-mono font-bold text-[#DDD] mt-1">
+                    {formatElapsed(renderProgress.elapsedSeconds)}
+                  </div>
+                  <div className="text-[10px] text-[#777] font-mono mt-1">
+                    Upłynęło podczas kodowania
+                  </div>
+                </div>
+
+                <div className="bg-[#0D0D0C] p-3 rounded-xl border border-[#2A2824] flex flex-col justify-between shadow-inner">
+                  <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-emerald-400">
+                    <Gauge className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Prędkość silnika</span>
+                  </div>
+                  <div className="text-base sm:text-lg lg:text-xl font-mono font-bold text-emerald-400 mt-1">
+                    {renderProgress.speedMultiplier ? `${renderProgress.speedMultiplier}x` : '1.0x'}
+                    <span className="text-xs font-normal text-emerald-500/70 ml-1.5">({renderProgress.fps} FPS)</span>
+                  </div>
+                  <div className="text-[10px] text-[#777] font-mono mt-1">
+                    Względem czasu rzeczywistego
+                  </div>
+                </div>
+
+                <div className="bg-[#0D0D0C] p-3 rounded-xl border border-[#2A2824] flex flex-col justify-between shadow-inner">
+                  <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-[#AAA69D]">
+                    <Film className="w-3.5 h-3.5 text-[#AAA69D]" />
+                    <span>Wygenerowane klatki</span>
+                  </div>
+                  <div className="text-base sm:text-lg lg:text-xl font-mono font-bold text-white mt-1">
+                    {renderProgress.currentFrame} <span className="text-xs font-normal text-[#666]">/ {renderProgress.totalFrames}</span>
+                  </div>
+                  <div className="text-[10px] text-[#777] font-mono mt-1">
+                    Ukończono: <strong className="text-[#D4AF37]">{renderProgress.percent}%</strong>
+                  </div>
+                </div>
+              </div>
+
               {/* Progress Bar */}
               <div className="space-y-1.5">
                 <div className="flex justify-between text-xs font-mono text-[#AAA69D]">
                   <span className="flex items-center gap-2">
-                    Postęp renderowania
-                    {renderProgress.statistics?.averageFps && (
-                      <span className="text-[#666]">({renderProgress.fps} FPS)</span>
+                    Postęp renderowania klatek
+                    {renderProgress.diagnostics?.memoryUsageMb && (
+                      <span className="text-[#666]">({renderProgress.diagnostics.memoryUsageMb} MB RAM)</span>
                     )}
                   </span>
-                  <span className="text-[#D4AF37] font-bold">{renderProgress.percent}%</span>
+                  <span className="text-[#D4AF37] font-bold text-sm">{renderProgress.percent}%</span>
                 </div>
-                <div className="h-3 w-full bg-[#0A0A0A] rounded-full overflow-hidden border border-[#2A2824]">
+                <div className="h-3.5 w-full bg-[#0A0A0A] rounded-full overflow-hidden border border-[#2A2824] p-0.5">
                   <div 
-                    className="h-full bg-gradient-to-r from-[#D4AF37] to-[#FDE047] transition-all duration-300 ease-out shadow-[0_0_10px_rgba(212,175,55,0.3)]"
+                    className="h-full bg-gradient-to-r from-[#B38728] via-[#D4AF37] to-[#FDE047] rounded-full transition-all duration-300 ease-out shadow-[0_0_15px_rgba(212,175,55,0.4)]"
                     style={{ width: `${renderProgress.percent}%` }}
                   />
                 </div>
               </div>
 
-              <div className="flex items-center justify-between text-[11px] font-mono text-[#777] pt-1">
+              <div className="flex items-center justify-between text-[11px] font-mono text-[#777] pt-0.5">
                 <div className="flex gap-4">
                   <span>Klatka: {renderProgress.currentFrame} / {renderProgress.totalFrames}</span>
-                  {renderProgress.diagnostics?.memoryUsageMb && (
-                    <span>RAM: {renderProgress.diagnostics.memoryUsageMb} MB</span>
-                  )}
+                  <span>Cel: {renderProgress.targetFps || fps} FPS</span>
                 </div>
-                <span>Format: {resolution} @ {renderProgress.targetFps || fps} FPS</span>
+                <span>Format: {resolution} ({aspectRatio})</span>
               </div>
 
               {renderProgress.diagnostics && (
-                <div className="mt-4 p-3 bg-black border border-[#2A2824] rounded-lg space-y-2">
+                <div className="mt-3 p-3 bg-black border border-[#2A2824] rounded-lg space-y-2">
                   <div className="text-[10px] text-[#555] uppercase font-bold flex justify-between">
-                    <span>Log Diagnostyczny</span>
+                    <span>Log Diagnostyczny Akceleracji</span>
                     {renderProgress.statistics?.hardwareAcceleration && (
-                      <span className="text-emerald-500/60">Accel: {renderProgress.statistics.hardwareAcceleration}</span>
+                      <span className="text-emerald-500/70">Akceleracja GPU: {renderProgress.statistics.hardwareAcceleration}</span>
                     )}
                   </div>
                   <div className="text-[11px] font-mono text-emerald-500/80 leading-relaxed">
                     <div>{'>'} {renderProgress.statusMessage}</div>
                     {renderProgress.diagnostics.stageDetails && <div>{'>'} {renderProgress.diagnostics.stageDetails}</div>}
-                    {renderProgress.diagnostics.lastClipName && <div>{'>'} Przetwarzanie: {renderProgress.diagnostics.lastClipName}</div>}
+                    {renderProgress.diagnostics.lastClipName && <div>{'>'} Przetwarzanie ujęcia: {renderProgress.diagnostics.lastClipName}</div>}
                   </div>
                 </div>
               )}
@@ -903,6 +1077,22 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
                   <span className="text-[10px] text-[#555] font-mono uppercase">Rozmiar: {formatSize(renderResult.sizeBytes)}</span>
                 </div>
               </div>
+
+              {/* Restored from Storage Notice */}
+              {isRestoredFromStorage && (
+                <div className="p-3.5 bg-[#1A251E] border border-emerald-500/40 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-300">
+                  <div className="flex items-center gap-2.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>Gotowy film został automatycznie przywrócony z pamięci urządzenia (odświeżenie strony nie usunęło wyrenderowanego pliku!).</span>
+                  </div>
+                  <button
+                    onClick={handleClearSavedMovie}
+                    className="self-start sm:self-auto px-3 py-1 bg-black/40 hover:bg-black/60 border border-emerald-500/30 text-emerald-200 rounded-lg text-[11px] font-mono transition-colors cursor-pointer"
+                  >
+                    Usuń zapamiętany film
+                  </button>
+                </div>
+              )}
 
               {/* IN-APP REAL VIDEO PLAYER */}
               <div className="relative rounded-xl overflow-hidden bg-black border border-[#2A2824] aspect-video max-h-[420px] flex items-center justify-center shadow-2xl">
@@ -982,11 +1172,11 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
                 </div>
 
                 <button
-                  onClick={() => { setRenderResult(null); setRenderProgress(null); }}
+                  onClick={handleClearSavedMovie}
                   className="px-4 py-2.5 bg-[#1F1F1F] hover:bg-[#2A2A2A] text-[#AAA69D] hover:text-white rounded-xl text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
-                  Nowy eksport
+                  Nowy eksport / Zresetuj
                 </button>
               </div>
 
@@ -1012,7 +1202,7 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
           {/* RENDER CONTROLS (WHEN IDLE OR ERROR) */}
           {!isExporting && !renderResult && (
             <div className="space-y-6 pt-2">
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
                 <div>
                   <label className="text-xs font-mono font-bold text-[#AAA69D] uppercase tracking-wider block mb-2">
                     Silnik Renderowania
@@ -1073,6 +1263,42 @@ export function ExportView({ project, onUpdateProject }: ExportViewProps) {
                     <option value="9:16">9:16 Pionowy (Rolka / TikTok)</option>
                   </select>
                 </div>
+              </div>
+
+              {/* ULTRA-FAST DRAFT RENDER TOGGLE (TURBO PIPELINE) */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-gradient-to-r from-[#171512] via-[#1A1814] to-[#171512] border border-[#2A2824] hover:border-[#D4AF37]/40 rounded-xl gap-4 transition-all">
+                <div className="flex items-center gap-3.5">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center border transition-all ${
+                    useProxyMedia 
+                      ? 'bg-[#D4AF37]/20 border-[#D4AF37]/60 text-[#D4AF37] shadow-[0_0_15px_rgba(212,175,55,0.25)]' 
+                      : 'bg-[#1E1C19] border-[#2A2824] text-[#888]'
+                  }`}>
+                    <Zap className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold text-white flex items-center gap-2">
+                      <span>Tryb Ultra-Szybki (Render Roboczy z kopii Proxy)</span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                        ⚡ 3–4x SZYBSZY
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[#999] mt-0.5 max-w-xl leading-relaxed">
+                      Zamiast ciężkich nagrań 4K/1080p silnik wykorzystuje zoptymalizowane kopie robocze. Idealne do natychmiastowego obejrzenia całości filmu przed finalnym renderem kinowym.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setUseProxyMedia(!useProxyMedia)}
+                  className={`px-4 py-2.5 rounded-xl text-xs font-mono font-bold transition-all shrink-0 cursor-pointer ${
+                    useProxyMedia
+                      ? 'bg-[#D4AF37] hover:bg-[#FDE047] text-black shadow-[0_0_15px_rgba(212,175,55,0.3)]'
+                      : 'bg-[#252320] hover:bg-[#2F2C27] text-[#AAA69D] hover:text-white border border-[#333]'
+                  }`}
+                >
+                  {useProxyMedia ? '✓ WŁĄCZONY' : 'WYŁĄCZONY'}
+                </button>
               </div>
 
               {/* TOGGLE DIAGNOSTIC PANEL */}

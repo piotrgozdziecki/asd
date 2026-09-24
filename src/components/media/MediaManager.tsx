@@ -32,6 +32,8 @@ import { GoogleDriveModal, GoogleDriveIcon } from '../GoogleDriveModal';
 import { probeVideoMetadata, probeImageMetadata } from '../../core/media/metadataProber';
 import { urlRegistry } from '../../core/media/urlRegistry';
 import { localIndexedDB } from '../../core/storage/indexedDBProvider';
+import { ConfirmModal } from '../common/ConfirmModal';
+import { useStudioToast } from '../common/ToastContext';
 
 interface MediaManagerProps {
   clips: MediaClip[];
@@ -81,6 +83,9 @@ export function MediaManager({
   // Multi-select & Grouping
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isGroupedBySimilarity, setIsGroupedBySimilarity] = useState<boolean>(false);
+  const [isConfirmClearAllOpen, setIsConfirmClearAllOpen] = useState(false);
+  const [isConfirmBatchDeleteOpen, setIsConfirmBatchDeleteOpen] = useState(false);
+  const toast = useStudioToast();
 
   // Sync with externalFilterTab if provided
   React.useEffect(() => {
@@ -238,15 +243,19 @@ export function MediaManager({
   };
 
   const handleClearAllMedia = () => {
-    if (window.confirm("Czy na pewno chcesz USUNĄĆ WSZYSTKIE stare materiały i wyczyścić projekt? Zostaną trwale usunięte z pamięci podręcznej i chmury, więc nie pojawią się już przy ponownym otwarciu.")) {
-      if (onResetProject) {
-        onResetProject();
-      } else if (onClearAllMedia) {
-        onClearAllMedia();
-      } else {
-        clips.forEach(c => onRemoveClip(c.id));
-      }
+    setIsConfirmClearAllOpen(true);
+  };
+
+  const executeClearAllMedia = () => {
+    setIsConfirmClearAllOpen(false);
+    if (onResetProject) {
+      onResetProject();
+    } else if (onClearAllMedia) {
+      onClearAllMedia();
+    } else {
+      clips.forEach(c => onRemoveClip(c.id));
     }
+    toast.showSuccess('Pomyślnie wyczyszczono wszystkie materiały z projektu.');
   };
 
   // Multi-selection Handlers
@@ -308,12 +317,15 @@ export function MediaManager({
 
   const handleBatchRemove = () => {
     if (selectedIds.size === 0) return;
-    if (window.confirm(`Czy na pewno chcesz usunąć ${selectedIds.size} zaznaczonych materiałów z biblioteki?`)) {
-      selectedIds.forEach(id => onRemoveClip(id));
-      setSelectedIds(new Set());
-      setVerifyMessage(`Usunięto ${selectedIds.size} materiałów z biblioteki.`);
-      setTimeout(() => setVerifyMessage(null), 5000);
-    }
+    setIsConfirmBatchDeleteOpen(true);
+  };
+
+  const executeBatchRemove = () => {
+    setIsConfirmBatchDeleteOpen(false);
+    const count = selectedIds.size;
+    selectedIds.forEach(id => onRemoveClip(id));
+    setSelectedIds(new Set());
+    toast.showSuccess(`Usunięto ${count} materiałów z biblioteki.`);
   };
 
   const handleAddBestMomentsToTimeline = () => {
@@ -322,7 +334,7 @@ export function MediaManager({
       (c.analysis?.ratingCategory === 'BEST' || (c.analysis?.qualityScore ?? 0) >= 75)
     );
     if (bestClips.length === 0) {
-      alert('Nie znaleziono jeszcze ujęć z oceną Złotych Momentów. Uruchom analizę AI Wedding Director.');
+      toast.showWarning('Nie znaleziono jeszcze ujęć z oceną Złotych Momentów. Uruchom analizę AI Wedding Director.');
       return;
     }
 
@@ -618,10 +630,10 @@ export function MediaManager({
   }, [filteredClips, isGroupedBySimilarity]);
 
   return (
-    <div className="flex flex-col h-full space-y-5 overflow-y-auto overflow-x-hidden custom-scrollbar pb-6 px-1">
+    <div className="flex flex-col space-y-4 pb-6 w-full max-w-full">
       
       {/* Cinematic Import Stage (Haute Couture Film Vault) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0 w-full">
         
         {/* Local Disk Upload Card */}
         <div 
@@ -724,9 +736,9 @@ export function MediaManager({
       <div className="flex flex-col gap-3.5 bg-gradient-to-r from-[#14120D] via-[#100F0C] to-[#14120D] p-3.5 sm:p-4 rounded-2xl border border-[#2D261A] shrink-0 shadow-[0_8px_30px_rgba(0,0,0,0.5)] backdrop-blur-xl">
         
         {/* Row 1: Search + Filter Tabs */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 w-full">
           {/* Search */}
-          <div className="relative flex-1 min-w-[220px] max-w-md">
+          <div className="relative flex-1 min-w-0 w-full sm:w-auto sm:max-w-md">
             <Search className="w-3.5 h-3.5 text-[#D4AF37]/70 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -1115,7 +1127,7 @@ export function MediaManager({
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-4">
+                <div className="grid grid-cols-1 min-[480px]:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
                   {group.clips.map(clip => {
                     const isMissing = clip.status === 'missing' || (!clip.objectUrl && !clip.file && !clip.driveFileId);
                     const isVertical = clip.orientation === 'portrait';
@@ -1376,6 +1388,30 @@ export function MediaManager({
           </div>
         )}
       </div>
+
+      {/* Clear All Media Confirmation */}
+      <ConfirmModal
+        isOpen={isConfirmClearAllOpen}
+        title="Wyczyścić całą bibliotekę mediów?"
+        message="Czy na pewno chcesz usunąć WSZYSTKIE stare materiały i wyczyścić bibliotekę projektu? Pliki zostaną usunięte z lokalnej pamięci podręcznej i chmury, przygotowując czysty stół montażowy."
+        confirmText="Usuń wszystkie pliki"
+        cancelText="Anuluj"
+        type="danger"
+        onConfirm={executeClearAllMedia}
+        onCancel={() => setIsConfirmClearAllOpen(false)}
+      />
+
+      {/* Batch Remove Selected Clips Confirmation */}
+      <ConfirmModal
+        isOpen={isConfirmBatchDeleteOpen}
+        title={`Usunąć ${selectedIds.size} zaznaczonych materiałów?`}
+        message="Wybrane materiały zostaną bezpowrotnie usunięte z biblioteki bieżącego projektu."
+        confirmText={`Usuń (${selectedIds.size})`}
+        cancelText="Anuluj"
+        type="danger"
+        onConfirm={executeBatchRemove}
+        onCancel={() => setIsConfirmBatchDeleteOpen(false)}
+      />
 
     </div>
   );

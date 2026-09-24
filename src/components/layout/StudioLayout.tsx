@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../lib/firebase/AuthContext';
 import { PWAInstallButton } from '../common/PWAInstallButton';
+import { ConfirmModal } from '../common/ConfirmModal';
 
 function GoogleIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   return (
@@ -180,6 +181,7 @@ export function StudioLayout({
   
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState(projectName);
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
 
   const tabs = [
     { id: 'media', label: 'Filmy', icon: Layout },
@@ -382,11 +384,7 @@ export function StudioLayout({
 
           {onResetProject && (
             <button
-              onClick={() => {
-                if (window.confirm("Czy na pewno chcesz rozpocząć NOWY, czysty projekt? Wszystkie stare wczytane filmy zostaną całkowicie usunięte z bazy danych i pamięci podręcznej.")) {
-                  onResetProject();
-                }
-              }}
+              onClick={() => setIsResetConfirmOpen(true)}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium text-[#A69C87] hover:text-amber-300 hover:bg-[#1C170E] transition-all border border-[#2A2317] hover:border-amber-500/40 cursor-pointer"
               title="Rozpocznij nowy, czysty projekt bez starych filmów"
             >
@@ -418,36 +416,34 @@ export function StudioLayout({
       </header>
 
       {/* Top Header - Mobile / Tablet */}
-      <header className="lg:hidden h-14 border-b border-[#26221A] bg-[#0E0D0B]/90 backdrop-blur-xl flex items-center justify-between px-3.5 shrink-0 z-40 shadow-lg">
-        <div className="flex items-center gap-2 text-[#D4AF37]">
-          <div className="w-7 h-7 rounded-lg bg-[#241D0E] border border-[#D4AF37]/40 flex items-center justify-center">
+      <header className="lg:hidden h-14 border-b border-[#26221A] bg-[#0E0D0B]/95 backdrop-blur-xl flex items-center justify-between px-3 shrink-0 z-40 shadow-lg w-full max-w-full overflow-hidden">
+        <div className="flex items-center gap-2 text-[#D4AF37] min-w-0 shrink">
+          <div className="w-7 h-7 rounded-lg bg-[#241D0E] border border-[#D4AF37]/40 flex items-center justify-center shrink-0">
             <Film className="w-3.5 h-3.5 text-[#FDE047]" />
           </div>
-          <span className="font-cinematic font-bold text-xs tracking-wider truncate max-w-[120px] text-transparent bg-clip-text bg-gradient-to-r from-[#FFF0A0] to-[#D4AF37]">{projectName}</span>
+          <span className="font-cinematic font-bold text-xs tracking-wider truncate max-w-[110px] xs:max-w-[160px] text-transparent bg-clip-text bg-gradient-to-r from-[#FFF0A0] to-[#D4AF37]">
+            {projectName}
+          </span>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1 shrink-0">
           {onResetProject && (
             <button
-              onClick={() => {
-                if (window.confirm("Czy na pewno chcesz rozpocząć NOWY, czysty projekt? Wszystkie stare wczytane filmy zostaną całkowicie usunięte z bazy danych i pamięci podręcznej.")) {
-                  onResetProject();
-                }
-              }}
+              onClick={() => setIsResetConfirmOpen(true)}
               className="p-1.5 text-amber-400 hover:bg-[#201A10] rounded-lg cursor-pointer"
-              title="Nowy czysty projekt (usuń stare filmy)"
+              title="Nowy czysty projekt"
             >
-              <RotateCcw className="w-4 h-4" />
+              <RotateCcw className="w-3.5 h-3.5" />
             </button>
           )}
 
           {onOpenVoiceRecorder && (
             <button
               onClick={onOpenVoiceRecorder}
-              className="p-1.5 text-[#D4AF37] hover:bg-[#202020] rounded-lg"
+              className="p-1.5 text-[#D4AF37] hover:bg-[#202020] rounded-lg hidden xs:flex items-center justify-center"
               title="Lektor"
             >
-              <Mic className="w-4 h-4" />
+              <Mic className="w-3.5 h-3.5" />
             </button>
           )}
 
@@ -457,63 +453,80 @@ export function StudioLayout({
               className="p-1.5 text-[#D4AF37] hover:bg-[#202020] rounded-lg"
               title="AI Asystent"
             >
-              <Sparkles className="w-4 h-4" />
+              <Sparkles className="w-3.5 h-3.5" />
             </button>
           )}
 
           {/* Undo/Redo */}
-          <button
-            onClick={onUndo}
-            disabled={!canUndo}
-            className="p-1 text-[#AAA69D] disabled:opacity-30"
-            title="Cofnij"
-          >
-            <Undo2 className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={onRedo}
-            disabled={!canRedo}
-            className="p-1 text-[#AAA69D] disabled:opacity-30"
-            title="Ponów"
-          >
-            <Redo2 className="w-3.5 h-3.5" />
-          </button>
+          {canUndo && (
+            <button
+              onClick={onUndo}
+              className="p-1.5 text-[#AAA69D] hover:text-white rounded-lg"
+              title="Cofnij"
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {canRedo && (
+            <button
+              onClick={onRedo}
+              className="p-1.5 text-[#AAA69D] hover:text-white rounded-lg hidden sm:flex"
+              title="Ponów"
+            >
+              <Redo2 className="w-3.5 h-3.5" />
+            </button>
+          )}
 
           <button 
             onClick={onSave}
             disabled={isSaving}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#18150F] border border-[#2D261A] text-[11px] font-medium text-[#C8BDA6]"
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#18150F] border border-[#2D261A] text-[11px] font-medium text-[#C8BDA6] cursor-pointer"
           >
             {isSaving ? <Loader2 className="w-3 h-3 animate-spin text-[#D4AF37]" /> : <Save className="w-3 h-3 text-[#D4AF37]" />}
-            <span>{isSaving ? '...' : 'Zapisz'}</span>
+            <span className="hidden xs:inline">{isSaving ? '...' : 'Zapisz'}</span>
           </button>
 
           <AuthStatus isCompact />
 
-          <PWAInstallButton className="scale-90" />
+          <PWAInstallButton className="scale-75 hidden sm:flex" />
         </div>
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 relative overflow-y-auto overflow-x-hidden flex flex-col md:flex-row">
+      <main className="flex-1 relative overflow-hidden flex flex-col min-w-0 w-full max-w-full">
         {children}
       </main>
 
-      {/* Bottom Navigation - Mobile Only (Scrollable horizontally on narrow screens) */}
-      <nav className="lg:hidden min-h-16 h-[calc(4rem+env(safe-area-inset-bottom))] border-t border-[#26221A] bg-[#0E0D0B]/95 backdrop-blur-2xl flex items-start pt-2 justify-start sm:justify-around px-2 shrink-0 z-40 pb-safe overflow-x-auto touch-pan-x no-scrollbar">
+      {/* Bottom Navigation - Mobile Only (Even 6-col grid fitting all screens without scrolling right) */}
+      <nav className="lg:hidden min-h-16 h-[calc(4rem+env(safe-area-inset-bottom))] border-t border-[#26221A] bg-[#0E0D0B]/95 backdrop-blur-2xl grid grid-cols-6 items-center px-1 shrink-0 z-40 pb-safe w-full max-w-full">
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
-            className={`flex flex-col items-center justify-center min-w-[56px] px-2 h-12 gap-1 transition-colors shrink-0 ${
+            className={`flex flex-col items-center justify-center py-1.5 px-0.5 h-12 gap-0.5 transition-colors w-full min-w-0 ${
               activeTab === tab.id ? 'text-[#FDE047]' : 'text-[#8C8370]'
             }`}
           >
-            <tab.icon className={`w-4 h-4 ${activeTab === tab.id ? 'fill-[#D4AF37]/20 drop-shadow-[0_0_8px_rgba(212,175,55,0.4)]' : ''}`} />
-            <span className="text-[9.5px] font-semibold whitespace-nowrap tracking-wide">{tab.label}</span>
+            <tab.icon className={`w-4 h-4 shrink-0 ${activeTab === tab.id ? 'fill-[#D4AF37]/20 drop-shadow-[0_0_8px_rgba(212,175,55,0.4)]' : ''}`} />
+            <span className="text-[9px] font-semibold truncate max-w-full text-center tracking-tight">{tab.label}</span>
           </button>
         ))}
       </nav>
+
+      {/* Luxury Confirm Reset Modal */}
+      <ConfirmModal
+        isOpen={isResetConfirmOpen}
+        title="Rozpocząć nowy projekt?"
+        message="Czy na pewno chcesz rozpocząć nowy, czysty projekt? Wszystkie wczytane materiały i sekwencje zostaną usunięte z pamięci podręcznej i bazy danych, umożliwiając stworzenie świeżej kompozycji od zera."
+        confirmText="Rozpocznij nowy projekt"
+        cancelText="Anuluj"
+        type="danger"
+        onConfirm={() => {
+          setIsResetConfirmOpen(false);
+          if (onResetProject) onResetProject();
+        }}
+        onCancel={() => setIsResetConfirmOpen(false)}
+      />
     </div>
   );
 }

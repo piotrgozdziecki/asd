@@ -11,6 +11,7 @@ import {
   Type 
 } from 'lucide-react';
 import type { ProjectState, WeddingChapter, ClipCategory, TextLayer } from '../../types/project';
+import { useStudioToast } from '../common/ToastContext';
 
 interface ChaptersManagerProps {
   project: ProjectState;
@@ -44,11 +45,12 @@ export function ChaptersManager({
   onAddTextLayer,
   onSeek
 }: ChaptersManagerProps) {
+  const toast = useStudioToast();
 
   // Auto-generate chapters from timeline items and categories
   const handleAutoGenerateChapters = () => {
     if (project.timelineItems.length === 0) {
-      alert("Najpierw dodaj klipy na oś czasu, aby wygenerować rozdziały.");
+      toast.showWarning("Najpierw dodaj klipy na oś czasu, aby wygenerować rozdziały.");
       return;
     }
 

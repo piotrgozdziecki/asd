@@ -15,6 +15,7 @@ import { useProject } from '../hooks/useProject';
 import { useAuth } from '../lib/firebase/AuthContext';
 import { saveProject, loadProject, deleteProjectFromCloud } from '../lib/firebase/api';
 import { onFirestoreConnectionChange, isFirestoreConnected } from '../lib/firebase/config';
+import { useStudioToast } from './common/ToastContext';
 import type { MediaClip, TimelineItem, AudioTrackItem, TextLayer, WeddingChapter } from '../types/project';
 
 export function StudioApp() {
@@ -133,17 +134,20 @@ export function StudioApp() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [canUndo, canRedo, undo, redo]);
 
+  const toast = useStudioToast();
+
   const handleSave = async () => {
     if (!user) {
-      alert("Zaloguj się, aby zsynchronizować projekt w chmurze.");
+      toast.showWarning("Zaloguj się, aby zsynchronizować projekt w chmurze.");
       login();
       return;
     }
     setIsSaving(true);
     try {
       await saveProject({ ...project, id: 'main-project' });
+      toast.showSuccess("Projekt został pomyślnie zsynchronizowany z chmurą!");
     } catch (err: any) {
-      alert("Błąd podczas zapisywania w chmurze: " + err?.message);
+      toast.showError("Błąd podczas zapisywania w chmurze: " + (err?.message || "Nieznany błąd"));
     } finally {
       setIsSaving(false);
     }
@@ -246,10 +250,10 @@ export function StudioApp() {
         onOpenVoiceRecorder={() => setIsVoiceRecorderOpen(true)}
         isDbConnected={isDbConnected}
       >
-        <div className="flex-1 w-full h-full p-2 sm:p-4 md:p-6 overflow-y-auto overflow-x-hidden relative custom-scrollbar flex flex-col gap-3">
+        <div className="flex-1 w-full min-h-0 overflow-y-auto overflow-x-hidden relative custom-scrollbar flex flex-col gap-3 p-2 sm:p-4 md:p-6 max-w-full">
           
           {/* Quick Actions Bar - Director Suite */}
-          <div className="shrink-0 mt-14 md:mt-0">
+          <div className="shrink-0 w-full max-w-full">
             <QuickActionsBar
               project={project}
               onUpdateProject={pushState}
