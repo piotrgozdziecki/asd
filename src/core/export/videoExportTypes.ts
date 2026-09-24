@@ -61,6 +61,10 @@ export interface TimelineClip {
   rotation: number; // 0, 90, 180, 270
   crop?: { x: number; y: number; width: number; height: number };
   fitMode: FitMode;
+  titleCard?: any; // Text Title Card configuration before the clip
+  transitionIn?: string; // 'cut' | 'fade' | 'dissolve' | 'dip_black' | 'dip_white'
+  transitionOut?: string;
+  transitionDuration?: number;
 }
 
 export interface ExportPreset {

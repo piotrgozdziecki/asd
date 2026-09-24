@@ -531,11 +531,18 @@ export function TimelineView({
                           {idx + 1}. {media?.name || 'Ujęcie'}
                         </span>
                         
-                        {isMissing && (
-                          <span className="text-[9px] bg-red-600 text-white font-bold px-1 rounded flex items-center gap-0.5 shrink-0">
-                            <AlertTriangle className="w-2.5 h-2.5" /> BRAK
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1 shrink-0">
+                          {item.titleCard?.enabled && (
+                            <span className="text-[8px] bg-[#D4AF37] text-black font-extrabold px-1 py-0.5 rounded flex items-center gap-0.5" title={`Plansza: ${item.titleCard.text}`}>
+                              <Type className="w-2.5 h-2.5" /> PLANSZA
+                            </span>
+                          )}
+                          {isMissing && (
+                            <span className="text-[9px] bg-red-600 text-white font-bold px-1 rounded flex items-center gap-0.5 shrink-0">
+                              <AlertTriangle className="w-2.5 h-2.5" /> BRAK
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       <div className="flex items-center justify-between text-[9px] font-mono text-[#AAA69D]">

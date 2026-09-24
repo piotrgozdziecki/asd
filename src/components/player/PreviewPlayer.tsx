@@ -81,6 +81,16 @@ export function PreviewPlayer({
     ) || null;
   }, [currentTime, timelineItems]);
 
+  const activeTitleCard = useMemo(() => {
+    if (!activeTimelineItem?.titleCard?.enabled) return null;
+    const itemOffset = currentTime - activeTimelineItem.timelineStart;
+    const cardDuration = activeTimelineItem.titleCard.duration || 3;
+    if (itemOffset < cardDuration) {
+      return activeTimelineItem.titleCard;
+    }
+    return null;
+  }, [currentTime, activeTimelineItem]);
+
   const activeMedia = useMemo(() => {
     if (!activeTimelineItem) return null;
     return mediaMap.get(activeTimelineItem.clipId) || null;
@@ -396,6 +406,74 @@ export function PreviewPlayer({
                   <span>Skocz do pierwszego ujęcia ({formatTimecode(firstClipStart)})</span>
                 </button>
               )}
+            </div>
+          )}
+
+          {/* Title Card Overlay Preview */}
+          {activeTitleCard && (
+            <div 
+              className="absolute inset-0 z-20 flex flex-col items-center justify-center p-8 transition-opacity duration-300 pointer-events-none"
+              style={{
+                background: activeTitleCard.backgroundColor === 'gradient'
+                  ? 'linear-gradient(135deg, #111827 0%, #030712 100%)'
+                  : activeTitleCard.backgroundColor || '#0A0A0A'
+              }}
+            >
+              {/* Subtle cinematic borders */}
+              {(activeTitleCard.style === 'cinematic' || activeTitleCard.style === 'elegant') && (
+                <div className="absolute inset-6 border border-amber-400/20 pointer-events-none" />
+              )}
+              
+              <div className="text-center space-y-4 max-w-xl">
+                {activeTitleCard.style === 'classic' && (
+                  <>
+                    <h2 className="text-2xl sm:text-3xl font-bold font-serif text-[#EADFC9] tracking-normal">
+                      {activeTitleCard.text}
+                    </h2>
+                    {activeTitleCard.subtitle && (
+                      <p className="text-sm sm:text-base italic font-serif text-[#A89E8D] mt-2">
+                        {activeTitleCard.subtitle}
+                      </p>
+                    )}
+                  </>
+                )}
+                {activeTitleCard.style === 'elegant' && (
+                  <>
+                    <h2 className="text-2xl sm:text-4xl font-light font-serif text-[#D4AF37] uppercase tracking-widest leading-relaxed">
+                      {activeTitleCard.text}
+                    </h2>
+                    {activeTitleCard.subtitle && (
+                      <p className="text-xs sm:text-sm font-serif text-[#EADFC9] uppercase tracking-wider mt-3">
+                        {activeTitleCard.subtitle}
+                      </p>
+                    )}
+                  </>
+                )}
+                {activeTitleCard.style === 'minimalist' && (
+                  <>
+                    <h2 className="text-xl sm:text-2xl font-light text-white tracking-widest">
+                      {activeTitleCard.text}
+                    </h2>
+                    {activeTitleCard.subtitle && (
+                      <p className="text-[10px] sm:text-xs text-[#666] tracking-wider uppercase mt-2">
+                        {activeTitleCard.subtitle}
+                      </p>
+                    )}
+                  </>
+                )}
+                {activeTitleCard.style === 'cinematic' && (
+                  <>
+                    <h2 className="text-3xl sm:text-5xl font-extrabold uppercase tracking-tight text-white drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)] font-sans">
+                      {activeTitleCard.text}
+                    </h2>
+                    {activeTitleCard.subtitle && (
+                      <p className="text-xs sm:text-sm italic text-[#D4AF37] mt-3 font-serif">
+                        {activeTitleCard.subtitle}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
           )}
 

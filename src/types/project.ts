@@ -76,6 +76,15 @@ export interface MediaClip {
 export type TransitionType = 'cut' | 'fade' | 'dissolve' | 'dip_black' | 'dip_white';
 export type FitMode = 'fit' | 'fill' | 'original' | 'crop';
 
+export interface TitleCard {
+  enabled: boolean;
+  text: string;
+  duration: number; // default 3 seconds
+  style: 'classic' | 'elegant' | 'minimalist' | 'cinematic';
+  backgroundColor: string; // hex code or 'gradient'
+  subtitle?: string;
+}
+
 export interface TimelineItem {
   id: string;
   clipId: string; // Reference to MediaClip
@@ -107,6 +116,9 @@ export interface TimelineItem {
   transitionIn?: TransitionType;
   transitionOut?: TransitionType;
   transitionDuration?: number; // default 0.5s
+
+  // Text Title Card (Intertitles / Plansza Tekstowa) before the clip
+  titleCard?: TitleCard;
 }
 
 export interface TimelineTrack {

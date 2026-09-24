@@ -10,7 +10,8 @@ import {
   deleteDoc, 
   query, 
   orderBy,
-  onSnapshot 
+  onSnapshot,
+  enableIndexedDbPersistence
 } from 'firebase/firestore';
 import {
   getStorage,
@@ -33,6 +34,20 @@ try {
 }
 
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+// Enable Firestore Offline Persistence for PWA offline workflow
+if (typeof window !== 'undefined') {
+  enableIndexedDbPersistence(db).catch((err) => {
+    if (err.code === 'failed-precondition') {
+      console.warn('Firestore offline persistence failed-precondition: Multiple tabs open.');
+    } else if (err.code === 'unimplemented') {
+      console.warn('Firestore offline persistence unimplemented: Browser lack support.');
+    } else {
+      console.warn('Firestore offline persistence error:', err);
+    }
+  });
+}
+
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 

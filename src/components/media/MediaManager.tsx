@@ -897,6 +897,17 @@ export function MediaManager({
 
           {/* Action buttons (Scrollable horizontally on mobile/small screens!) */}
           <div className="flex items-center gap-2 shrink-0">
+            {filteredClips.length > 0 && (
+              <button
+                onClick={handleSelectAllFiltered}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#D4AF37] bg-[#2D2411]/40 text-[#FDE047] hover:bg-[#D4AF37]/20 transition-all cursor-pointer text-xs font-bold shadow-sm whitespace-nowrap shrink-0"
+                title="Zaznacza wszystkie widoczne ujęcia, pozwalając na ich masowe dodanie do osi czasu w celu scalenia ich w jeden film"
+              >
+                <CheckSquare className="w-3.5 h-3.5" />
+                <span>Zaznacz wszystkie ({filteredClips.length})</span>
+              </button>
+            )}
+
             {clips.some(c => (c.analysis?.ratingCategory === 'BEST' || (c.analysis?.qualityScore ?? 0) >= 75)) && (
               <button
                 onClick={handleAddBestMomentsToTimeline}

@@ -4,7 +4,7 @@ import { TimelineView } from '../timeline/TimelineView';
 import { ClipInspector } from '../inspector/ClipInspector';
 import { TextInspector } from '../inspector/TextInspector';
 import { AudioInspector } from '../inspector/AudioInspector';
-import { Type, Music, Mic } from 'lucide-react';
+import { Type, Music, Mic, MessageSquare, Clock, User, Trash2, Send, CheckSquare, Sparkles } from 'lucide-react';
 import type { 
   ProjectState, 
   TimelineItem, 
@@ -50,6 +50,10 @@ export function EditorView({
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  
+  // Client Review State
+  const [author, setAuthor] = useState('Panna Młoda');
+  const [commentText, setCommentText] = useState('');
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -262,8 +266,163 @@ export function EditorView({
             onUpdate={onUpdateAudioTrack} 
           />
         ) : (
-          <div className="h-full w-80 border-l border-[#2A2824] bg-[#121212] hidden md:flex flex-col items-center justify-center text-center p-6 text-[#AAA69D]">
-            <p className="text-xs">Zaznacz klip, napis lub ścieżkę dźwiękową na osi czasu, aby edytować parametry montażu.</p>
+          /* Live Client Review Panel / Interactive Comments Board */
+          <div className="h-full w-80 border-l border-[#26221A] bg-[#0E0D0C] flex flex-col z-10 shrink-0">
+            {/* Header */}
+            <div className="p-4 border-b border-[#26221A] bg-[#12110E] shrink-0">
+              <div className="flex items-center gap-2 text-[#D4AF37] text-[11px] font-mono tracking-wider uppercase font-bold">
+                <MessageSquare className="w-4 h-4 text-[#D4AF37]" />
+                <span>Panel Recenzencki</span>
+              </div>
+              <h3 className="text-sm font-bold text-white mt-1">Uwagi Pary Młodej</h3>
+              <p className="text-[10px] text-[#8C7D5B] mt-0.5">Wspólne recenzowanie i montaż w chmurze</p>
+            </div>
+
+            {/* Author Selector */}
+            <div className="p-4 border-b border-[#26221A] shrink-0 space-y-1.5">
+              <label className="text-[9px] font-mono font-bold text-[#AAA69D] uppercase tracking-wider block">KTO DODAJE UWAGĘ?</label>
+              <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                {[
+                  { name: 'Panna Młoda', emoji: '👰', activeClass: 'bg-rose-950/40 border-rose-500/50 text-rose-300' },
+                  { name: 'Pan Młody', emoji: '🤵', activeClass: 'bg-sky-950/40 border-sky-500/50 text-sky-300' },
+                  { name: 'Montażysta', emoji: '🎬', activeClass: 'bg-[#2A2411] border-[#D4AF37]/50 text-[#FDE047]' },
+                  { name: 'Rodzina/Goście', emoji: '👨‍👩‍👧‍👦', activeClass: 'bg-emerald-950/40 border-emerald-500/50 text-emerald-300' }
+                ].map(item => (
+                  <button
+                    key={item.name}
+                    onClick={() => setAuthor(item.name)}
+                    className={`px-2 py-1.5 rounded-lg border text-left transition-all font-medium cursor-pointer ${
+                      author === item.name 
+                        ? item.activeClass
+                        : 'bg-[#14120F] border-[#26221A] text-[#A09886] hover:text-white hover:border-[#3E2C1A]'
+                    }`}
+                  >
+                    <span className="mr-1">{item.emoji}</span>
+                    {item.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Live Comment Form */}
+            <div className="p-4 border-b border-[#26221A] shrink-0 bg-[#12110E] space-y-3">
+              <div className="flex items-center justify-between text-[10px] font-mono text-[#AAA69D]">
+                <span className="flex items-center gap-1">
+                  <Clock className="w-3.5 h-3.5 text-[#D4AF37]" /> UWAGA W MOMENCIE:
+                </span>
+                <span className="font-bold text-[#D4AF37] text-xs">
+                  {Math.floor(currentTime / 60)}:{(Math.floor(currentTime % 60)).toString().padStart(2, '0')}
+                </span>
+              </div>
+
+              <textarea
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+                placeholder="Wpisz np. 'Skrócić to ujęcie o 1s', 'Mogłoby być jaśniej?', 'Super piosenka!'"
+                className="w-full h-20 bg-[#16130F] border border-[#26221A] rounded-xl p-2.5 text-xs text-white placeholder-[#605A4E] focus:outline-none focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37]/20 resize-none transition-all"
+              />
+
+              <button
+                onClick={() => {
+                  if (!commentText.trim() || !onAddMarker) return;
+                  const colors: Record<string, string> = {
+                    'Panna Młoda': '#F43F5E',
+                    'Pan Młody': '#38BDF8',
+                    'Montażysta': '#D4AF37',
+                    'Rodzina/Goście': '#10B981'
+                  };
+                  onAddMarker({
+                    id: `comment_${Date.now()}`,
+                    time: currentTime,
+                    type: 'comment',
+                    label: `${author}: ${commentText.trim()}`,
+                    color: colors[author] || '#D4AF37'
+                  });
+                  setCommentText('');
+                }}
+                disabled={!commentText.trim() || !onAddMarker}
+                className="w-full py-2 bg-gradient-to-r from-[#D4AF37] to-[#FDE047] hover:from-[#B5922C] hover:to-[#D4AF37] text-black font-extrabold text-[11px] uppercase tracking-wider rounded-xl transition-all shadow-md flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
+              >
+                <Send className="w-3 h-3" />
+                <span>Wyślij uwagę do filmu</span>
+              </button>
+            </div>
+
+            {/* Comments List (Scrollable Feed) */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+              <span className="text-[9px] font-mono font-bold text-[#AAA69D] uppercase tracking-wider block">Wszystkie uwagi ({project.markers?.filter(m => m.type === 'comment').length || 0})</span>
+              
+              {(!project.markers || project.markers.filter(m => m.type === 'comment').length === 0) ? (
+                <div className="p-6 border border-dashed border-[#26221A] rounded-2xl text-center space-y-2">
+                  <div className="w-8 h-8 rounded-full bg-[#1A1815] border border-[#2A2317] flex items-center justify-center mx-auto">
+                    <MessageSquare className="w-4 h-4 text-[#8C7D5B]" />
+                  </div>
+                  <p className="text-[11px] text-[#A09886] leading-relaxed">
+                    Brak uwag w tym projekcie.<br />Przesuń film do odpowiedniego momentu i dodaj komentarz!
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {[...project.markers]
+                    .filter(m => m.type === 'comment')
+                    .sort((a, b) => a.time - b.time)
+                    .map(m => {
+                      const splitIdx = m.label.indexOf(':');
+                      const commentAuthor = splitIdx !== -1 ? m.label.substring(0, splitIdx) : 'Autor';
+                      const commentBody = splitIdx !== -1 ? m.label.substring(splitIdx + 1) : m.label;
+                      
+                      const authorBadgeColor = commentAuthor.includes('Panna') 
+                        ? 'text-rose-400 bg-rose-950/20 border-rose-800/30'
+                        : commentAuthor.includes('Pan M')
+                          ? 'text-sky-400 bg-sky-950/20 border-sky-800/30'
+                          : commentAuthor.includes('Mont')
+                            ? 'text-[#FDE047] bg-[#2A2411]/40 border-[#D4AF37]/20'
+                            : 'text-emerald-400 bg-emerald-950/20 border-emerald-800/30';
+
+                      return (
+                        <div
+                          key={m.id}
+                          onClick={() => {
+                            setCurrentTime(m.time);
+                            setPlaying(false);
+                          }}
+                          className="group p-3 rounded-xl bg-[#14120F] border border-[#26221A] hover:border-[#D4AF37]/40 transition-all cursor-pointer space-y-2 relative"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border uppercase ${authorBadgeColor}`}>
+                              {commentAuthor}
+                            </span>
+                            
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="text-[10px] font-mono font-bold text-[#D4AF37] flex items-center gap-0.5">
+                                <Clock className="w-3 h-3" />
+                                {Math.floor(m.time / 60)}:{(Math.floor(m.time % 60)).toString().padStart(2, '0')}
+                              </span>
+                              
+                              {onDeleteMarker && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDeleteMarker(m.id);
+                                  }}
+                                  className="p-1 rounded bg-[#1C1814] hover:bg-rose-950/50 text-[#8C7D5B] hover:text-rose-400 transition-colors border border-[#26221A] hover:border-rose-900/30 shrink-0 cursor-pointer"
+                                  title="Rozwiąż / Usuń uwagę"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <p className="text-[11px] text-[#EADFC9] leading-relaxed break-words pr-2">
+                            {commentBody}
+                          </p>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

@@ -284,9 +284,10 @@ export class VideoExportService {
 
     let currentTimeline = 0;
     const normalizedClips: TimelineClip[] = sortedClips.map((c, idx) => {
+      const cardDur = (c.titleCard && c.titleCard.enabled) ? (c.titleCard.duration || 3) : 0;
       const dur = Math.max(0.1, c.sourceEnd - c.sourceStart);
       const clipStart = currentTimeline;
-      currentTimeline += dur;
+      currentTimeline += cardDur + dur;
       return {
         ...c,
         timelineStart: clipStart,
@@ -606,39 +607,101 @@ export class VideoExportService {
       video.muted = true;
       video.playsInline = true;
       video.preload = 'auto';
+      video.crossOrigin = 'anonymous'; // Critical for CORS and Canvas drawing of remote streams
+      video.style.position = 'fixed';
+      video.style.left = '-9999px';
+      video.style.top = '-9999px';
+      video.style.width = '4px';
+      video.style.height = '4px';
+      video.style.opacity = '0';
+      video.style.pointerEvents = 'none';
+      document.body.appendChild(video); // Force browser GPU decoder engagement by placing in DOM
       video.src = source.uri;
 
       let videoReady = false;
       await new Promise<void>((resolve, reject) => {
-        const onMeta = () => {
-          video.removeEventListener('loadedmetadata', onMeta);
+        const onLoaded = () => {
+          video.removeEventListener('loadeddata', onLoaded);
+          video.removeEventListener('loadedmetadata', onLoaded);
           video.removeEventListener('error', onErr);
           videoReady = true;
           resolve();
         };
-        const onErr = () => {
-          video.removeEventListener('loadedmetadata', onMeta);
+        const onErr = (err) => {
+          video.removeEventListener('loadeddata', onLoaded);
+          video.removeEventListener('loadedmetadata', onLoaded);
           video.removeEventListener('error', onErr);
-          reject(new Error(`DECODER_ERROR: Nie udało się zdekodować klipu nr ${clipIdx + 1} (${source.name}).`));
+          try { document.body.removeChild(video); } catch {}
+          reject(new Error(`DECODER_ERROR: Nie udało się załadować wideo dla klipu nr ${clipIdx + 1} (${source.name}).`));
         };
-        video.addEventListener('loadedmetadata', onMeta);
+        video.addEventListener('loadeddata', onLoaded);
+        video.addEventListener('loadedmetadata', onLoaded);
         video.addEventListener('error', onErr);
         video.load();
         setTimeout(() => {
           if (!videoReady) resolve(); // Continue best effort
-        }, 12000);
+        }, 10000);
       });
 
-      // Seek to sourceStart
+      // 1. Render and encode Title Card if configured for this clip segment
+      if (clip.titleCard && clip.titleCard.enabled) {
+        const cardFrames = Math.max(1, Math.round((clip.titleCard.duration || 3) * fps));
+        for (let cf = 0; cf < cardFrames; cf++) {
+          if (signal.aborted) throw new Error('CANCELLED');
+
+          this.drawTitleCard(ctx, width, height, clip.titleCard);
+
+          // Encode frame
+          const presentationTimeMicros = Math.round((globalFrameIndex * frameIntervalSec) * 1_000_000);
+          const videoFrame = new (window as any).VideoFrame(canvas, {
+            timestamp: presentationTimeMicros,
+            duration: Math.round(frameIntervalSec * 1_000_000)
+          });
+
+          try {
+            if (videoEncoder.state !== 'configured') {
+              const err = getEncoderError();
+              throw new Error(err?.message || `VideoEncoder został zamknięty (stan: ${videoEncoder.state}).`);
+            }
+            const isKeyFrame = globalFrameIndex % (fps * 2) === 0;
+            videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
+          } catch (encodeErr: any) {
+            const err = getEncoderError();
+            throw new Error(err?.message || encodeErr.message || 'Błąd kodowania klatki planszy tekstowej.');
+          } finally {
+            videoFrame.close();
+          }
+
+          globalFrameIndex++;
+
+          // Periodically update progress for plansza text card
+          if (globalFrameIndex % 5 === 0) {
+            const overallPercent = Math.min(94, 22 + Math.round((globalFrameIndex / totalFrames) * 72));
+            emitProgress({
+              stage: 'KODOWANIE',
+              percent: overallPercent,
+              currentFrame: globalFrameIndex,
+              currentClipIndex: clipIdx + 1,
+              currentClipName: `Plansza: ${clip.titleCard.text}`,
+              statusMessage: `Kodowanie planszy: ${cf + 1}/${cardFrames} • ${clip.titleCard.text}`
+            });
+          }
+        }
+      }
+
+      // Seek to sourceStart for clip
       const initialSeek = Math.max(0, Math.min(clip.sourceStart, (video.duration || 1000) - 0.05));
       video.currentTime = initialSeek;
       await new Promise<void>((resolve) => {
+        let done = false;
         const onSeek = () => {
+          if (done) return;
+          done = true;
           video.removeEventListener('seeked', onSeek);
           resolve();
         };
         video.addEventListener('seeked', onSeek);
-        setTimeout(resolve, 1500);
+        setTimeout(onSeek, 2000);
       });
 
       // Step frames through the clip's duration
@@ -664,11 +727,27 @@ export class VideoExportService {
               if (done) return;
               done = true;
               video.removeEventListener('seeked', onS);
+              video.removeEventListener('error', onS);
               r();
             };
             video.addEventListener('seeked', onS);
+            video.addEventListener('error', onS);
             video.currentTime = targetSourceTime;
-            setTimeout(onS, 350);
+            setTimeout(onS, 500); // 500ms max seek timeout
+          });
+        }
+
+        // Wait for video frame to be fully loaded/ready (Prevents black frame issue)
+        if (video.readyState < 2) {
+          await new Promise<void>((r) => {
+            const checkReady = () => {
+              if (video.readyState >= 2 || signal.aborted) {
+                r();
+              } else {
+                setTimeout(checkReady, 10);
+              }
+            };
+            checkReady();
           });
         }
 
@@ -677,6 +756,9 @@ export class VideoExportService {
         ctx.fillRect(0, 0, width, height);
 
         this.drawVideoWithFitMode(ctx, video, clip.fitMode || preset.fitMode, width, height, clip.rotation || 0);
+
+        // Render transition overlay effects
+        this.applyTransitions(ctx, width, height, f, clipFrames, fps, clip);
 
         // Encode frame
         const presentationTimeMicros = Math.round((globalFrameIndex * frameIntervalSec) * 1_000_000);
@@ -735,6 +817,7 @@ export class VideoExportService {
       // Cleanup video element
       video.src = '';
       video.load();
+      try { document.body.removeChild(video); } catch {}
     }
 
     // 6. MUXING
@@ -941,22 +1024,70 @@ export class VideoExportService {
       video.muted = true;
       video.playsInline = true;
       video.preload = 'auto';
+      video.crossOrigin = 'anonymous'; // Support remote/Drive sources
+      video.style.position = 'fixed';
+      video.style.left = '-9999px';
+      video.style.top = '-9999px';
+      video.style.width = '4px';
+      video.style.height = '4px';
+      video.style.opacity = '0';
+      video.style.pointerEvents = 'none';
+      document.body.appendChild(video); // Place in DOM to activate decoding
       video.src = source.uri;
 
+      let videoReady = false;
       await new Promise<void>((resolve) => {
         let done = false;
         const onOk = () => {
           if (done) return;
           done = true;
+          videoReady = true;
+          video.removeEventListener('loadeddata', onOk);
           video.removeEventListener('loadedmetadata', onOk);
           video.removeEventListener('error', onOk);
           resolve();
         };
+        video.addEventListener('loadeddata', onOk);
         video.addEventListener('loadedmetadata', onOk);
         video.addEventListener('error', onOk);
         video.load();
-        setTimeout(onOk, 6000);
+        setTimeout(() => {
+          if (!done) {
+            done = true;
+            resolve();
+          }
+        }, 8000);
       });
+
+      // 1. Render Title Card for MediaRecorder if enabled
+      if (clip.titleCard && clip.titleCard.enabled) {
+        const cardFrames = Math.max(1, Math.round((clip.titleCard.duration || 3) * fps));
+        for (let cf = 0; cf < cardFrames; cf++) {
+          if (signal.aborted) {
+            try { recorder.stop(); } catch {}
+            throw new Error('CANCELLED');
+          }
+
+          this.drawTitleCard(ctx, width, height, clip.titleCard);
+
+          globalFrame++;
+
+          if (globalFrame % 5 === 0 || cf === cardFrames - 1) {
+            const overallPercent = Math.min(94, 10 + Math.round((globalFrame / totalFrames) * 84));
+            emitProgress({
+              stage: 'KODOWANIE',
+              percent: overallPercent,
+              currentFrame: globalFrame,
+              currentClipIndex: clipIdx + 1,
+              currentClipName: `Plansza: ${clip.titleCard.text}`,
+              statusMessage: `Renderowanie planszy: ${cf + 1}/${cardFrames} • ${clip.titleCard.text}`
+            });
+          }
+
+          // Let canvas process the frame
+          await new Promise<void>((r) => setTimeout(r, Math.max(1, Math.floor(frameIntervalMs / 4))));
+        }
+      }
 
       const clipFrames = Math.max(1, Math.round(clip.duration * fps));
 
@@ -976,17 +1107,36 @@ export class VideoExportService {
               if (done) return;
               done = true;
               video.removeEventListener('seeked', onS);
+              video.removeEventListener('error', onS);
               r();
             };
             video.addEventListener('seeked', onS);
+            video.addEventListener('error', onS);
             video.currentTime = targetSourceTime;
-            setTimeout(onS, 350);
+            setTimeout(onS, 500);
+          });
+        }
+
+        // Wait for video frame to be fully loaded/ready (Prevents black frame issue)
+        if (video.readyState < 2) {
+          await new Promise<void>((r) => {
+            const checkReady = () => {
+              if (video.readyState >= 2 || signal.aborted) {
+                r();
+              } else {
+                setTimeout(checkReady, 10);
+              }
+            };
+            checkReady();
           });
         }
 
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, width, height);
         this.drawVideoWithFitMode(ctx, video, clip.fitMode || preset.fitMode, width, height, clip.rotation || 0);
+
+        // Render transition overlay effects
+        this.applyTransitions(ctx, width, height, f, clipFrames, fps, clip);
 
         globalFrame++;
 
@@ -1008,6 +1158,7 @@ export class VideoExportService {
 
       video.src = '';
       video.load();
+      try { document.body.removeChild(video); } catch {}
     }
 
     emitProgress({
@@ -1283,6 +1434,137 @@ export class VideoExportService {
     }
 
     ctx.restore();
+  }
+  
+  /**
+   * Render transition effects on top of the current canvas frame
+   */
+  private applyTransitions(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    currentFrame: number,
+    totalClipFrames: number,
+    fps: number,
+    clip: TimelineClip
+  ) {
+    const elapsedSec = currentFrame / fps;
+    const remainingSec = (totalClipFrames - currentFrame) / fps;
+    const transDur = clip.transitionDuration || 0.5;
+
+    // 1. Transition In (Fade / Dip to Black / Dip to White)
+    if (clip.transitionIn && clip.transitionIn !== 'cut' && elapsedSec < transDur) {
+      const progress = 1 - (elapsedSec / transDur); // 1.0 down to 0.0
+      if (clip.transitionIn === 'fade' || clip.transitionIn === 'dip_black' || clip.transitionIn === 'dissolve') {
+        ctx.fillStyle = `rgba(0, 0, 0, ${progress})`;
+        ctx.fillRect(0, 0, width, height);
+      } else if (clip.transitionIn === 'dip_white') {
+        ctx.fillStyle = `rgba(255, 255, 255, ${progress})`;
+        ctx.fillRect(0, 0, width, height);
+      }
+    }
+
+    // 2. Transition Out (Fade / Dip to Black / Dip to White)
+    if (clip.transitionOut && clip.transitionOut !== 'cut' && remainingSec < transDur) {
+      const progress = 1 - (remainingSec / transDur); // 0.0 up to 1.0
+      if (clip.transitionOut === 'fade' || clip.transitionOut === 'dip_black' || clip.transitionOut === 'dissolve') {
+        ctx.fillStyle = `rgba(0, 0, 0, ${progress})`;
+        ctx.fillRect(0, 0, width, height);
+      } else if (clip.transitionOut === 'dip_white') {
+        ctx.fillStyle = `rgba(255, 255, 255, ${progress})`;
+        ctx.fillRect(0, 0, width, height);
+      }
+    }
+  }
+
+  /**
+   * Render high-fidelity Title Card / Intertitles onto Canvas (plansza tekstowa)
+   */
+  private drawTitleCard(ctx: CanvasRenderingContext2D, width: number, height: number, card: any) {
+    // 1. Draw Background
+    if (card.backgroundColor === 'gradient') {
+      const grad = ctx.createLinearGradient(0, 0, width, height);
+      grad.addColorStop(0, '#111827'); // Slate 900
+      grad.addColorStop(1, '#030712'); // Gray 950
+      ctx.fillStyle = grad;
+    } else {
+      ctx.fillStyle = card.backgroundColor || '#0A0A0A';
+    }
+    ctx.fillRect(0, 0, width, height);
+
+    // 2. Add subtle cinematic elements (thin frame or borders)
+    if (card.style === 'cinematic' || card.style === 'elegant') {
+      ctx.strokeStyle = 'rgba(212, 175, 55, 0.25)'; // Gold with low alpha
+      ctx.lineWidth = 1.5;
+      const padding = 40;
+      ctx.strokeRect(padding, padding, width - padding * 2, height - padding * 2);
+    }
+
+    // 3. Render Title & Subtitle based on style
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const text = card.text || 'Wprowadzenie';
+    const subtitle = card.subtitle || '';
+
+    if (card.style === 'classic') {
+      // Classic Serif style
+      ctx.font = 'bold 36px Georgia, serif';
+      ctx.fillStyle = '#EADFC9';
+      if (subtitle) {
+        ctx.fillText(text, width / 2, height / 2 - 25);
+        ctx.font = 'italic 20px Georgia, serif';
+        ctx.fillStyle = '#A89E8D';
+        ctx.fillText(subtitle, width / 2, height / 2 + 30);
+      } else {
+        ctx.fillText(text, width / 2, height / 2);
+      }
+    } else if (card.style === 'elegant') {
+      // Elegant Serif Style with Gold Accent
+      ctx.font = '300 42px "Times New Roman", serif';
+      ctx.fillStyle = '#D4AF37'; // Golden Accent
+      
+      if (subtitle) {
+        ctx.fillText(text.toUpperCase(), width / 2, height / 2 - 30);
+        ctx.font = '300 18px "Times New Roman", serif';
+        ctx.fillStyle = '#EADFC9';
+        ctx.fillText(subtitle, width / 2, height / 2 + 35);
+      } else {
+        ctx.fillText(text.toUpperCase(), width / 2, height / 2);
+      }
+    } else if (card.style === 'minimalist') {
+      // Clean modern minimalist style
+      ctx.font = '300 28px system-ui, -apple-system, sans-serif';
+      ctx.fillStyle = '#FFFFFF';
+      
+      if (subtitle) {
+        ctx.fillText(text, width / 2, height / 2 - 20);
+        ctx.font = '300 16px system-ui, -apple-system, sans-serif';
+        ctx.fillStyle = '#666666';
+        ctx.fillText(subtitle.toUpperCase(), width / 2, height / 2 + 25);
+      } else {
+        ctx.fillText(text, width / 2, height / 2);
+      }
+    } else {
+      // Cinematic style
+      ctx.font = 'bold 38px Impact, sans-serif';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+      ctx.shadowBlur = 10;
+      
+      if (subtitle) {
+        ctx.fillText(text.toUpperCase(), width / 2, height / 2 - 25);
+        ctx.font = 'italic 18px Georgia, serif';
+        ctx.fillStyle = '#D4AF37';
+        ctx.shadowBlur = 0;
+        ctx.fillText(subtitle, width / 2, height / 2 + 35);
+      } else {
+        ctx.fillText(text.toUpperCase(), width / 2, height / 2);
+      }
+    }
+
+    // Reset shadow values
+    ctx.shadowBlur = 0;
   }
 
   /**

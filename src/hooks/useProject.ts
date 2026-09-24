@@ -495,7 +495,8 @@ export function useProject(initialState?: ProjectState) {
       id: `ti_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       sourceStart: splitAtSourceTime,
       timelineStart: item.timelineStart + duration1,
-      duration: duration2
+      duration: duration2,
+      titleCard: item.titleCard ? { ...item.titleCard, enabled: false } : undefined
     };
 
     newItems.splice(itemIndex + 1, 0, secondHalf);

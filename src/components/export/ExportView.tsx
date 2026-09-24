@@ -117,7 +117,11 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
         muted: Boolean(item.muted),
         rotation: item.rotation || 0,
         crop: item.crop,
-        fitMode: (item.fitMode as FitMode) || fitMode
+        fitMode: (item.fitMode as FitMode) || fitMode,
+        titleCard: item.titleCard,
+        transitionIn: item.transitionIn,
+        transitionOut: item.transitionOut,
+        transitionDuration: item.transitionDuration
       }));
     }
 
