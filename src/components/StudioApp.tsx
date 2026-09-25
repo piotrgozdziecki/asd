@@ -8,6 +8,7 @@ import { SettingsDiagnosticsView } from './settings/SettingsDiagnosticsView';
 import { AiAssistantModal } from './ai/AiAssistantModal';
 import { VoiceRecorderModal } from './VoiceRecorderModal';
 import { AiWeddingDirectorModal } from './director/AiWeddingDirectorModal';
+import { AiChronologicalMergeModal } from './director/AiChronologicalMergeModal';
 import { ProjectHealthPanel } from './director/ProjectHealthPanel';
 import { QuickActionsBar } from './director/QuickActionsBar';
 import { useProject } from '../hooks/useProject';
@@ -17,12 +18,13 @@ import { onFirestoreConnectionChange, isFirestoreConnected } from '../lib/fireba
 import { useStudioToast } from './common/ToastContext';
 import { probeVideoMetadata } from '../core/media/metadataProber';
 import { urlRegistry } from '../core/media/urlRegistry';
-import type { MediaClip, TimelineItem, AudioTrackItem, TextLayer, WeddingChapter } from '../types/project';
+import type { MediaClip, TimelineItem, AudioTrackItem, TextLayer, WeddingChapter, ClipCategory } from '../types/project';
 
 export function StudioApp() {
   const [activeTab, setActiveTab] = useState<string>('project');
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isDirectorModalOpen, setIsDirectorModalOpen] = useState(false);
+  const [isChronologicalModalOpen, setIsChronologicalModalOpen] = useState(false);
   const [isHealthPanelOpen, setIsHealthPanelOpen] = useState(false);
   const [isVoiceRecorderOpen, setIsVoiceRecorderOpen] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -33,10 +35,13 @@ export function StudioApp() {
     addMediaClips, 
     updateMediaClip, 
     removeMediaClip,
+    removeMediaClips,
     relinkMediaSource,
     addTimelineItem,
+    addTimelineItems,
     updateTimelineItem,
     removeTimelineItem,
+    removeTimelineItems,
     duplicateTimelineItem,
     moveTimelineItem,
     splitTimelineItem,
@@ -296,6 +301,155 @@ export function StudioApp() {
     setActiveTab('montage');
   };
 
+  const handleBatchAddToTimeline = useCallback((clipsToAdd: MediaClip[]) => {
+    if (!clipsToAdd || clipsToAdd.length === 0) return;
+    const lastItem = project.timelineItems[project.timelineItems.length - 1];
+    let start = lastItem ? lastItem.timelineStart + lastItem.duration : 0;
+
+    const newItems: TimelineItem[] = clipsToAdd.map((clip, idx) => {
+      const duration = Math.max(0.2, clip.duration);
+      const item: TimelineItem = {
+        id: `ti_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+        clipId: clip.id,
+        trackId: 'v1',
+        sourceStart: 0,
+        sourceEnd: duration,
+        timelineStart: start,
+        duration: duration,
+        speed: 1,
+        volume: 1,
+        fadeIn: 0,
+        fadeOut: 0,
+        muted: false,
+        scale: 1,
+        rotation: 0,
+        fitMode: 'fit',
+        transitionIn: 'cut'
+      };
+      start += duration;
+      return item;
+    });
+
+    addTimelineItems(newItems);
+    toast.showSuccess(`Pomyślnie dodano ${newItems.length} filmów do montażu.`);
+    setActiveTab('montage');
+  }, [project.timelineItems, addTimelineItems, toast]);
+
+  const handleBatchRemoveMediaClips = useCallback((ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    removeMediaClips(ids);
+  }, [removeMediaClips]);
+
+  const handleApplyChronologicalMerge = useCallback((items: { clip: MediaClip; smartTitle: string; subtitleCaption: string; category: ClipCategory; transition: string; trimStart: number; trimEnd: number }[]) => {
+    if (!items || items.length === 0) return;
+
+    let start = 0;
+    const newTimelineItems: TimelineItem[] = [];
+    const newTextLayers: TextLayer[] = [];
+    const updatedMediaMap = new Map<string, Partial<MediaClip>>();
+
+    items.forEach((item, idx) => {
+      const clipDuration = Math.max(0.5, item.trimEnd - item.trimStart);
+      const transitionType = (item.transition as any) || (idx === 0 ? 'dip_black' : 'dissolve');
+      
+      const tItem: TimelineItem = {
+        id: `ti_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+        clipId: item.clip.id,
+        trackId: 'v1',
+        sourceStart: item.trimStart,
+        sourceEnd: item.trimEnd,
+        timelineStart: start,
+        duration: clipDuration,
+        speed: 1,
+        volume: 1,
+        fadeIn: idx === 0 ? 0.8 : 0,
+        fadeOut: idx === items.length - 1 ? 1.0 : 0,
+        muted: false,
+        scale: 1,
+        rotation: 0,
+        fitMode: 'fit',
+        transitionIn: transitionType,
+        titleCard: {
+          enabled: false,
+          text: item.smartTitle,
+          subtitle: item.subtitleCaption,
+          duration: 3,
+          style: 'cinematic',
+          backgroundColor: '#000000'
+        }
+      };
+      newTimelineItems.push(tItem);
+
+      // Add subtitle text layer for prominent scenes
+      if (item.subtitleCaption && item.subtitleCaption.trim()) {
+        newTextLayers.push({
+          id: `tl_${Date.now()}_${idx}`,
+          text: item.subtitleCaption,
+          type: 'caption',
+          style: 'cinematic',
+          timelineStart: start + 0.5,
+          duration: Math.min(4.5, clipDuration - 0.5),
+          position: { x: 0.5, y: 0.86 },
+          fontSize: 18,
+          color: '#FFFFFF',
+          backgroundColor: 'rgba(0,0,0,0.6)'
+        });
+      }
+
+      updatedMediaMap.set(item.clip.id, {
+        category: item.category,
+        name: item.smartTitle,
+        comment: item.subtitleCaption
+      });
+
+      start += clipDuration;
+    });
+
+    // Update media library items with smart titles & categories
+    const updatedLibrary = project.mediaLibrary.map(clip => {
+      const update = updatedMediaMap.get(clip.id);
+      if (update) {
+        return { ...clip, ...update };
+      }
+      return clip;
+    });
+
+    pushState({
+      ...project,
+      mediaLibrary: updatedLibrary,
+      timelineItems: newTimelineItems,
+      textLayers: newTextLayers,
+      updatedAt: new Date().toISOString()
+    });
+
+    setActiveTab('montage');
+  }, [project, pushState]);
+
+  const handleApplyCaptionsToLibrary = useCallback((updates: { id: string; name: string; category: ClipCategory; comment: string; tags: string[] }[]) => {
+    const updateMap = new Map<string, { name: string; category: ClipCategory; comment: string; tags: string[] }>();
+    updates.forEach(u => updateMap.set(u.id, u));
+
+    const updatedLibrary = project.mediaLibrary.map(clip => {
+      const u = updateMap.get(clip.id);
+      if (u) {
+        return {
+          ...clip,
+          name: u.name,
+          category: u.category,
+          comment: u.comment,
+          tags: Array.from(new Set([...(clip.tags || []), ...(u.tags || [])]))
+        };
+      }
+      return clip;
+    });
+
+    pushState({
+      ...project,
+      mediaLibrary: updatedLibrary,
+      updatedAt: new Date().toISOString()
+    });
+  }, [project, pushState]);
+
   const handleVoiceoverSave = (audioBlob: Blob, audioUrl: string, durationSeconds: number) => {
     const lastAudio = project.audioTracks[project.audioTracks.length - 1];
     const start = lastAudio ? lastAudio.timelineStart + lastAudio.duration : 0;
@@ -364,6 +518,7 @@ export function StudioApp() {
               onUpdateProject={pushState}
               onOpenDirectorModal={() => setIsDirectorModalOpen(true)}
               onNavigateToExport={() => setActiveTab('export')}
+              onOpenChronologicalModal={() => setIsChronologicalModalOpen(true)}
             />
           </div>
 
@@ -399,51 +554,14 @@ export function StudioApp() {
                 clips={project.mediaLibrary}
                 onAddClips={(newClips) => {
                   addMediaClips(newClips);
-                  // Ensure timeline is also populated
-                  const start = project.timelineItems.length > 0
-                    ? project.timelineItems[project.timelineItems.length - 1].timelineStart + project.timelineItems[project.timelineItems.length - 1].duration
-                    : 0;
-                  const newItems: TimelineItem[] = newClips.map((c, i) => ({
-                    id: `ti_${Date.now()}_${i}`,
-                    clipId: c.id,
-                    trackId: 'v1',
-                    sourceStart: 0,
-                    sourceEnd: c.duration,
-                    timelineStart: start + (i * c.duration),
-                    duration: c.duration,
-                    speed: 1,
-                    volume: 1,
-                    fadeIn: 0,
-                    fadeOut: 0,
-                    muted: false,
-                    scale: 1,
-                    rotation: 0,
-                    fitMode: 'fit'
-                  }));
-                  pushState({
-                    ...project,
-                    mediaLibrary: [...project.mediaLibrary, ...newClips],
-                    timelineItems: [...project.timelineItems, ...newItems]
-                  });
                 }}
                 onUpdateClip={updateMediaClip}
                 onRemoveClip={(id) => {
                   removeMediaClip(id);
-                  // Also remove from timeline
-                  const filteredTimeline = project.timelineItems.filter(i => i.clipId !== id);
-                  let t = 0;
-                  const resequenced = filteredTimeline.map(item => {
-                    const up = { ...item, timelineStart: t };
-                    t += item.duration;
-                    return up;
-                  });
-                  pushState({
-                    ...project,
-                    mediaLibrary: project.mediaLibrary.filter(c => c.id !== id),
-                    timelineItems: resequenced
-                  });
                 }}
                 onAddToTimeline={handleAddToTimeline}
+                onBatchAddToTimeline={handleBatchAddToTimeline}
+                onBatchRemoveClips={handleBatchRemoveMediaClips}
                 onEditClip={(clip) => {
                   handleAddToTimeline(clip);
                   setActiveTab('montage');
@@ -454,6 +572,7 @@ export function StudioApp() {
                 onClearFavorites={clearFavorites}
                 onClearAllMedia={handleResetProject}
                 onResetProject={handleResetProject}
+                onOpenChronologicalModal={() => setIsChronologicalModalOpen(true)}
               />
             </div>
           )}
@@ -520,6 +639,16 @@ export function StudioApp() {
         onUpdateClipAnalysis={(clipId, analysis) => {
           updateMediaClip(clipId, { analysis });
         }}
+      />
+
+      {/* AI Smart Chronological Sequencing & Auto-Captioning Modal */}
+      <AiChronologicalMergeModal
+        isOpen={isChronologicalModalOpen}
+        onClose={() => setIsChronologicalModalOpen(false)}
+        clips={project.mediaLibrary}
+        onApplyToTimeline={handleApplyChronologicalMerge}
+        onApplyCaptionsToLibrary={handleApplyCaptionsToLibrary}
+        onOpenQuickMerge={() => setActiveTab('montage')}
       />
 
       {/* Voiceover Recorder Modal */}

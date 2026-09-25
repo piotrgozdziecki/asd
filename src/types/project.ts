@@ -181,11 +181,22 @@ export interface WeddingChapter {
   description?: string;
 }
 
+export type ColorGradingPreset = 
+  | 'none' 
+  | 'golden_hour' 
+  | 'cinematic_noir' 
+  | 'pastel_boho' 
+  | 'vintage_35mm' 
+  | 'vivid_master';
+
 export interface ProjectSettings {
   targetResolution: '720p' | '1080p' | '4k';
   targetFps: 24 | 25 | 30 | 60;
   aspectRatio: '16:9' | '9:16' | '4:3';
   fitMode: FitMode;
+  colorGrade?: ColorGradingPreset;
+  letterbox?: 'none' | 'cinemascope' | 'standard';
+  audioDucking?: boolean;
   audioBalance: {
     musicVolume: number; // 0 to 1
     clipVolume: number; // 0 to 1

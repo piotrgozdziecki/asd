@@ -19,11 +19,67 @@ import {
   Smartphone,
   Square,
   ZoomIn,
-  ZoomOut
+  ZoomOut,
+  Palette,
+  Sliders,
+  Check
 } from 'lucide-react';
-import type { TimelineItem, MediaClip, TextLayer, AudioTrackItem } from '../../types/project';
+import type { TimelineItem, MediaClip, TextLayer, AudioTrackItem, ColorGradingPreset } from '../../types/project';
 
 export type ScaleMode = 'fit' | 'fill' | '16:9' | '9:16' | '4:3' | 'original';
+
+export interface ColorGradePresetItem {
+  id: ColorGradingPreset;
+  name: string;
+  subtitle: string;
+  icon: string;
+  filter: string;
+}
+
+export const COLOR_GRADE_PRESETS: ColorGradePresetItem[] = [
+  {
+    id: 'none',
+    name: 'Oryginał',
+    subtitle: 'Naturalny obraz bez filtrów',
+    icon: '🎬',
+    filter: 'none'
+  },
+  {
+    id: 'golden_hour',
+    name: 'Złoto Wenecji',
+    subtitle: 'Haute Couture Gold • Ciepły blask ślubny',
+    icon: '✨',
+    filter: 'contrast(1.08) brightness(1.04) saturate(1.22) sepia(0.2) hue-rotate(-5deg)'
+  },
+  {
+    id: 'cinematic_noir',
+    name: 'Aksamitny Noir',
+    subtitle: 'Srebrna taśma filmowa • Głęboki kontrast',
+    icon: '🎞️',
+    filter: 'grayscale(1) contrast(1.3) brightness(0.95)'
+  },
+  {
+    id: 'pastel_boho',
+    name: 'Toskania & Boho',
+    subtitle: 'Miękkie pastele • Romantyczny fine-art',
+    icon: '🌿',
+    filter: 'contrast(0.96) brightness(1.06) saturate(0.9) sepia(0.08)'
+  },
+  {
+    id: 'vintage_35mm',
+    name: 'Vintage Kodak 35mm',
+    subtitle: 'Stylistyka analogowej taśmy Super 8',
+    icon: '📽️',
+    filter: 'sepia(0.3) contrast(1.15) saturate(1.12) brightness(0.98) hue-rotate(5deg)'
+  },
+  {
+    id: 'vivid_master',
+    name: 'Czysty Master Vivid',
+    subtitle: 'Krystaliczna ostrość i głębokie barwy',
+    icon: '💎',
+    filter: 'contrast(1.1) saturate(1.2) brightness(1.02)'
+  }
+];
 
 interface PreviewPlayerProps {
   currentTime: number;
@@ -37,6 +93,10 @@ interface PreviewPlayerProps {
   onSeek: (time: number) => void;
   isCinemaMode?: boolean;
   onToggleCinemaMode?: () => void;
+  colorGrade?: ColorGradingPreset;
+  onColorGradeChange?: (preset: ColorGradingPreset) => void;
+  letterboxMode?: 'none' | 'cinemascope' | 'standard';
+  onLetterboxChange?: (mode: 'none' | 'cinemascope' | 'standard') => void;
 }
 
 export function PreviewPlayer({
@@ -50,7 +110,11 @@ export function PreviewPlayer({
   onPlayPause,
   onSeek,
   isCinemaMode = false,
-  onToggleCinemaMode
+  onToggleCinemaMode,
+  colorGrade = 'none',
+  onColorGradeChange,
+  letterboxMode = 'none',
+  onLetterboxChange
 }: PreviewPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -66,6 +130,31 @@ export function PreviewPlayer({
   // Autoscaling and Aspect Ratio mode
   const [scaleMode, setScaleMode] = useState<ScaleMode>('fit');
   const [zoomLevel, setZoomLevel] = useState<number>(100); // 100%, 125%, 150%
+
+  // Visual Grading & Cinema Engine
+  const [activeColorGrade, setActiveColorGrade] = useState<ColorGradingPreset>(colorGrade);
+  const [isLutDropdownOpen, setIsLutDropdownOpen] = useState(false);
+  const [isCinemascope, setIsCinemascope] = useState(letterboxMode === 'cinemascope');
+
+  useEffect(() => {
+    setActiveColorGrade(colorGrade);
+  }, [colorGrade]);
+
+  useEffect(() => {
+    setIsCinemascope(letterboxMode === 'cinemascope');
+  }, [letterboxMode]);
+
+  const handleSelectColorGrade = (preset: ColorGradingPreset) => {
+    setActiveColorGrade(preset);
+    setIsLutDropdownOpen(false);
+    if (onColorGradeChange) onColorGradeChange(preset);
+  };
+
+  const handleToggleCinemascope = () => {
+    const nextState = !isCinemascope;
+    setIsCinemascope(nextState);
+    if (onLetterboxChange) onLetterboxChange(nextState ? 'cinemascope' : 'none');
+  };
 
   // Map for fast media lookup
   const mediaMap = useMemo(() => {
@@ -270,10 +359,15 @@ export function PreviewPlayer({
 
   const getFilterStyle = (item?: TimelineItem | null) => {
     const scaleFactor = (zoomLevel / 100) * (item?.scale || 1);
+    const chosenPreset = COLOR_GRADE_PRESETS.find(p => p.id === activeColorGrade);
+    const filterVal = chosenPreset?.filter || 'none';
     return {
-      transform: `scale(${scaleFactor}) rotate(${item?.rotation || 0}deg)`
+      transform: `scale(${scaleFactor}) rotate(${item?.rotation || 0}deg)`,
+      filter: filterVal !== 'none' ? filterVal : undefined
     };
   };
+
+  const currentGradeItem = COLOR_GRADE_PRESETS.find(p => p.id === activeColorGrade) || COLOR_GRADE_PRESETS[0];
 
   return (
     <div 
@@ -296,8 +390,78 @@ export function PreviewPlayer({
         ))}
       </div>
 
-      {/* Top Floating Control Bar (Scale Mode & Zoom) */}
-      <div className="absolute top-2 right-2 sm:top-3 sm:right-3 z-30 flex items-center gap-1 opacity-85 group-hover:opacity-100 transition-opacity bg-black/80 backdrop-blur-md px-1.5 py-1 sm:px-2 sm:py-1 rounded-xl border border-white/10 shadow-lg max-w-[calc(100%-1rem)]">
+      {/* Top Floating Control Bar (Color Grade LUT, CinemaScope, Scale Mode & Zoom) */}
+      <div className="absolute top-2 right-2 sm:top-3 sm:right-3 z-40 flex items-center gap-1.5 opacity-90 group-hover:opacity-100 transition-opacity bg-black/85 backdrop-blur-md px-2 py-1.5 rounded-xl border border-white/15 shadow-2xl max-w-[calc(100%-1rem)] flex-wrap">
+        
+        {/* Cinematic Look / LUT Selector */}
+        <div className="relative">
+          <button
+            onClick={() => setIsLutDropdownOpen(!isLutDropdownOpen)}
+            className={`px-2 py-1 rounded-lg text-[10px] font-mono flex items-center gap-1.5 transition-all cursor-pointer ${
+              activeColorGrade !== 'none'
+                ? 'bg-gradient-to-r from-[#D4AF37] to-[#E5C158] text-black font-bold shadow-md'
+                : 'text-[#C5BBA6] hover:text-white bg-[#1A1813] border border-[#2B271E]'
+            }`}
+            title="Wybierz profil kolorystyczny (LUT Cinema Look)"
+          >
+            <Palette className="w-3 h-3" />
+            <span className="hidden xs:inline">{currentGradeItem.name}</span>
+          </button>
+
+          {/* LUT Dropdown Menu */}
+          {isLutDropdownOpen && (
+            <div className="absolute right-0 top-full mt-2 w-56 sm:w-64 bg-[#0E0D0A] border border-[#D4AF37]/40 rounded-xl shadow-2xl p-2 z-50 space-y-1 animate-in fade-in zoom-in-95 duration-150">
+              <div className="px-2 py-1 text-[9px] font-mono uppercase tracking-wider text-[#8C8370] border-b border-[#221F17] flex justify-between items-center">
+                <span>Profile Kinowe (LUTs)</span>
+                <span className="text-[#D4AF37]">Haute Couture</span>
+              </div>
+              {COLOR_GRADE_PRESETS.map(preset => {
+                const isSelected = activeColorGrade === preset.id;
+                return (
+                  <button
+                    key={preset.id}
+                    onClick={() => handleSelectColorGrade(preset.id)}
+                    className={`w-full text-left p-2 rounded-lg text-xs transition-colors flex items-center justify-between cursor-pointer ${
+                      isSelected
+                        ? 'bg-[#2E2716] text-[#EADFC9] border border-[#D4AF37]/50'
+                        : 'text-[#AAA69D] hover:bg-[#1A1813] hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm">{preset.icon}</span>
+                      <div>
+                        <div className="font-serif font-bold text-white text-[11px] sm:text-xs">
+                          {preset.name}
+                        </div>
+                        <div className="text-[9px] text-[#7A7260]">
+                          {preset.subtitle}
+                        </div>
+                      </div>
+                    </div>
+                    {isSelected && <Check className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* CinemaScope 2.39:1 Letterbox Toggle */}
+        <button
+          onClick={handleToggleCinemascope}
+          className={`px-1.5 sm:px-2 py-1 rounded-lg text-[10px] font-mono flex items-center gap-1 transition-all cursor-pointer ${
+            isCinemascope
+              ? 'bg-[#2E2716] text-[#D4AF37] border border-[#D4AF37]/60 font-bold shadow-sm'
+              : 'text-[#AAA69D] hover:text-white bg-[#1A1813] border border-[#2B271E]'
+          }`}
+          title="Przełącz format kinowy 2.39:1 (CinemaScope Paszport)"
+        >
+          <Film className="w-3 h-3 text-[#D4AF37]" />
+          <span className="hidden sm:inline">2.39:1</span>
+        </button>
+
+        <div className="h-3 w-px bg-white/20 mx-0.5" />
+
         {/* Aspect Ratio / Autoscaling modes */}
         <button
           onClick={() => setScaleMode('fit')}
@@ -351,6 +515,17 @@ export function PreviewPlayer({
           className="relative max-w-full max-h-full flex items-center justify-center overflow-hidden transition-all duration-300 rounded-lg shadow-2xl bg-[#050505]"
           style={getStageAspectRatioStyle()}
         >
+          {/* CinemaScope 2.39:1 Anamorphic Letterbox Overlays */}
+          {isCinemascope && (
+            <>
+              <div className="absolute top-0 left-0 right-0 h-[10.5%] bg-black/95 border-b border-[#D4AF37]/30 z-30 pointer-events-none flex items-center px-4 justify-between select-none">
+                <span className="text-[8px] font-mono tracking-widest text-[#D4AF37]/70 uppercase">CINEMASCOPE 2.39:1 • HAUTE COUTURE</span>
+                <span className="text-[8px] font-mono text-[#AAA69D]/50">35MM ANAMORPHIC</span>
+              </div>
+              <div className="absolute bottom-0 left-0 right-0 h-[10.5%] bg-black/95 border-t border-[#D4AF37]/30 z-30 pointer-events-none select-none" />
+            </>
+          )}
+
           {activeMedia && activeMediaUrl ? (
             activeMedia.type === 'video' ? (
               <video
@@ -566,7 +741,7 @@ export function PreviewPlayer({
           </div>
         </div>
 
-        {/* Center: Main Transport Play/Pause */}
+        {/* Center: Main Transport Play/Pause & Peak VU Meter */}
         <div className="flex items-center justify-center gap-1.5 sm:gap-4 shrink-0">
           <button 
             onClick={() => onSeek(Math.max(0, currentTime - 5))}
@@ -594,6 +769,45 @@ export function PreviewPlayer({
           >
             <SkipForward className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
+
+          {/* Stereo VU Meter */}
+          <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 bg-[#141310] rounded-lg border border-[#2B271E] shadow-inner select-none" title="Wskaźnik poziomu dźwięku (Peak VU Meter)">
+            <span className="text-[9px] font-mono text-[#D4AF37] font-bold">VU</span>
+            <div className="flex flex-col gap-0.5">
+              {/* Left Channel */}
+              <div className="flex items-center gap-0.5">
+                {[1, 2, 3, 4, 5, 6].map(i => {
+                  const active = playing && !muted && (i <= (Math.sin(currentTime * 8 + i) * 2 + 4));
+                  return (
+                    <div 
+                      key={`l_${i}`} 
+                      className={`w-1.5 h-1.5 rounded-xs transition-colors duration-75 ${
+                        active 
+                          ? (i === 6 ? 'bg-rose-500 shadow-[0_0_4px_#f43f5e]' : i >= 5 ? 'bg-amber-400' : 'bg-[#D4AF37]') 
+                          : 'bg-[#25221B]'
+                      }`} 
+                    />
+                  );
+                })}
+              </div>
+              {/* Right Channel */}
+              <div className="flex items-center gap-0.5">
+                {[1, 2, 3, 4, 5, 6].map(i => {
+                  const active = playing && !muted && (i <= (Math.cos(currentTime * 7 + i) * 2 + 4));
+                  return (
+                    <div 
+                      key={`r_${i}`} 
+                      className={`w-1.5 h-1.5 rounded-xs transition-colors duration-75 ${
+                        active 
+                          ? (i === 6 ? 'bg-rose-500 shadow-[0_0_4px_#f43f5e]' : i >= 5 ? 'bg-amber-400' : 'bg-[#D4AF37]') 
+                          : 'bg-[#25221B]'
+                      }`} 
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Right: Audio, Safe Zones, Cinema & Fullscreen */}

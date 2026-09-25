@@ -1,9 +1,14 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default deny
+    // Default deny catch-all
     match /{document=**} {
       allow read, write: if false;
+    }
+
+    // Healthcheck / Connection test endpoint
+    match /test/connection {
+      allow get: if true;
     }
 
     function isSignedIn() {
@@ -28,6 +33,15 @@ service cloud.firestore {
         && data.state is map;
     }
 
+    function isValidStory(data) {
+      return data.keys().hasAll(['id', 'userId', 'title', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.userId is string && data.userId.size() <= 128 && data.userId == request.auth.uid
+        && data.title is string && data.title.size() <= 256
+        && data.createdAt is string
+        && data.updatedAt is string;
+    }
+
     match /users/{userId}/projects/{projectId} {
       allow get, list: if isSignedIn() && request.auth.uid == userId;
       
@@ -43,6 +57,23 @@ service cloud.firestore {
         && isValidProject(incoming());
 
       allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(projectId);
+    }
+
+    match /users/{userId}/stories/{storyId} {
+      allow get, list: if isSignedIn() && request.auth.uid == userId;
+
+      allow create: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidId(storyId)
+        && isValidStory(incoming());
+
+      allow update: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidId(storyId)
+        && incoming().userId == existing().userId
+        && isValidStory(incoming());
+
+      allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(storyId);
     }
   }
 }

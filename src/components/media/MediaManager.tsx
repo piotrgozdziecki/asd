@@ -43,6 +43,8 @@ interface MediaManagerProps {
   onUpdateClip: (id: string, updates: Partial<MediaClip>) => void;
   onRemoveClip: (id: string) => void;
   onAddToTimeline: (clip: MediaClip, customRange?: { start: number; end: number }) => void;
+  onBatchAddToTimeline?: (clips: MediaClip[]) => void;
+  onBatchRemoveClips?: (ids: string[]) => void;
   onRelinkSource?: (clipId: string, file: File) => void;
   onVerifyDurations?: () => Promise<{ checked: number; updated: number; details: { name: string; oldDuration: number; newDuration: number }[] }>;
   onClearFavorites?: () => void;
@@ -50,6 +52,7 @@ interface MediaManagerProps {
   onResetProject?: () => void;
   onEditClip?: (clip: MediaClip) => void;
   onMoveClipOrder?: (fromIndex: number, toIndex: number) => void;
+  onOpenChronologicalModal?: () => void;
   externalFilterTab?: string;
   onFilterTabChange?: (tab: any) => void;
 }
@@ -60,6 +63,8 @@ export function MediaManager({
   onUpdateClip, 
   onRemoveClip, 
   onAddToTimeline,
+  onBatchAddToTimeline,
+  onBatchRemoveClips,
   onRelinkSource,
   onVerifyDurations,
   onClearFavorites,
@@ -67,6 +72,7 @@ export function MediaManager({
   onResetProject,
   onEditClip,
   onMoveClipOrder,
+  onOpenChronologicalModal,
   externalFilterTab,
   onFilterTabChange
 }: MediaManagerProps) {
@@ -265,14 +271,27 @@ export function MediaManager({
     toast.showSuccess('Pomyślnie wyczyszczono wszystkie materiały z projektu.');
   };
 
-  // Multi-selection Handlers
-  const toggleSelectClip = (id: string) => {
+  // Multi-selection Handlers with Shift-range selection
+  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
+
+  const toggleSelectClip = (id: string, isShift = false) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (isShift && lastSelectedId && filteredClips.some(c => c.id === lastSelectedId)) {
+        const lastIdx = filteredClips.findIndex(c => c.id === lastSelectedId);
+        const curIdx = filteredClips.findIndex(c => c.id === id);
+        const start = Math.min(lastIdx, curIdx);
+        const end = Math.max(lastIdx, curIdx);
+        for (let i = start; i <= end; i++) {
+          next.add(filteredClips[i].id);
+        }
+      } else {
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+      }
       return next;
     });
+    setLastSelectedId(id);
   };
 
   const handleSelectAllFiltered = () => {
@@ -281,6 +300,7 @@ export function MediaManager({
 
   const handleClearSelection = () => {
     setSelectedIds(new Set());
+    setLastSelectedId(null);
   };
 
   const handleInvertSelection = () => {
@@ -296,9 +316,15 @@ export function MediaManager({
   const handleBatchAddToTimeline = () => {
     const selected = filteredClips.filter(c => selectedIds.has(c.id));
     if (selected.length === 0) return;
-    selected.forEach(clip => {
-      onAddToTimeline(clip);
-    });
+    
+    if (onBatchAddToTimeline) {
+      onBatchAddToTimeline(selected);
+    } else {
+      selected.forEach(clip => {
+        onAddToTimeline(clip);
+      });
+    }
+
     setVerifyMessage(`Dodano ${selected.length} zaznaczonych materiałów do osi czasu.`);
     setSelectedIds(new Set());
     setTimeout(() => setVerifyMessage(null), 5000);
@@ -330,8 +356,16 @@ export function MediaManager({
   const executeBatchRemove = () => {
     setIsConfirmBatchDeleteOpen(false);
     const count = selectedIds.size;
-    selectedIds.forEach(id => onRemoveClip(id));
+    const ids = Array.from(selectedIds);
+
+    if (onBatchRemoveClips) {
+      onBatchRemoveClips(ids);
+    } else {
+      ids.forEach(id => onRemoveClip(id));
+    }
+
     setSelectedIds(new Set());
+    setLastSelectedId(null);
     toast.showSuccess(`Usunięto ${count} materiałów z biblioteki.`);
   };
 
@@ -393,93 +427,113 @@ export function MediaManager({
       return;
     }
 
-    const newClips: MediaClip[] = [];
+    let processedCount = 0;
+    let failedCount = 0;
+    const batchSize = 3; // 3 files processed in parallel
 
-    for (let i = 0; i < validFiles.length; i++) {
-      const file = validFiles[i];
-      setProcessingStatus(`Analiza ${i + 1}/${validFiles.length}: ${file.name}`);
-      setUploadProgress(Math.round(((i + 1) / validFiles.length) * 100));
-
-      try {
-        const isVideo = file.type.startsWith('video/');
-        const objectUrl = urlRegistry.create(file);
-
-        if (isVideo) {
-          const meta = await probeVideoMetadata(file);
-          const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-          
-          // Persist file in IndexedDB
+    for (let i = 0; i < validFiles.length; i += batchSize) {
+      const chunk = validFiles.slice(i, i + batchSize);
+      setProcessingStatus(`Wczytywanie i analiza: ${Math.min(i + chunk.length, validFiles.length)} z ${validFiles.length} plików...`);
+      
+      const chunkResults = await Promise.all(
+        chunk.map(async (file) => {
           try {
-            await localIndexedDB.saveMediaBlob(clipId, file);
-          } catch (e) {
-            console.warn('Could not store blob in IDB:', e);
-          }
+            const isVideo = file.type.startsWith('video/');
+            const objectUrl = urlRegistry.create(file);
 
-          const clip: MediaClip = {
-            id: clipId,
-            file,
-            objectUrl,
-            type: 'video',
-            name: file.name,
-            duration: meta.duration,
-            width: meta.width,
-            height: meta.height,
-            aspectRatio: meta.aspectRatio,
-            orientation: meta.orientation,
-            fps: meta.fps,
-            hasAudio: meta.hasAudio,
-            size: file.size,
-            thumbnailUrl: meta.thumbnailUrl || objectUrl,
-            category: 'unassigned',
-            status: 'unused',
-            isFavorite: false,
-            tags: [],
-            createdAt: new Date().toISOString(),
-            capturedAt: new Date(file.lastModified).toISOString()
-          };
-          newClips.push(clip);
-        } else {
-          const meta = await probeImageMetadata(file);
-          const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-          
-          // Persist file in IndexedDB
-          try {
-            await localIndexedDB.saveMediaBlob(clipId, file);
-          } catch (e) {
-            console.warn('Could not store blob in IDB:', e);
-          }
+            if (isVideo) {
+              const meta = await probeVideoMetadata(file);
+              const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+              
+              // Persist file in IndexedDB
+              try {
+                await localIndexedDB.saveMediaBlob(clipId, file);
+              } catch (e) {
+                console.warn('Could not store blob in IDB:', e);
+              }
 
-          const clip: MediaClip = {
-            id: clipId,
-            file,
-            objectUrl,
-            type: 'image',
-            name: file.name,
-            duration: 5,
-            width: meta.width,
-            height: meta.height,
-            aspectRatio: meta.aspectRatio,
-            orientation: meta.orientation,
-            fps: 30,
-            hasAudio: false,
-            size: file.size,
-            thumbnailUrl: meta.thumbnailUrl || objectUrl,
-            category: 'unassigned',
-            status: 'unused',
-            isFavorite: false,
-            tags: [],
-            createdAt: new Date().toISOString(),
-            capturedAt: new Date(file.lastModified).toISOString()
-          };
-          newClips.push(clip);
-        }
-      } catch (err: any) {
-        console.error('Failed to probe file:', file.name, err);
+              const clip: MediaClip = {
+                id: clipId,
+                file,
+                objectUrl,
+                type: 'video',
+                name: file.name,
+                duration: meta.duration,
+                width: meta.width,
+                height: meta.height,
+                aspectRatio: meta.aspectRatio,
+                orientation: meta.orientation,
+                fps: meta.fps,
+                hasAudio: meta.hasAudio,
+                size: file.size,
+                thumbnailUrl: meta.thumbnailUrl || objectUrl,
+                category: 'unassigned',
+                status: 'unused',
+                isFavorite: false,
+                tags: [],
+                createdAt: new Date().toISOString(),
+                capturedAt: new Date(file.lastModified).toISOString()
+              };
+              return clip;
+            } else {
+              const meta = await probeImageMetadata(file);
+              const clipId = `clip_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+              
+              try {
+                await localIndexedDB.saveMediaBlob(clipId, file);
+              } catch (e) {
+                console.warn('Could not store blob in IDB:', e);
+              }
+
+              const clip: MediaClip = {
+                id: clipId,
+                file,
+                objectUrl,
+                type: 'image',
+                name: file.name,
+                duration: 5,
+                width: meta.width,
+                height: meta.height,
+                aspectRatio: meta.aspectRatio,
+                orientation: meta.orientation,
+                fps: 30,
+                hasAudio: false,
+                size: file.size,
+                thumbnailUrl: meta.thumbnailUrl || objectUrl,
+                category: 'unassigned',
+                status: 'unused',
+                isFavorite: false,
+                tags: [],
+                createdAt: new Date().toISOString(),
+                capturedAt: new Date(file.lastModified).toISOString()
+              };
+              return clip;
+            }
+          } catch (err: any) {
+            console.error('Failed to probe file:', file.name, err);
+            failedCount++;
+            return null;
+          }
+        })
+      );
+
+      const validClipsInChunk = chunkResults.filter((c): c is MediaClip => c !== null);
+      if (validClipsInChunk.length > 0) {
+        onAddClips(validClipsInChunk);
+        processedCount += validClipsInChunk.length;
       }
+
+      setUploadProgress(Math.round(((i + chunk.length) / validFiles.length) * 100));
     }
 
-    if (newClips.length > 0) {
-      onAddClips(newClips);
+    if (processedCount > 0) {
+      if (failedCount > 0) {
+        toast.showWarning(`Wczytano ${processedCount} materiałów (${failedCount} plików pominięto z powodu nieobsługiwanego formatu).`);
+      } else {
+        toast.showSuccess(`Błyskawicznie wczytano ${processedCount} materiałów do projektu!`);
+      }
+    } else if (failedCount > 0) {
+      toast.showError(`Nie udało się wczytać plików (${failedCount} błędów formatu).`);
     }
     
     setIsProcessing(false);
@@ -739,6 +793,44 @@ export function MediaManager({
         existingClips={clips}
       />
 
+      {/* AI Smart Chronological Sequencing & Auto-Captioning Banner */}
+      {clips.length >= 2 && onOpenChronologicalModal && (
+        <div className="relative rounded-2xl p-4 sm:p-5 bg-gradient-to-r from-[#241C0E] via-[#1C160B] to-[#14110A] border-2 border-[#D4AF37]/60 shadow-[0_12px_40px_rgba(212,175,55,0.2)] overflow-hidden">
+          <div className="absolute top-0 right-0 w-80 h-full bg-radial-[ellipse_80%_60%_at_80%_20%] from-[#D4AF37]/15 to-transparent pointer-events-none" />
+          
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative z-10">
+            <div className="flex items-start sm:items-center gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#3D2F13] to-[#1A1408] border border-[#D4AF37] flex items-center justify-center shrink-0 shadow-[0_0_20px_rgba(212,175,55,0.35)] animate-gold-shimmer">
+                <Sparkles className="w-6 h-6 text-[#FDE047]" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-cinematic font-bold text-sm sm:text-base text-transparent bg-clip-text bg-gradient-to-r from-[#FFF5C0] via-[#FDE047] to-[#D4AF37] tracking-wider">
+                    INTELIGENTNE SCALANIE CHRONOLOGICZNE & PODPISY AI
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full bg-[#D4AF37]/20 border border-[#D4AF37]/50 text-[10px] font-bold text-[#FDE047] uppercase font-mono">
+                    {clips.length} ujęć
+                  </span>
+                </div>
+                <p className="text-xs text-[#C5BBA5] mt-1 max-w-xl leading-relaxed">
+                  Automatyczne ułożenie filmów wg chronologii ślubu (od przygotowań po finał), redukcja drgań, płynne przejścia i inteligentne generowanie podpisów scen.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2.5 shrink-0">
+              <button
+                onClick={onOpenChronologicalModal}
+                className="luxury-btn-primary px-5 py-2.5 rounded-xl text-xs font-extrabold uppercase tracking-wider flex items-center gap-2 cursor-pointer shadow-[0_4px_25px_rgba(212,175,55,0.4)]"
+              >
+                <Sparkles className="w-4 h-4 text-black" />
+                <span>Uruchom Scalanie & Podpisy AI</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Filter and Search Bar (Haute Couture Director's Console) */}
       <div className="flex flex-col gap-3.5 bg-gradient-to-r from-[#14120D] via-[#100F0C] to-[#14120D] p-3.5 sm:p-4 rounded-2xl border border-[#2D261A] shrink-0 shadow-[0_8px_30px_rgba(0,0,0,0.5)] backdrop-blur-xl">
         
@@ -897,6 +989,17 @@ export function MediaManager({
 
           {/* Action buttons (Scrollable horizontally on mobile/small screens!) */}
           <div className="flex items-center gap-2 shrink-0">
+            {onOpenChronologicalModal && clips.length > 0 && (
+              <button
+                onClick={onOpenChronologicalModal}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#D4AF37] bg-gradient-to-r from-[#3D2E12] to-[#251C0A] text-[#FDE047] hover:border-[#FDE047] hover:brightness-110 transition-all cursor-pointer text-xs font-bold shadow-[0_0_15px_rgba(212,175,55,0.25)] whitespace-nowrap shrink-0"
+                title="Automatyczne scalanie chronologiczne i podpisywanie scen przez AI"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#FDE047]" />
+                <span>✨ Scal i Podpisz AI</span>
+              </button>
+            )}
+
             {filteredClips.length > 0 && (
               <button
                 onClick={handleSelectAllFiltered}
@@ -989,14 +1092,17 @@ export function MediaManager({
 
       {/* Batch Actions Bar for Multi-selection */}
       {selectedIds.size > 0 && (
-        <div className="bg-[#1C1A17] border-2 border-[#D4AF37] rounded-xl p-3 sm:p-4 flex flex-wrap items-center justify-between gap-3 shadow-xl shrink-0">
-          <div className="flex items-center gap-2 text-xs text-white">
-            <span className="font-bold text-[#D4AF37] bg-black/60 px-2 py-0.5 rounded border border-[#D4AF37]/50">
-              {selectedIds.size} zaznaczonych
+        <div className="bg-[#1C1A17] border-2 border-[#D4AF37] rounded-xl p-3 sm:p-4 flex flex-wrap items-center justify-between gap-3 shadow-xl shrink-0 animate-in fade-in duration-150">
+          <div className="flex items-center gap-2 text-xs text-white flex-wrap">
+            <span className="font-bold text-[#D4AF37] bg-black/60 px-2.5 py-1 rounded-lg border border-[#D4AF37]/50 flex items-center gap-1.5 shadow-inner">
+              <span>{selectedIds.size} zaznaczonych</span>
+              <span className="text-[#AAA69D] text-[10px] font-mono">
+                ({formatDuration(clips.filter(c => selectedIds.has(c.id)).reduce((acc, c) => acc + (c.duration || 0), 0))})
+              </span>
             </span>
             <button 
               onClick={handleSelectAllFiltered}
-              className="text-[11px] text-[#AAA69D] hover:text-white underline ml-2 cursor-pointer font-medium"
+              className="text-[11px] text-[#AAA69D] hover:text-white underline ml-1 cursor-pointer font-medium"
             >
               Zaznacz widoczne ({filteredClips.length})
             </button>
@@ -1015,12 +1121,24 @@ export function MediaManager({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {onOpenChronologicalModal && (
+              <button
+                onClick={onOpenChronologicalModal}
+                className="bg-gradient-to-r from-[#3D2E12] to-[#251C0A] hover:border-[#FDE047] border border-[#D4AF37] text-[#FDE047] font-bold text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 shadow-md cursor-pointer transition-transform hover:scale-105 active:scale-95"
+                title="Otwórz inteligentne scalanie chronologiczne i podpisywanie dla zaznaczonych materiałów"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#FDE047]" />
+                <span>✨ Scal i Podpisz AI</span>
+              </button>
+            )}
+
             <button
               onClick={handleBatchAddToTimeline}
-              className="bg-[#D4AF37] hover:bg-[#FDE047] text-black font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow cursor-pointer transition-transform hover:scale-105"
+              className="bg-gradient-to-r from-[#D4AF37] to-[#FDE047] hover:brightness-110 text-black font-extrabold text-xs px-3.5 py-2 rounded-lg flex items-center gap-2 shadow-lg cursor-pointer transition-transform hover:scale-105 active:scale-95"
+              title="Dodaj wszystkie zaznaczone ujęcia w ustalonej kolejności do montażu"
             >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Dodaj do Osi Czasu</span>
+              <Plus className="w-4 h-4 stroke-[3]" />
+              <span>DODAJ WSZYSTKIE DO MONTAŻU ({selectedIds.size})</span>
             </button>
 
             <select
@@ -1221,7 +1339,7 @@ export function MediaManager({
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                toggleSelectClip(clip.id);
+                                toggleSelectClip(clip.id, e.shiftKey);
                               }}
                               className={`p-1 rounded backdrop-blur-md transition-colors cursor-pointer ${
                                 isSelected 

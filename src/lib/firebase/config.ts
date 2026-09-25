@@ -1,18 +1,39 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { initializeFirestore, getFirestore } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  getFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  doc,
+  getDocFromServer,
+  Firestore
+} from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../../../firebase-applet-config.json';
 
-export const app = initializeApp(firebaseConfig);
+// Ensure singleton Firebase App
+export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-export const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-}, firebaseConfig.firestoreDatabaseId);
+// Initialize Firestore with robust modern multi-tab persistent cache
+let firestoreInstance: Firestore;
+try {
+  firestoreInstance = initializeFirestore(app, {
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager()
+    })
+  }, firebaseConfig.firestoreDatabaseId);
+} catch {
+  // In case Firestore has already been initialized on this app instance
+  firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+}
 
+export const db = firestoreInstance;
 export const auth = getAuth(app);
+export const storage = getStorage(app);
 
-// Connectivity status tracker
-export let isFirestoreConnected = true;
+// Connectivity status tracker with graceful offline detection
+export let isFirestoreConnected = typeof navigator !== 'undefined' ? navigator.onLine : true;
 const connectionListeners: ((status: boolean) => void)[] = [];
 
 export function onFirestoreConnectionChange(callback: (status: boolean) => void) {
@@ -29,31 +50,35 @@ function updateConnectionStatus(status: boolean) {
   connectionListeners.forEach(cb => cb(status));
 }
 
-// Diagnostic test for Firestore connectivity
+// Browser online/offline event listeners
 if (typeof window !== 'undefined') {
-  const testConnection = async () => {
+  window.addEventListener('online', () => {
+    updateConnectionStatus(true);
+  });
+  window.addEventListener('offline', () => {
+    updateConnectionStatus(false);
+  });
+}
+
+// Initial connection test as per Firebase guidelines
+if (typeof window !== 'undefined') {
+  async function testConnection() {
     try {
-      const { doc, getDocFromServer } = await import('firebase/firestore');
-      // Attempting to read a non-existent document from server to check connectivity
-      await getDocFromServer(doc(db, '_internal_system_', 'connectivity_test')).catch(() => {
-        // We expect a "not-found" or "permission-denied", both mean we REACHED the server
-      });
-      console.log('[Firebase] Diagnostic: Połączono z backendem Firestore.');
+      await getDocFromServer(doc(db, 'test', 'connection'));
       updateConnectionStatus(true);
     } catch (error: any) {
-      const msg = error?.message || String(error);
-      if (msg.includes('could not reach') || msg.includes('offline') || msg.includes('timeout')) {
-        console.error('[Firebase] Diagnostic Error: Nie można nawiązać połączenia z serwerem Firestore.', error);
+      const errMsg = error?.message || String(error);
+      const isOffline =
+        errMsg.includes('the client is offline') ||
+        errMsg.includes('unavailable') ||
+        error?.code === 'unavailable' ||
+        error?.code === 'failed-precondition';
+
+      if (isOffline) {
         updateConnectionStatus(false);
+        console.warn('[Firebase] Client is currently operating in offline mode. Local persistent cache is enabled.');
       }
     }
-  };
-  
-  // Initial check
+  }
   testConnection();
-  
-  // Periodic check if disconnected
-  setInterval(() => {
-    if (!isFirestoreConnected) testConnection();
-  }, 30000);
 }

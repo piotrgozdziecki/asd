@@ -41,6 +41,7 @@ interface TimelineViewProps {
   onSplitItem?: (id: string, splitTime: number) => void;
   onDuplicateItem?: (id: string) => void;
   onDeleteItem?: (id: string) => void;
+  onDeleteMultipleItems?: (ids: string[]) => void;
   onAddMarker?: (marker: TimelineMarker) => void;
   onDeleteMarker?: (id: string) => void;
 }
@@ -62,6 +63,7 @@ export function TimelineView({
   onSplitItem,
   onDuplicateItem,
   onDeleteItem,
+  onDeleteMultipleItems,
   onAddMarker,
   onDeleteMarker
 }: TimelineViewProps) {
@@ -70,6 +72,7 @@ export function TimelineView({
   // Zoom level: pixels per second (20 to 120)
   const [pixelsPerSecond, setPixelsPerSecond] = useState<number>(40);
   const [isSnappingEnabled, setIsSnappingEnabled] = useState<boolean>(true);
+  const [multiSelectedIds, setMultiSelectedIds] = useState<Set<string>>(new Set());
 
   // Drag state
   const [draggedItem, setDraggedItem] = useState<{
@@ -133,7 +136,12 @@ export function TimelineView({
       if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedItemId && onDeleteItem) {
+        if (multiSelectedIds.size > 1 && onDeleteMultipleItems) {
+          e.preventDefault();
+          onDeleteMultipleItems(Array.from(multiSelectedIds));
+          setMultiSelectedIds(new Set());
+          onItemSelect(null);
+        } else if (selectedItemId && onDeleteItem) {
           e.preventDefault();
           onDeleteItem(selectedItemId);
         }
@@ -152,7 +160,7 @@ export function TimelineView({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedItemId, selectedItem, currentTime, onDeleteItem, onSplitItem, onDuplicateItem]);
+  }, [selectedItemId, selectedItem, currentTime, onDeleteItem, onDeleteMultipleItems, multiSelectedIds, onSplitItem, onDuplicateItem]);
 
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>, id: string, type: 'video' | 'audio' | 'text', startTime: number) => {
     e.dataTransfer.setData('text/plain', id);
@@ -497,7 +505,7 @@ export function TimelineView({
               
               {items.map((item, idx) => {
                 const media = clipMap.get(item.clipId);
-                const isSelected = selectedItemId === item.id;
+                const isSelected = selectedItemId === item.id || multiSelectedIds.has(item.id);
                 const isMissing = !media || (!media.objectUrl && !media.file && !media.driveFileId);
                 const isVertical = media?.orientation === 'portrait';
                 
@@ -508,7 +516,17 @@ export function TimelineView({
                     onDragStart={(e) => handleDragStart(e, item.id, 'video', item.timelineStart)}
                     onClick={(e) => {
                       e.stopPropagation();
-                      onItemSelect(item.id);
+                      if (e.shiftKey || e.metaKey || e.ctrlKey) {
+                        setMultiSelectedIds(prev => {
+                          const next = new Set(prev);
+                          if (next.has(item.id)) next.delete(item.id);
+                          else next.add(item.id);
+                          return next;
+                        });
+                      } else {
+                        setMultiSelectedIds(new Set([item.id]));
+                        onItemSelect(item.id);
+                      }
                     }}
                     className={`timeline-clip absolute h-full rounded-md border overflow-hidden cursor-pointer transition-all ${getSelectionStyle(isSelected)} ${draggedItem?.id === item.id ? 'opacity-50' : ''} ${isMissing ? 'bg-red-950/60 border-red-500' : 'bg-[#1C1A17]'}`}
                     style={{
@@ -604,6 +622,34 @@ export function TimelineView({
 
         </div>
       </div>
+
+      {/* Floating Bulk Action Dock for Timeline */}
+      {multiSelectedIds.size > 1 && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-50 bg-[#161410] border-2 border-[#D4AF37] rounded-xl px-4 py-2 flex items-center gap-3 shadow-2xl animate-in fade-in slide-in-from-bottom-2 select-none">
+          <span className="text-xs font-bold text-[#D4AF37]">
+            Zaznaczono {multiSelectedIds.size} ujęć na osi
+          </span>
+          {onDeleteMultipleItems && (
+            <button
+              onClick={() => {
+                onDeleteMultipleItems(Array.from(multiSelectedIds));
+                setMultiSelectedIds(new Set());
+                onItemSelect(null);
+              }}
+              className="px-3 py-1 bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-700/80 text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer shadow transition-all hover:scale-105"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Usuń z osi ({multiSelectedIds.size})</span>
+            </button>
+          )}
+          <button
+            onClick={() => setMultiSelectedIds(new Set())}
+            className="text-xs text-[#AAA69D] hover:text-white underline cursor-pointer"
+          >
+            Odznacz
+          </button>
+        </div>
+      )}
     </div>
   );
 }

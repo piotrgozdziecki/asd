@@ -23,6 +23,7 @@ interface QuickActionsBarProps {
   onOpenDirectorModal: () => void;
   onNavigateToExport: () => void;
   onSelectRatingFilter?: (rating: string) => void;
+  onOpenChronologicalModal?: () => void;
 }
 
 export function QuickActionsBar({
@@ -30,7 +31,8 @@ export function QuickActionsBar({
   onUpdateProject,
   onOpenDirectorModal,
   onNavigateToExport,
-  onSelectRatingFilter
+  onSelectRatingFilter,
+  onOpenChronologicalModal
 }: QuickActionsBarProps) {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [activeActionName, setActiveActionName] = useState<string>('');
@@ -205,6 +207,19 @@ export function QuickActionsBar({
         <span className="text-[11px] font-bold text-[#FDE047] tracking-[0.12em] px-2.5 py-1.5 rounded-xl bg-[#241D0E] border border-[#D4AF37]/30 flex items-center gap-1.5 shrink-0 shadow-[0_0_12px_rgba(212,175,55,0.15)] font-cinematic whitespace-nowrap">
           <Sparkles className="w-3.5 h-3.5 text-[#FDE047]" /> KONSOLA REŻYSERSKA
         </span>
+
+        {/* 0. Smart Chronological Merge & Auto-Captioning */}
+        {onOpenChronologicalModal && project.mediaLibrary.length > 0 && (
+          <button
+            onClick={onOpenChronologicalModal}
+            disabled={isRunning}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#3D2E12] to-[#251C0A] hover:from-[#523E18] hover:to-[#382A0E] border border-[#D4AF37] text-[#FDE047] cursor-pointer transition-all font-bold disabled:opacity-50 shadow-[0_0_15px_rgba(212,175,55,0.2)] shrink-0 whitespace-nowrap"
+            title="Inteligentne scalanie chronologiczne ujęć i generowanie podpisów scen przez AI"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-[#FDE047] animate-pulse" />
+            <span>Scal & Podpisz AI (Chronologia)</span>
+          </button>
+        )}
 
         {/* 1. Analyze Project */}
         <button

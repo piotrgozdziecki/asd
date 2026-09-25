@@ -1,55 +1,22 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { 
-  initializeFirestore,
-  getFirestore, 
-  collection, 
-  doc, 
-  setDoc, 
-  getDocs, 
-  deleteDoc, 
-  query, 
+import {
+  collection,
+  doc,
+  setDoc,
+  getDocs,
+  deleteDoc,
+  query,
   orderBy,
-  onSnapshot,
-  enableIndexedDbPersistence
+  onSnapshot
 } from 'firebase/firestore';
 import {
-  getStorage,
   ref,
   uploadBytesResumable,
   getDownloadURL,
   deleteObject
 } from 'firebase/storage';
-import firebaseConfig from '../../firebase-applet-config.json';
+import { app, db, auth, storage } from './firebase/config';
 
-export const app = initializeApp(firebaseConfig);
-
-// Initialize Firestore with force long polling to prevent WebChannel stream timeouts in iframe environments
-try {
-  initializeFirestore(app, {
-    experimentalForceLongPolling: true,
-  }, firebaseConfig.firestoreDatabaseId);
-} catch {
-  // If already initialized
-}
-
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-
-// Enable Firestore Offline Persistence for PWA offline workflow
-if (typeof window !== 'undefined') {
-  enableIndexedDbPersistence(db).catch((err) => {
-    if (err.code === 'failed-precondition') {
-      console.warn('Firestore offline persistence failed-precondition: Multiple tabs open.');
-    } else if (err.code === 'unimplemented') {
-      console.warn('Firestore offline persistence unimplemented: Browser lack support.');
-    } else {
-      console.warn('Firestore offline persistence error:', err);
-    }
-  });
-}
-
-export const auth = getAuth(app);
-export const storage = getStorage(app);
+export { app, db, auth, storage };
 
 import { safeStringify } from './safeJson';
 

@@ -43,7 +43,7 @@ export function GoogleDriveIcon({ className = "w-5 h-5" }: { className?: string 
 }
 
 export function GoogleDriveModal({ isOpen, onClose, onImportClips, existingClips }: GoogleDriveModalProps) {
-  const { user, accessToken, login } = useAuth();
+  const { user, accessToken, login, clearDriveAccess } = useAuth();
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +62,9 @@ export function GoogleDriveModal({ isOpen, onClose, onImportClips, existingClips
     try {
       const res = await fetch(`/api/drive/list?accessToken=${encodeURIComponent(token)}`);
       if (!res.ok) {
+        if (res.status === 401) {
+          clearDriveAccess();
+        }
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || `Błąd serwera (${res.status})`);
       }

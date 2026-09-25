@@ -72,8 +72,6 @@ export function AiWeddingDirectorModal({
   const [proposedItems, setProposedItems] = useState<ProposedItem[]>([]);
   const [previewClip, setPreviewClip] = useState<{ clip: MediaClip; url: string; start: number; end: number } | null>(null);
 
-  if (!isOpen) return null;
-
   const handleStartAnalysis = async () => {
     const controller = new AbortController();
     setAbortController(controller);
@@ -180,6 +178,8 @@ export function AiWeddingDirectorModal({
       .filter(p => p.isIncluded)
       .reduce((acc, p) => acc + p.duration, 0);
   }, [proposedItems]);
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-md animate-fadeIn">

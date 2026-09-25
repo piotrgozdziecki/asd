@@ -10,12 +10,34 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["userId", "state", "updatedAt"]
+    },
+    "SavedStory": {
+      "title": "Saved Story",
+      "description": "Zapisany scenariusz weselny lub notatka reżyserska",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 256 },
+        "concept": { "type": "string", "maxLength": 5000 },
+        "musicSuggestion": { "type": "string", "maxLength": 500 },
+        "voiceover": { "type": "string", "maxLength": 5000 },
+        "timeline": { "type": "array" },
+        "mediaItems": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "title", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
     "/users/{userId}/projects/{projectId}": {
       "schema": { "$ref": "#/entities/Project" },
       "description": "Zapisane projekty weselne użytkownika"
+    },
+    "/users/{userId}/stories/{storyId}": {
+      "schema": { "$ref": "#/entities/SavedStory" },
+      "description": "Zapisane historie i scenariusze użytkownika"
     }
   }
 }

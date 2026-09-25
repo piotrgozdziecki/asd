@@ -1,13 +1,16 @@
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
-import { app, auth } from './firebase';
+import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
+import { auth } from './firebase/config';
 
 const provider = new GoogleAuthProvider();
+provider.setCustomParameters({
+  prompt: 'select_account'
+});
 provider.addScope('https://www.googleapis.com/auth/drive.readonly');
 provider.addScope('https://www.googleapis.com/auth/drive.file');
 provider.addScope('https://www.googleapis.com/auth/drive.metadata.readonly');
 
-let isSigningIn = false;
 let cachedAccessToken: string | null = typeof window !== 'undefined' ? sessionStorage.getItem('gdrive_access_token') : null;
+let activeSignInPromise: Promise<{ user: User; accessToken: string } | null> | null = null;
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
@@ -20,7 +23,6 @@ export const initAuth = (
         cachedAccessToken = token;
         if (onAuthSuccess) onAuthSuccess(user, token);
       } else {
-        // User is authenticated with Firebase, but Drive token might need refresh if picker is clicked
         if (onAuthSuccess) onAuthSuccess(user, '');
       }
     } else {
@@ -32,25 +34,41 @@ export const initAuth = (
 };
 
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
-  try {
-    isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error('Failed to get access token from Firebase Auth');
-    }
-
-    cachedAccessToken = credential.accessToken;
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem('gdrive_access_token', cachedAccessToken);
-    }
-    return { user: result.user, accessToken: cachedAccessToken };
-  } catch (error: any) {
-    console.error('Sign in error:', error);
-    throw error;
-  } finally {
-    isSigningIn = false;
+  if (activeSignInPromise) {
+    return activeSignInPromise;
   }
+
+  activeSignInPromise = (async () => {
+    try {
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      const accessToken = credential?.accessToken || '';
+
+      if (accessToken) {
+        cachedAccessToken = accessToken;
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('gdrive_access_token', cachedAccessToken);
+        }
+      }
+      return { user: result.user, accessToken };
+    } catch (error: any) {
+      const code = error?.code || '';
+      if (code === 'auth/cancelled-popup-request' || code === 'auth/popup-closed-by-user' || code === 'auth/user-cancelled') {
+        console.info('[Auth] Logowanie anulowane przez użytkownika.');
+        return null;
+      }
+      if (code === 'auth/popup-blocked') {
+        console.warn('[Auth] Okno logowania zostało zablokowane przez przeglądarkę.');
+        return null;
+      }
+      console.error('Sign in error:', error);
+      return null;
+    } finally {
+      activeSignInPromise = null;
+    }
+  })();
+
+  return activeSignInPromise;
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
@@ -66,9 +84,13 @@ export const getAccessToken = async (): Promise<string | null> => {
 };
 
 export const logout = async () => {
-  await auth.signOut();
-  cachedAccessToken = null;
-  if (typeof window !== 'undefined') {
-    sessionStorage.removeItem('gdrive_access_token');
+  try {
+    await auth.signOut();
+    cachedAccessToken = null;
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('gdrive_access_token');
+    }
+  } catch (err) {
+    console.warn('[Auth] Logout error:', err);
   }
 };

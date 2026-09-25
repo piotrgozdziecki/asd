@@ -54,7 +54,7 @@ function GoogleIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
 }
 
 function AuthStatus({ isCompact = false }: { isCompact?: boolean }) {
-  const { user, loading, login, logout, hasDriveAccess } = useAuth();
+  const { user, loading, isLoggingIn, login, logout, hasDriveAccess } = useAuth();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   
   if (loading) return <div className="w-8 h-8 rounded-full bg-[#1A1A1A] animate-pulse" />;
@@ -63,11 +63,12 @@ function AuthStatus({ isCompact = false }: { isCompact?: boolean }) {
     return (
       <button 
         onClick={() => login()} 
-        className="text-xs font-medium text-white bg-[#1A1A1A] border border-[#D4AF37]/50 px-3 py-1.5 rounded-full hover:bg-[#D4AF37]/15 hover:border-[#D4AF37] transition-all flex items-center gap-2 shadow-sm cursor-pointer"
+        disabled={isLoggingIn}
+        className={`text-xs font-medium text-white bg-[#1A1A1A] border border-[#D4AF37]/50 px-3 py-1.5 rounded-full hover:bg-[#D4AF37]/15 hover:border-[#D4AF37] transition-all flex items-center gap-2 shadow-sm cursor-pointer ${isLoggingIn ? 'opacity-70 cursor-wait' : ''}`}
         title="Zaloguj się przez konto Google, aby korzystać z Dysku Google"
       >
         <GoogleIcon className="w-3.5 h-3.5" />
-        <span>{isCompact ? 'Google' : 'Zaloguj przez Google'}</span>
+        <span>{isLoggingIn ? 'Logowanie...' : (isCompact ? 'Google' : 'Zaloguj przez Google')}</span>
       </button>
     );
   }
@@ -201,10 +202,24 @@ export function StudioLayout({
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#070707] text-[#F5F2EA] relative selection:bg-[#D4AF37] selection:text-black">
+    <div className="min-h-screen flex flex-col bg-[#070605] text-[#F5F2EA] relative selection:bg-[#D4AF37] selection:text-black">
+      {/* Tasteful & Classy Wedding Banquet Atmospheric Background */}
+      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+        <img 
+          src="/wedding_banquet_bg.jpg" 
+          alt="" 
+          aria-hidden="true" 
+          referrerPolicy="no-referrer"
+          className="w-full h-full object-cover object-center opacity-20 scale-105 filter blur-[1.5px] transition-opacity duration-1000"
+        />
+        {/* Cinematic Vignette & Color Gradients */}
+        <div className="absolute inset-0 bg-gradient-to-b from-[#070605]/90 via-[#0B0906]/85 to-[#050403]/95" />
+        <div className="absolute inset-0 bg-radial-[ellipse_80%_60%_at_50%_15%] from-transparent via-[#050403]/70 to-[#020202]/95" />
+      </div>
+
       {/* Subtle Cinematic Ambient Lighting */}
-      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[350px] bg-gradient-to-b from-[#D4AF37]/10 via-[#9A7B1C]/5 to-transparent blur-[120px] pointer-events-none z-0" />
-      <div className="fixed -bottom-40 -right-40 w-[600px] h-[600px] bg-[#9A7B1C]/5 blur-[140px] pointer-events-none z-0" />
+      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[350px] bg-gradient-to-b from-[#D4AF37]/12 via-[#9A7B1C]/6 to-transparent blur-[120px] pointer-events-none z-0" />
+      <div className="fixed -bottom-40 -right-40 w-[600px] h-[600px] bg-[#9A7B1C]/6 blur-[140px] pointer-events-none z-0" />
       
       {/* Session Recovery Banner */}
       {recoveryAvailable && (

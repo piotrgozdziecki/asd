@@ -14,7 +14,18 @@ import {
   FileVideo,
   Info,
   Sliders,
-  Sparkles
+  Sparkles,
+  Terminal,
+  Activity,
+  Cpu,
+  RefreshCw,
+  AlertTriangle,
+  Layers,
+  ChevronDown,
+  ChevronUp,
+  Film,
+  Music,
+  Maximize2
 } from 'lucide-react';
 import type { ProjectState } from '../../types/project';
 import { videoExportService } from '../../core/export/videoExportService';
@@ -24,7 +35,10 @@ import {
   ExportError, 
   FitMode,
   MediaSource,
-  TimelineClip
+  TimelineClip,
+  DiagnosticsCapabilities,
+  DiagnosticLogEntry,
+  ExportStage
 } from '../../core/export/videoExportTypes';
 import { urlRegistry } from '../../core/media/urlRegistry';
 import { useStudioToast } from '../common/ToastContext';
@@ -46,7 +60,22 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
   const [resolution, setResolution] = useState<'720p' | '1080p' | '4k'>('1080p');
   const [fps, setFps] = useState<number>(30);
   const [fitMode, setFitMode] = useState<FitMode>('fit');
-  const [normalizeAudio, setNormalizeAudio] = useState(true);
+
+  // Export State
+  const [isExporting, setIsExporting] = useState(false);
+  const [progress, setProgress] = useState<ExportProgress | null>(null);
+  const [output, setOutput] = useState<ExportOutput | null>(videoExportService.getLastOutput());
+  const [error, setError] = useState<ExportError | null>(null);
+
+  // Diagnostics & Developer Panel State
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [capabilities, setCapabilities] = useState<DiagnosticsCapabilities | null>(null);
+  const [testResult, setTestResult] = useState<{ success: boolean; durationMs: number; details: string } | null>(null);
+  const [isTestingEngine, setIsTestingEngine] = useState(false);
+  const [logs, setLogs] = useState<DiagnosticLogEntry[]>([]);
+
+  // Video preview player ref
+  const videoPlayerRef = useRef<HTMLVideoElement>(null);
 
   // Sync preset changes
   const applyPreset = (mode: ExportPresetMode) => {
@@ -70,15 +99,6 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
         break;
     }
   };
-
-  // Export State
-  const [isExporting, setIsExporting] = useState(false);
-  const [progress, setProgress] = useState<ExportProgress | null>(null);
-  const [output, setOutput] = useState<ExportOutput | null>(videoExportService.getLastOutput());
-  const [error, setError] = useState<ExportError | null>(null);
-
-  // Video preview player ref
-  const videoPlayerRef = useRef<HTMLVideoElement>(null);
 
   // Compute Sources & Ordered Timeline
   const mediaSources: MediaSource[] = useMemo(() => {
@@ -165,9 +185,10 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
   useEffect(() => {
     const unsubscribe = videoExportService.subscribe((p) => {
       setProgress(p);
-      if (p.stage === 'SUKCES' || p.stage === 'BLAD' || p.stage === 'ANULOWANO') {
+      if (p.stage === 'COMPLETED' || p.stage === 'FAILED' || p.stage === 'CANCELLED') {
         setIsExporting(false);
       }
+      setLogs(videoExportService.getDiagnosticLogs());
     });
     return unsubscribe;
   }, []);
@@ -189,7 +210,12 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
         {
           resolution,
           fps,
-          fitMode
+          fitMode,
+          colorGrade: (project.settings?.colorGrade as any) || 'none',
+          letterbox: project.settings?.letterbox || 'none'
+        },
+        {
+          audioTracks: project.audioTracks || []
         }
       );
 
@@ -206,7 +232,7 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
         toast.showInfo('Eksport został przerwany.');
       } else {
         const errorObj: ExportError = {
-          code: 'EXPORT_FAILED',
+          code: 'UNKNOWN_EXPORT_ERROR',
           message: err?.message || 'Nieznany błąd podczas przetwarzania filmu.',
           technicalDetails: String(err?.stack || err)
         };
@@ -215,12 +241,39 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
       }
     } finally {
       setIsExporting(false);
+      setLogs(videoExportService.getDiagnosticLogs());
     }
   };
 
   const handleCancelExport = () => {
     videoExportService.cancelExport();
     setIsExporting(false);
+    toast.showInfo('Eksport anulowany.');
+  };
+
+  const handleRunEngineTest = async () => {
+    setIsTestingEngine(true);
+    setTestResult(null);
+    try {
+      const res = await videoExportService.runEngineTest();
+      setTestResult(res);
+      if (res.success) {
+        toast.showSuccess(`Test silnika MP4 zaliczony (${res.durationMs}ms)!`);
+      } else {
+        toast.showError(`Test silnika: ${res.details}`);
+      }
+    } catch (e: any) {
+      setTestResult({ success: false, durationMs: 0, details: e?.message || String(e) });
+    } finally {
+      setIsTestingEngine(false);
+    }
+  };
+
+  const handleLoadCapabilities = async () => {
+    try {
+      const caps = await videoExportService.getDiagnostics();
+      setCapabilities(caps);
+    } catch {}
   };
 
   const handleSaveOutput = async () => {
@@ -252,15 +305,42 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
     }
   };
 
-  // Stage active check helper
-  const getStageStatus = (stageName: string): 'DONE' | 'ACTIVE' | 'PENDING' => {
-    const cur = progress?.stage;
-    const stages = ['PRZYGOTOWANIE', 'AUDIO', 'DEKODOWANIE', 'KODOWANIE', 'MUXING', 'WALIDACJA'];
-    const curIdx = stages.indexOf(cur || 'PRZYGOTOWANIE');
-    const targetIdx = stages.indexOf(stageName);
+  const STAGES_DISPLAY: { id: ExportStage; label: string; icon: string }[] = [
+    { id: 'PREPARATION', label: 'Przygotowanie', icon: '⚙️' },
+    { id: 'MEDIA_ANALYSIS', label: 'Analiza', icon: '🔍' },
+    { id: 'AUDIO_ENCODING', label: 'Audio AAC', icon: '🎵' },
+    { id: 'VIDEO_ENCODING', label: 'Wideo H.264', icon: '🎬' },
+    { id: 'FINAL_FLUSH', label: 'Opróżnianie', icon: '⚡' },
+    { id: 'MUXING', label: 'Muxowanie MP4', icon: '📦' },
+    { id: 'VALIDATION', label: 'Walidacja', icon: '🛡️' }
+  ];
 
-    if (cur === 'SUKCES' || targetIdx < curIdx) return 'DONE';
-    if (targetIdx === curIdx) return 'ACTIVE';
+  const getStageVisualStatus = (stageId: ExportStage): 'DONE' | 'ACTIVE' | 'PENDING' => {
+    if (!progress) return 'PENDING';
+    if (progress.stage === 'COMPLETED') return 'DONE';
+    if (progress.stage === 'FAILED' || progress.stage === 'CANCELLED') return 'PENDING';
+
+    const stageRank: Record<ExportStage, number> = {
+      PREPARATION: 0,
+      MEDIA_ANALYSIS: 1,
+      AUDIO_ENCODING: 2,
+      DECODING: 3,
+      FRAME_NORMALIZATION: 3,
+      VIDEO_ENCODING: 3,
+      FINAL_FLUSH: 4,
+      MUXING: 5,
+      VALIDATION: 6,
+      SAVING: 6,
+      COMPLETED: 7,
+      FAILED: 0,
+      CANCELLED: 0
+    };
+
+    const curRank = stageRank[progress.stage] ?? 0;
+    const targetRank = stageRank[stageId] ?? 0;
+
+    if (curRank > targetRank) return 'DONE';
+    if (curRank === targetRank) return 'ACTIVE';
     return 'PENDING';
   };
 
@@ -281,16 +361,115 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
           </p>
         </div>
 
-        {totalClipsCount > 0 && !isExporting && !output && (
+        <div className="flex items-center gap-2.5">
           <button
-            onClick={handleStartExport}
-            className="flex items-center gap-2 px-6 py-3 bg-[#D4AF37] hover:bg-[#E5C158] text-black font-extrabold text-sm rounded-xl transition-all shadow-lg hover:scale-[1.02] cursor-pointer uppercase tracking-wider min-h-[44px]"
+            onClick={() => {
+              setShowDiagnostics(!showDiagnostics);
+              if (!capabilities) handleLoadCapabilities();
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 bg-[#191712] hover:bg-[#252119] text-[#D4AF37] border border-[#3E3420] text-xs font-semibold rounded-xl transition-all cursor-pointer shadow-sm min-h-[40px]"
+            title="Pokaż panel diagnostyki silnika dla developerów"
           >
-            <Play className="w-4 h-4 fill-black" />
-            <span>ROZPOCZNIJ EKSPORT</span>
+            <Activity className="w-3.5 h-3.5" />
+            <span>Diagnostyka Silnika</span>
+            {showDiagnostics ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
           </button>
-        )}
+
+          {totalClipsCount > 0 && !isExporting && !output && (
+            <button
+              onClick={handleStartExport}
+              className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-[#D4AF37] to-[#FDE047] hover:brightness-110 text-black font-extrabold text-sm rounded-xl transition-all shadow-lg hover:scale-[1.02] cursor-pointer uppercase tracking-wider min-h-[44px]"
+            >
+              <Play className="w-4 h-4 fill-black" />
+              <span>ROZPOCZNIJ EKSPORT</span>
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Developer Diagnostics Panel */}
+      {showDiagnostics && (
+        <div className="bg-[#14120D] border-2 border-[#D4AF37]/40 rounded-2xl p-5 shadow-2xl space-y-4 animate-fadeIn">
+          <div className="flex items-center justify-between border-b border-[#2D2414] pb-3">
+            <div className="flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-[#FDE047]" />
+              <h3 className="text-xs font-bold text-[#FDE047] uppercase tracking-wider font-mono">
+                Panel Diagnostyczny Silnika Wideo
+              </h3>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleRunEngineTest}
+                disabled={isTestingEngine}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2A2211] border border-[#D4AF37] text-xs font-bold text-[#FDE047] hover:bg-[#3B3018] cursor-pointer disabled:opacity-50 min-h-[36px]"
+              >
+                <RefreshCw className={`w-3 h-3 ${isTestingEngine ? 'animate-spin' : ''}`} />
+                <span>Test Eksportu MP4 (1s)</span>
+              </button>
+            </div>
+          </div>
+
+          {testResult && (
+            <div className={`p-3 rounded-xl border text-xs font-mono flex items-start gap-2 ${
+              testResult.success 
+                ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-300' 
+                : 'bg-rose-950/30 border-rose-800/50 text-rose-300'
+            }`}>
+              <Info className="w-4 h-4 shrink-0 mt-0.5" />
+              <div>
+                <strong>{testResult.success ? 'TEST ZALICZONY' : 'TEST NIE POWIÓDŁ SIĘ'} ({testResult.durationMs}ms):</strong>
+                <p className="mt-0.5">{testResult.details}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Capabilities Grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-[11px] font-mono">
+            <div className="p-2.5 rounded-lg bg-[#0E0C08] border border-[#261E10]">
+              <span className="text-[#8C7E64] block">WebCodecs:</span>
+              <span className={`font-bold ${capabilities?.webCodecsSupported ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {capabilities?.webCodecsSupported ? 'Dostępny ✓' : 'Brak ✗'}
+              </span>
+            </div>
+            <div className="p-2.5 rounded-lg bg-[#0E0C08] border border-[#261E10]">
+              <span className="text-[#8C7E64] block">VideoEncoder H.264:</span>
+              <span className={`font-bold ${capabilities?.h264Supported ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {capabilities?.h264Supported ? 'Obsługiwany ✓' : 'Brak ✗'}
+              </span>
+            </div>
+            <div className="p-2.5 rounded-lg bg-[#0E0C08] border border-[#261E10]">
+              <span className="text-[#8C7E64] block">AudioEncoder AAC:</span>
+              <span className={`font-bold ${capabilities?.aacSupported ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {capabilities?.aacSupported ? 'Sprzętowy AAC ✓' : 'Miks Software ⚠️'}
+              </span>
+            </div>
+            <div className="p-2.5 rounded-lg bg-[#0E0C08] border border-[#261E10]">
+              <span className="text-[#8C7E64] block">Pamięć Heap:</span>
+              <span className="text-[#DDD] font-bold">
+                {capabilities?.availableMemoryMb ? `~${capabilities.availableMemoryMb} MB` : 'Dynamiczna'}
+              </span>
+            </div>
+          </div>
+
+          {/* Live Diagnostic Logs stream */}
+          {logs.length > 0 && (
+            <div className="space-y-1">
+              <span className="text-[10px] text-[#8C7E64] uppercase font-bold tracking-wider font-mono">
+                Ostatnie Zdarzenia Silnika:
+              </span>
+              <div className="max-h-32 overflow-y-auto bg-black/60 rounded-lg p-2.5 border border-[#241C0E] text-[10px] font-mono text-[#DDD2BC] space-y-1 custom-scrollbar">
+                {logs.slice(-15).map((log, lIdx) => (
+                  <div key={lIdx} className="flex items-center gap-2">
+                    <span className="text-[#8C7E64]">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                    <span className="text-[#D4AF37] font-bold">[{log.category}]</span>
+                    <span>{log.message}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Preset & Settings Selector (When idle) */}
       {!isExporting && !output && (
@@ -368,13 +547,67 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
               </select>
             </div>
           </div>
+
+          {/* Color Grading & CinemaScope Letterbox Controls */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-[#202024]">
+            <div>
+              <label className="text-xs text-[#D4AF37] block mb-1.5 font-medium flex items-center gap-1.5">
+                <span>🎨 Styl Barwny / LUT Kinowy</span>
+              </label>
+              <select
+                value={project.settings?.colorGrade || 'none'}
+                onChange={(e) => {
+                  if (onUpdateProject) {
+                    onUpdateProject({
+                      ...project,
+                      settings: {
+                        ...project.settings,
+                        colorGrade: e.target.value as any
+                      }
+                    });
+                  }
+                }}
+                className="w-full bg-[#18181C] border border-[#3E3422] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none min-h-[44px]"
+              >
+                <option value="none">Oryginalny (Brak filtra)</option>
+                <option value="golden_hour">✨ Złota Godzina (Ciepły romantyczny blask)</option>
+                <option value="vivid_master">💎 Czysty Master (Maksymalna czystość & kontrast)</option>
+                <option value="pastel_boho">🌸 Pastelowy Sen (Soft Boho & Delikatne pastele)</option>
+                <option value="vintage_35mm">🎞️ Vintage 35mm (Analogowe ziarno & sepia)</option>
+                <option value="cinematic_noir">🎬 Kinowy Noir (Głęboki czarno-biały luksus)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs text-[#D4AF37] block mb-1.5 font-medium flex items-center gap-1.5">
+                <span>🎬 Format Kinowy (Letterbox)</span>
+              </label>
+              <select
+                value={project.settings?.letterbox || 'none'}
+                onChange={(e) => {
+                  if (onUpdateProject) {
+                    onUpdateProject({
+                      ...project,
+                      settings: {
+                        ...project.settings,
+                        letterbox: e.target.value as any
+                      }
+                    });
+                  }
+                }}
+                className="w-full bg-[#18181C] border border-[#3E3422] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none min-h-[44px]"
+              >
+                <option value="none">Standardowy (16:9 Pełny kadr)</option>
+                <option value="cinemascope">CinemaScope 2.39:1 (Hollywoodzkie czarne pasy góra/dół)</option>
+              </select>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* In-Flight Real Progress View (Requirement 19: EKSPORT W TOKU, 72%, Klip 4 z 8, etapy) */}
+      {/* In-Flight Real Progress View */}
       {isExporting && (
-        <div className="bg-[#121215] border border-[#D4AF37]/40 rounded-2xl p-6 sm:p-10 shadow-2xl space-y-8 my-2">
-          {/* Top Banner */}
+        <div className="bg-[#121215] border border-[#D4AF37]/50 rounded-2xl p-6 sm:p-10 shadow-2xl space-y-8 my-2">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <span className="text-xs uppercase text-[#D4AF37] font-bold tracking-wider flex items-center gap-2 font-mono">
@@ -382,7 +615,7 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
                 EKSPORT W TOKU
               </span>
               <h3 className="text-xl sm:text-2xl font-bold text-white mt-1">
-                {progress?.statusMessage || 'Renderowanie i scalanie filmu...'}
+                {progress?.statusMessage || 'Przetwarzanie ujęć i kodowanie strumieni...'}
               </h3>
             </div>
 
@@ -410,34 +643,28 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
           {/* Real progress bar */}
           <div className="h-3 w-full bg-[#1A1A1E] rounded-full overflow-hidden p-0.5 border border-[#2E2E36]">
             <div 
-              className="h-full bg-gradient-to-r from-[#B8942A] to-[#F3D179] rounded-full transition-all duration-200"
+              className="h-full bg-gradient-to-r from-[#B8942A] via-[#E5C158] to-[#FDE047] rounded-full transition-all duration-200"
               style={{ width: `${progress?.percent || 0}%` }}
             />
           </div>
 
-          {/* Real Engine Stage Indicators (Req 19) */}
-          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 pt-2 border-t border-[#202024] text-xs font-mono">
-            {[
-              { id: 'PRZYGOTOWANIE', label: 'PRZYGOTOWANIE' },
-              { id: 'AUDIO', label: 'AUDIO' },
-              { id: 'DEKODOWANIE', label: 'DEKODOWANIE' },
-              { id: 'KODOWANIE', label: 'KODOWANIE' },
-              { id: 'MUXING', label: 'MUXING' },
-              { id: 'WALIDACJA', label: 'WALIDACJA' }
-            ].map(st => {
-              const status = getStageStatus(st.id);
+          {/* Real Engine Stage Indicators */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 pt-2 border-t border-[#202024] text-xs font-mono">
+            {STAGES_DISPLAY.map(st => {
+              const status = getStageVisualStatus(st.id);
               return (
                 <div 
                   key={st.id}
                   className={`p-2 rounded-lg border text-center flex items-center justify-center gap-1.5 ${
                     status === 'DONE'
-                      ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-400'
+                      ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-400'
                       : (status === 'ACTIVE'
-                        ? 'bg-[#2A2414] border-[#D4AF37] text-[#E5C158] font-bold animate-pulse'
+                        ? 'bg-[#2A2414] border-[#D4AF37] text-[#E5C158] font-bold animate-pulse shadow-[0_0_10px_rgba(212,175,55,0.2)]'
                         : 'bg-[#161619] border-[#222226] text-[#666670]')
                   }`}
                 >
-                  <span>{st.label}</span>
+                  <span>{st.icon}</span>
+                  <span className="truncate">{st.label}</span>
                   <span>{status === 'DONE' ? '✓' : (status === 'ACTIVE' ? '●' : '○')}</span>
                 </div>
               );
@@ -453,7 +680,7 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
               </span>
             </div>
             <div>
-              <span className="text-[#777782] block text-[10px] uppercase">Prędkość:</span>
+              <span className="text-[#777782] block text-[10px] uppercase">Prędkość / FPS:</span>
               <span className="text-white font-bold mt-0.5 block">
                 {progress?.fps || 0} FPS
               </span>
@@ -467,14 +694,14 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
             <div>
               <span className="text-[#777782] block text-[10px] uppercase">Pozostały czas (ETA):</span>
               <span className="text-[#D4AF37] font-bold mt-0.5 block">
-                ~{progress?.etaSeconds || 0}s
+                {progress?.etaSeconds ? `~${progress.etaSeconds}s` : 'Obliczanie...'}
               </span>
             </div>
           </div>
         </div>
       )}
 
-      {/* Error View */}
+      {/* Error View with Recovery */}
       {error && !isExporting && (
         <div className="bg-rose-950/30 border border-rose-800/60 rounded-2xl p-6 shadow-2xl space-y-4">
           <div className="flex items-start gap-3">
@@ -501,25 +728,26 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
             >
               Spróbuj ponownie
             </button>
-            {onNavigateTab && (
-              <button
-                onClick={() => onNavigateTab('settings')}
-                className="px-4 py-2.5 bg-[#222] hover:bg-[#333] text-[#AAA] hover:text-white text-xs rounded-xl transition-colors cursor-pointer min-h-[44px]"
-              >
-                Otwórz Diagnostykę Silnika
-              </button>
-            )}
+            <button
+              onClick={() => {
+                setShowDiagnostics(true);
+                handleLoadCapabilities();
+              }}
+              className="px-4 py-2.5 bg-[#222] hover:bg-[#333] text-[#AAA] hover:text-white text-xs rounded-xl transition-colors cursor-pointer min-h-[44px]"
+            >
+              Pokaż Diagnostykę Silnika
+            </button>
           </div>
         </div>
       )}
 
-      {/* Finished Result View (Requirement 20: Duży preview, specyfikacja, przyciski ODTWÓRZ, POBIERZ, UDOSTĘPNIJ, NOWY PROJEKT) */}
+      {/* Finished Result View */}
       {output && !isExporting && (
         <div className="bg-[#121215] border border-[#2A2A30] rounded-2xl p-6 sm:p-8 shadow-2xl space-y-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-emerald-400 font-mono text-xs font-bold uppercase tracking-wider">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span>Film gotowy do odtworzenia i zapisu</span>
+              <span>Film pomyślnie wygenerowany i zweryfikowany</span>
             </div>
 
             <button
@@ -586,7 +814,7 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
             </div>
           </div>
 
-          {/* 4 Action Buttons: ODTWÓRZ, POBIERZ, UDOSTĘPNIJ, NOWY PROJEKT (Req 20) */}
+          {/* 4 Action Buttons: ODTWÓRZ, POBIERZ, UDOSTĘPNIJ, NOWY PROJEKT */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
             <button
               onClick={handlePlayResult}

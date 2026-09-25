@@ -1,36 +1,56 @@
 /**
- * Core types for the unified VideoExportService
+ * Core types for the unified VideoExportService and Export Pipeline
  */
 
 export type ExportErrorCode =
-  | 'SOURCE_NOT_FOUND'
-  | 'UNSUPPORTED_CODEC'
   | 'DECODER_ERROR'
   | 'ENCODER_ERROR'
-  | 'AUDIO_ERROR'
-  | 'NO_STORAGE'
-  | 'EXPORT_FAILED'
-  | 'VALIDATION_FAILED'
-  | 'CANCELLED';
+  | 'AUDIO_DECODER_ERROR'
+  | 'AUDIO_ENCODER_ERROR'
+  | 'MUXER_ERROR'
+  | 'TIMESTAMP_ERROR'
+  | 'UNSUPPORTED_CODEC'
+  | 'INVALID_CONFIG'
+  | 'OUT_OF_MEMORY'
+  | 'STORAGE_ERROR'
+  | 'EXPORT_CANCELLED'
+  | 'VALIDATION_ERROR'
+  | 'SOURCE_NOT_FOUND'
+  | 'TIMEOUT_ERROR'
+  | 'UNKNOWN_EXPORT_ERROR';
 
 export type ExportStage =
-  | 'PRZYGOTOWANIE'
-  | 'ANALIZA'
-  | 'DEKODOWANIE'
-  | 'KODOWANIE'
-  | 'AUDIO'
+  | 'PREPARATION'
+  | 'MEDIA_ANALYSIS'
+  | 'DECODING'
+  | 'FRAME_NORMALIZATION'
+  | 'VIDEO_ENCODING'
+  | 'AUDIO_ENCODING'
   | 'MUXING'
-  | 'WALIDACJA'
-  | 'ZAPIS'
-  | 'SUKCES'
-  | 'BLAD'
-  | 'ANULOWANO';
+  | 'FINAL_FLUSH'
+  | 'VALIDATION'
+  | 'SAVING'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED';
 
 export type FitMode = 'fit' | 'fill' | 'original';
 
+export interface StageDetail {
+  stage: ExportStage;
+  name: string;
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'SKIPPED';
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+  progressPercent: number; // 0..100 within this stage
+  message?: string;
+  errorMessage?: string;
+}
+
 export interface MediaSource {
   id: string;
-  uri: string; // Object URL or file reference URL
+  uri: string;
   file?: File;
   name: string;
   size: number;
@@ -38,8 +58,8 @@ export interface MediaSource {
   width: number;
   height: number;
   fps: number;
-  videoCodec: string; // e.g. "H.264", "HEVC", "VP9", "AV1", "Unknown"
-  audioCodec: string; // e.g. "AAC", "Opus", "PCM", "Brak"
+  videoCodec: string;
+  audioCodec: string;
   audioChannels: number;
   sampleRate: number;
   orientation: 'landscape' | 'portrait' | 'square';
@@ -56,13 +76,13 @@ export interface TimelineClip {
   sourceEnd: number;
   timelineStart: number;
   duration: number;
-  volume: number; // 0.0 to 2.0 (1.0 default)
+  volume: number;
   muted: boolean;
-  rotation: number; // 0, 90, 180, 270
+  rotation: number;
   crop?: { x: number; y: number; width: number; height: number };
   fitMode: FitMode;
-  titleCard?: any; // Text Title Card configuration before the clip
-  transitionIn?: string; // 'cut' | 'fade' | 'dissolve' | 'dip_black' | 'dip_white'
+  titleCard?: any;
+  transitionIn?: string;
   transitionOut?: string;
   transitionDuration?: number;
 }
@@ -74,24 +94,62 @@ export interface ExportPreset {
   fps: number;
   videoCodec: 'H.264';
   audioCodec: 'AAC';
-  bitrate: number; // bps
+  bitrate: number;
   quality: 'standard' | 'high' | 'maximum';
   fitMode: FitMode;
+  colorGrade?: string;
+  letterbox?: string;
+}
+
+export interface DiagnosticLogEntry {
+  timestamp: number;
+  category: 
+    | 'EXPORT_START'
+    | 'SOURCE_OPEN'
+    | 'SOURCE_PROBED'
+    | 'DECODER_CONFIGURED'
+    | 'DECODER_STARTED'
+    | 'FRAME_DECODED'
+    | 'FRAME_NORMALIZED'
+    | 'ENCODER_CONFIGURED'
+    | 'FRAME_ENCODE_STARTED'
+    | 'FRAME_ENCODED'
+    | 'AUDIO_STARTED'
+    | 'AUDIO_CHUNK_ENCODED'
+    | 'MUX_STARTED'
+    | 'MUX_CHUNK_WRITTEN'
+    | 'VIDEO_FLUSH'
+    | 'AUDIO_FLUSH'
+    | 'MUX_FINALIZED'
+    | 'OUTPUT_VALIDATION'
+    | 'OUTPUT_SAVED'
+    | 'EXPORT_COMPLETED'
+    | 'EXPORT_FAILED'
+    | 'EXPORT_CANCELLED';
+  message: string;
+  details?: any;
 }
 
 export interface ExportProgress {
   stage: ExportStage;
   percent: number;
+  stages: Record<ExportStage, StageDetail>;
   currentFrame: number;
   totalFrames: number;
   currentClipIndex?: number;
   totalClips?: number;
   currentClipName?: string;
   fps: number;
+  encodeQueueSize?: number;
+  lastTimestampMicros?: number;
+  droppedFrames?: number;
   elapsedSeconds: number;
   etaSeconds: number;
   statusMessage: string;
   technicalDetails?: string;
+  audioSamplesProcessed?: number;
+  totalAudioSamples?: number;
+  muxerChunksWritten?: number;
 }
 
 export interface ExportOutput {
@@ -115,6 +173,7 @@ export interface ExportError {
   technicalDetails?: string;
   clipName?: string;
   stage?: ExportStage;
+  timestamp?: number;
 }
 
 export interface ExportPlan {
@@ -122,6 +181,7 @@ export interface ExportPlan {
   preset: ExportPreset;
   sources: Map<string, MediaSource>;
   clips: TimelineClip[];
+  audioTracks?: any[];
   totalDuration: number;
   totalFrames: number;
   hasAudio: boolean;
@@ -130,6 +190,7 @@ export interface ExportPlan {
 
 export interface ExportJob {
   id: string;
+  sessionId: string;
   clips: TimelineClip[];
   preset: ExportPreset;
   status: ExportStage;
@@ -150,6 +211,7 @@ export interface DiagnosticsCapabilities {
   audioDecoderSupported: boolean;
   audioEncoderSupported: boolean;
   h264Supported: boolean;
+  supportedH264Codecs: string[];
   aacSupported: boolean;
   mp4MuxerSupported: boolean;
   availableMemoryMb?: number;

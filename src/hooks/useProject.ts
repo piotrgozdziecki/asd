@@ -234,10 +234,45 @@ export function useProject(initialState?: ProjectState) {
     // Also clean up from IndexedDB
     localIndexedDB.deleteMediaBlob(id).catch(() => {});
 
+    const remainingTimeline = project.timelineItems.filter(item => item.clipId !== id);
+    let t = 0;
+    const resequencedTimeline = remainingTimeline.map(item => {
+      const up = { ...item, timelineStart: t };
+      t += item.duration;
+      return up;
+    });
+
     pushState({
       ...project,
       mediaLibrary: project.mediaLibrary.filter(clip => clip.id !== id),
-      timelineItems: project.timelineItems.filter(item => item.clipId !== id)
+      timelineItems: resequencedTimeline
+    });
+  }, [project, pushState]);
+
+  const removeMediaClips = useCallback((ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    const idSet = new Set(ids);
+
+    ids.forEach(id => {
+      const targetClip = project.mediaLibrary.find(c => c.id === id);
+      if (targetClip?.objectUrl) {
+        urlRegistry.release(targetClip.objectUrl);
+      }
+      localIndexedDB.deleteMediaBlob(id).catch(() => {});
+    });
+
+    const remainingTimeline = project.timelineItems.filter(item => !idSet.has(item.clipId));
+    let t = 0;
+    const resequencedTimeline = remainingTimeline.map(item => {
+      const up = { ...item, timelineStart: t };
+      t += item.duration;
+      return up;
+    });
+
+    pushState({
+      ...project,
+      mediaLibrary: project.mediaLibrary.filter(clip => !idSet.has(clip.id)),
+      timelineItems: resequencedTimeline
     });
   }, [project, pushState]);
 
@@ -424,6 +459,14 @@ export function useProject(initialState?: ProjectState) {
     });
   }, [project, pushState]);
 
+  const addTimelineItems = useCallback((newItems: TimelineItem[]) => {
+    if (!newItems || newItems.length === 0) return;
+    pushState({
+      ...project,
+      timelineItems: [...project.timelineItems, ...newItems]
+    });
+  }, [project, pushState]);
+
   const updateTimelineItem = useCallback((id: string, updates: Partial<TimelineItem>) => {
     pushState({
       ...project,
@@ -437,6 +480,22 @@ export function useProject(initialState?: ProjectState) {
     pushState({
       ...project,
       timelineItems: project.timelineItems.filter(item => item.id !== id)
+    });
+  }, [project, pushState]);
+
+  const removeTimelineItems = useCallback((ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    const idSet = new Set(ids);
+    const remaining = project.timelineItems.filter(item => !idSet.has(item.id));
+    let t = 0;
+    const resequenced = remaining.map(item => {
+      const up = { ...item, timelineStart: t };
+      t += item.duration;
+      return up;
+    });
+    pushState({
+      ...project,
+      timelineItems: resequenced
     });
   }, [project, pushState]);
 
@@ -606,10 +665,13 @@ export function useProject(initialState?: ProjectState) {
     addMediaClips,
     updateMediaClip,
     removeMediaClip,
+    removeMediaClips,
     relinkMediaSource,
     addTimelineItem,
+    addTimelineItems,
     updateTimelineItem,
     removeTimelineItem,
+    removeTimelineItems,
     duplicateTimelineItem,
     moveTimelineItem,
     splitTimelineItem,
