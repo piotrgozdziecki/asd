@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { SOUNDSCAPE_PRESETS, SoundscapePreset, soundscapeGenerator } from '../../core/audio/soundscapeGenerator';
 import { urlRegistry } from '../../core/media/urlRegistry';
+import { localIndexedDB } from '../../core/storage/indexedDBProvider';
 import type { AudioTrackItem } from '../../types/project';
 import { useStudioToast } from '../common/ToastContext';
 
@@ -115,10 +116,14 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
 
     try {
       const { file, duration } = await soundscapeGenerator.generateTrackFile(preset.id);
+      const trackId = `track_soundscape_${Date.now()}`;
+      try {
+        await localIndexedDB.saveMediaBlob(trackId, file);
+      } catch {}
       const objectUrl = urlRegistry.create(file);
 
       const trackItem: AudioTrackItem = {
-        id: `track_soundscape_${Date.now()}`,
+        id: trackId,
         name: `♫ ${preset.title} (${preset.key})`,
         file,
         objectUrl,

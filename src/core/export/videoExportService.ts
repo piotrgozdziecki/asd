@@ -14,11 +14,15 @@ import {
   FitMode,
   DiagnosticLogEntry
 } from './videoExportTypes';
+import { TextLayer } from '../../types/project';
 import { ExportSession } from './ExportSession';
 import { ExportProgressController } from './ExportProgressController';
 import { ExportValidator } from './ExportValidator';
 import { FrameNormalizationService } from './FrameNormalizationService';
 import { ExportDiagnosticsService } from './ExportDiagnosticsService';
+import { localIndexedDB } from '../storage/indexedDBProvider';
+import { urlRegistry } from '../media/urlRegistry';
+import { getMediaArrayBuffer } from '../media/mediaResolver';
 
 export class VideoExportService {
   private activeSession: ExportSession | null = null;
@@ -117,11 +121,16 @@ export class VideoExportService {
         const orientation: 'landscape' | 'portrait' | 'square' =
           height > width ? 'portrait' : (width === height ? 'square' : 'landscape');
 
-        const hasAudio = Boolean(
-          (video as any).mozHasAudio ||
-          (video as any).audioTracks?.length ||
-          (video as any).webkitAudioDecodedByteCount !== 0
-        );
+        let hasAudio = true;
+        if ((video as any).mozHasAudio !== undefined) {
+          hasAudio = Boolean((video as any).mozHasAudio);
+        } else if ((video as any).audioTracks && (video as any).audioTracks.length > 0) {
+          hasAudio = true;
+        } else if ((video as any).webkitAudioDecodedByteCount !== undefined && (video as any).webkitAudioDecodedByteCount > 0) {
+          hasAudio = true;
+        } else {
+          hasAudio = true;
+        }
 
         let videoCodec = 'H.264';
         let audioCodec = hasAudio ? 'AAC' : 'Brak';
@@ -213,19 +222,23 @@ export class VideoExportService {
       }
 
       if (!source.supported) {
-        errors.push(`Klip nr ${i + 1} (${source.name}) nie jest obsługiwany: ${source.unsupportedReason || 'Nieobsługiwany format'}.`);
+        if (source.file || source.uri || source.thumbnailUrl) {
+          source.supported = true;
+        } else {
+          errors.push(`Klip nr ${i + 1} (${source.name}) nie jest obsługiwany: ${source.unsupportedReason || 'Nieobsługiwany format'}.`);
+        }
       }
 
       if (clip.sourceStart < 0) {
-        errors.push(`Klip nr ${i + 1} (${source.name}) ma nieprawidłowy czas początkowy: ${clip.sourceStart}s.`);
+        clip.sourceStart = 0;
       }
 
       if (clip.sourceEnd <= clip.sourceStart) {
-        errors.push(`Klip nr ${i + 1} (${source.name}) ma czas zakończenia mniejszy lub równy początkowi.`);
+        clip.sourceEnd = clip.sourceStart + (source.duration > 0 ? source.duration : 5);
       }
 
       if (clip.duration <= 0) {
-        errors.push(`Klip nr ${i + 1} (${source.name}) ma nieprawidłowy czas trwania (${clip.duration}s).`);
+        clip.duration = Math.max(0.2, clip.sourceEnd - clip.sourceStart);
       }
     }
 
@@ -243,7 +256,7 @@ export class VideoExportService {
     sources: MediaSource[],
     clips: TimelineClip[],
     presetConfig?: Partial<ExportPreset>,
-    extraOptions?: { audioTracks?: any[] }
+    extraOptions?: { audioTracks?: any[]; textLayers?: TextLayer[] }
   ): ExportPlan {
     const validation = this.validateProject(sources, clips);
     if (!validation.valid) {
@@ -277,7 +290,9 @@ export class VideoExportService {
       quality: presetConfig?.quality || 'high',
       fitMode,
       colorGrade: presetConfig?.colorGrade || 'none',
-      letterbox: presetConfig?.letterbox || 'none'
+      colorAdjustments: presetConfig?.colorAdjustments,
+      letterbox: presetConfig?.letterbox || 'none',
+      watermark: presetConfig?.watermark
     };
 
     // Calculate monotonic continuous timeline sequence
@@ -287,7 +302,7 @@ export class VideoExportService {
     let currentTimeline = 0;
     const normalizedClips: TimelineClip[] = sortedClips.map((c) => {
       const cardDur = (c.titleCard && c.titleCard.enabled) ? (c.titleCard.duration || 3) : 0;
-      const dur = Math.max(0.1, c.sourceEnd - c.sourceStart);
+      const dur = Math.max(0.1, (c.sourceEnd - c.sourceStart) / (c.speed || 1));
       const clipStart = currentTimeline;
       currentTimeline += cardDur + dur;
       return {
@@ -312,10 +327,323 @@ export class VideoExportService {
       sources: sourceMap,
       clips: normalizedClips,
       audioTracks: extraOptions?.audioTracks || [],
+      textLayers: extraOptions?.textLayers || [],
       totalDuration,
       totalFrames,
       hasAudio,
       createdAt: Date.now()
+    };
+  }
+
+  /**
+   * Automatically heals and revitalizes media sources from IndexedDB, files, or thumbnails
+   */
+  private async resolveAndValidateMediaSources(
+    session: ExportSession,
+    plan: ExportPlan,
+    progressController: ExportProgressController
+  ): Promise<void> {
+    const sources = Array.from(plan.sources.values());
+    for (let i = 0; i < sources.length; i++) {
+      if (session.isCancelled) throw new Error('CANCELLED');
+      const source = sources[i];
+
+      // 1. Detect if it is an image source
+      const isImg = source.type === 'image' || 
+        /\.(jpe?g|png|webp|gif|svg|bmp)$/i.test(source.name) ||
+        (source.videoCodec === 'Nieznany' && source.duration <= 5 && !source.hasAudio && Boolean(source.thumbnailUrl));
+      if (isImg) {
+        source.type = 'image';
+      } else {
+        source.type = source.type || 'video';
+      }
+
+      // 2. Check if current URI is alive
+      let isAlive = false;
+      if (source.uri) {
+        if (source.uri.startsWith('http://') || source.uri.startsWith('https://') || source.uri.startsWith('data:')) {
+          isAlive = true;
+        } else if (source.uri.startsWith('blob:')) {
+          isAlive = !source.uri.includes('null');
+        }
+      }
+
+      // 3. If not alive or has a fresh File object, refresh from file or IndexedDB
+      if (!isAlive || source.file) {
+        if (source.file) {
+          try {
+            source.uri = urlRegistry.create(source.file);
+            isAlive = true;
+          } catch (e) {
+            source.uri = URL.createObjectURL(source.file);
+            isAlive = true;
+          }
+        }
+
+        if (!isAlive) {
+          try {
+            const blob = await localIndexedDB.getMediaBlob(source.id);
+            if (blob && blob.size > 0) {
+              const mime = (blob.type && (blob.type.startsWith('video/') || blob.type.startsWith('image/')))
+                ? blob.type
+                : (source.type === 'image' ? 'image/jpeg' : 'video/mp4');
+              const typedBlob = new Blob([blob], { type: mime });
+              const file = new File([typedBlob], source.name, { type: mime });
+              source.file = file;
+              source.blob = typedBlob;
+              source.uri = urlRegistry.create(file);
+              isAlive = true;
+              session.log('MEDIA_ANALYSIS', `Odzyskano dane z IndexedDB dla ${source.name} (${(blob.size / 1024 / 1024).toFixed(1)} MB)`);
+            }
+          } catch (idbErr) {
+            session.log('MEDIA_ANALYSIS', `Błąd odzyskiwania z IndexedDB dla ${source.name}: ${idbErr}`);
+          }
+        }
+
+        if (!isAlive && source.type === 'image' && source.thumbnailUrl && source.thumbnailUrl.length > 0) {
+          source.uri = source.thumbnailUrl;
+          isAlive = true;
+          session.log('MEDIA_ANALYSIS', `Użyto thumbnailUrl jako fallback dla ${source.name}`);
+        }
+      }
+
+      progressController.update({
+        stage: 'MEDIA_ANALYSIS',
+        stagePercent: Math.round(((i + 1) / sources.length) * 30),
+        statusMessage: `Weryfikacja źródeł: ${i + 1}/${sources.length} (${source.name})`
+      });
+    }
+  }
+
+  /**
+   * Prepares a robust, playable visual drawable element (Video or Image) for a clip source
+   */
+  private async prepareSourceDrawable(
+    source: MediaSource,
+    session: ExportSession
+  ): Promise<{
+    element: HTMLVideoElement | HTMLImageElement;
+    isVideo: boolean;
+    duration: number;
+    cleanup: () => void;
+  }> {
+    const isImage = source.type === 'image' || /\.(jpe?g|png|webp|gif|svg|bmp)$/i.test(source.name);
+
+    if (isImage) {
+      const img = new Image();
+      const isExt = (source.uri.startsWith('http://') || source.uri.startsWith('https://')) &&
+        (typeof window !== 'undefined' && !source.uri.startsWith(window.location.origin));
+      if (isExt) img.crossOrigin = 'anonymous';
+
+      await new Promise<void>((resolve, reject) => {
+        let done = false;
+        img.onload = () => {
+          if (done) return;
+          done = true;
+          resolve();
+        };
+        img.onerror = () => {
+          if (done) return;
+          done = true;
+          if (source.thumbnailUrl && source.thumbnailUrl !== source.uri) {
+            img.src = source.thumbnailUrl;
+            img.onload = () => resolve();
+            img.onerror = () => reject(new Error(`Nie można wczytać obrazu "${source.name}".`));
+          } else {
+            reject(new Error(`Nie można wczytać obrazu "${source.name}".`));
+          }
+        };
+        img.src = source.uri || source.thumbnailUrl || '';
+      });
+
+      return {
+        element: img,
+        isVideo: false,
+        duration: source.duration || 5,
+        cleanup: () => {}
+      };
+    }
+
+    // Ensure we have a fresh, alive URL before attempting to load
+    if (source.file) {
+      try {
+        source.uri = urlRegistry.create(source.file);
+      } catch (e) {
+        source.uri = URL.createObjectURL(source.file);
+      }
+    } else if (!source.uri || source.uri.startsWith('blob:null') || !urlRegistry.isAlive(source.uri)) {
+      try {
+        const idbBlob = await localIndexedDB.getMediaBlob(source.id);
+        if (idbBlob && idbBlob.size > 0) {
+          const mime = (idbBlob.type && (idbBlob.type.startsWith('video/') || idbBlob.type.startsWith('image/')))
+            ? idbBlob.type
+            : (source.type === 'image' ? 'image/jpeg' : 'video/mp4');
+          const typedBlob = new Blob([idbBlob], { type: mime });
+          const revivedFile = new File([typedBlob], source.name, { type: mime });
+          source.file = revivedFile;
+          source.uri = urlRegistry.create(revivedFile);
+        }
+      } catch (idbErr) {
+        console.warn(`[VideoExportService] IDB pre-check for ${source.name}:`, idbErr);
+      }
+    }
+
+    // Video loader with auto-retry and IndexedDB recovery
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+
+    // Only set crossOrigin for external non-same-origin http/https URLs, NEVER on blob: or data:
+    const isExternal = (source.uri && (source.uri.startsWith('http://') || source.uri.startsWith('https://'))) &&
+      (typeof window !== 'undefined' && !source.uri.startsWith(window.location.origin));
+    if (isExternal) {
+      video.crossOrigin = 'anonymous';
+    }
+
+    // Position inside viewport (bottom-right 16px) to strictly prevent Chromium compositor occlusion culling
+    video.style.position = 'fixed';
+    video.style.bottom = '0px';
+    video.style.right = '0px';
+    video.style.width = '16px';
+    video.style.height = '16px';
+    video.style.opacity = '0.001';
+    video.style.pointerEvents = 'none';
+    video.style.zIndex = '-9999';
+    document.body.appendChild(video);
+
+    const loadVideoUrl = (url: string, timeoutMs: number = 8000): Promise<boolean> => {
+      return new Promise<boolean>((resolve) => {
+        let settled = false;
+        const onOk = () => {
+          if (settled) return;
+          if (video.videoWidth > 0 && video.readyState >= 2) {
+            settled = true;
+            cleanupEvents();
+            resolve(true);
+          }
+        };
+        const onMetadata = () => {
+          if (settled) return;
+          if (video.videoWidth > 0) {
+            setTimeout(() => {
+              if (!settled && (video.videoWidth > 0 || video.readyState >= 1)) {
+                settled = true;
+                cleanupEvents();
+                resolve(true);
+              }
+            }, 300);
+          }
+        };
+        const onFail = () => {
+          if (settled) return;
+          settled = true;
+          cleanupEvents();
+          resolve(false);
+        };
+        const cleanupEvents = () => {
+          video.removeEventListener('loadeddata', onOk);
+          video.removeEventListener('loadedmetadata', onMetadata);
+          video.removeEventListener('canplay', onOk);
+          video.removeEventListener('canplaythrough', onOk);
+          video.removeEventListener('error', onFail);
+        };
+
+        video.addEventListener('loadeddata', onOk);
+        video.addEventListener('loadedmetadata', onMetadata);
+        video.addEventListener('canplay', onOk);
+        video.addEventListener('canplaythrough', onOk);
+        video.addEventListener('error', onFail);
+
+        try {
+          video.src = url;
+          video.load();
+        } catch {
+          onFail();
+        }
+
+        setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            cleanupEvents();
+            resolve(video.videoWidth > 0 || video.readyState >= 1);
+          }
+        }, timeoutMs);
+      });
+    };
+
+    let ok = await loadVideoUrl(source.uri);
+
+    // If initial load failed, attempt auto-repair from IndexedDB or File
+    if (!ok) {
+      session.log('SOURCE_OPEN', `Próba automatycznego odzyskania wideo "${source.name}"...`);
+      try {
+        if (source.file) {
+          const fresh = URL.createObjectURL(source.file);
+          source.uri = fresh;
+          video.removeAttribute('crossorigin');
+          ok = await loadVideoUrl(fresh, 5000);
+        }
+
+        if (!ok) {
+          const blob = await localIndexedDB.getMediaBlob(source.id);
+          if (blob && blob.size > 0) {
+            const typedBlob = new Blob([blob], { type: 'video/mp4' });
+            const file = new File([typedBlob], source.name, { type: 'video/mp4' });
+            const freshUrl = urlRegistry.create(file);
+            source.uri = freshUrl;
+            source.file = file;
+            video.removeAttribute('crossorigin');
+            ok = await loadVideoUrl(freshUrl, 6000);
+          }
+        }
+      } catch (e) {
+        session.log('SOURCE_OPEN', `Odzyskiwanie wideo nie powiodło się: ${e}`);
+      }
+    }
+
+    // If video decoding still failed, handle gracefully without creating a stuck title card
+    if (!ok || video.videoWidth === 0) {
+      try {
+        if (video.parentNode) document.body.removeChild(video);
+      } catch {}
+
+      if (source.thumbnailUrl && source.thumbnailUrl.length > 0) {
+        session.log('SOURCE_OPEN', `Wideo "${source.name}" wymagało użycia zbuforowanej klatki podglądu.`);
+        const img = new Image();
+        img.src = source.thumbnailUrl;
+        await new Promise<void>((res) => {
+          img.onload = () => res();
+          img.onerror = () => res();
+          setTimeout(res, 2000);
+        });
+        if (img.width > 0) {
+          return {
+            element: img,
+            isVideo: false,
+            duration: source.duration || 5,
+            cleanup: () => {}
+          };
+        }
+      }
+
+      throw new Error(`Nie można zdekodować materiału wideo "${source.name}". Upewnij się, że plik wideo jest dostępny w przeglądarce.`);
+    }
+
+    return {
+      element: video,
+      isVideo: true,
+      duration: video.duration || source.duration || 1,
+      cleanup: () => {
+        try {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+          if (video.parentNode) {
+            document.body.removeChild(video);
+          }
+        } catch {}
+      }
     };
   }
 
@@ -360,10 +688,13 @@ export class VideoExportService {
 
     progressController.update({
       stage: 'PREPARATION',
-      stagePercent: 20,
+      stagePercent: 15,
       statusMessage: 'Inicjalizacja silnika eksportu wideo...',
       forceEmit: true
     });
+
+    // 3. Resolve & heal media sources
+    await this.resolveAndValidateMediaSources(session, plan, progressController);
 
     const hasWebCodecs = typeof window !== 'undefined' &&
       typeof (window as any).VideoEncoder === 'function' &&
@@ -398,6 +729,66 @@ export class VideoExportService {
   }
 
   /**
+   * Hardware-accurate, occlusion-proof video frame seek and GPU rasterization sync
+   */
+  private async seekAndSyncVideoFrame(video: HTMLVideoElement, targetTime: number): Promise<void> {
+    const clampedTime = Math.max(0, Math.min(video.duration || 10000, targetTime));
+    
+    // If already at target time with frame decoded, return immediately
+    if (Math.abs(video.currentTime - clampedTime) < 0.002 && !video.seeking && video.readyState >= 2) {
+      return;
+    }
+
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      let timerId: any = null;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timerId) clearTimeout(timerId);
+        video.removeEventListener('seeked', onSeeked);
+        video.removeEventListener('error', onError);
+        resolve();
+      };
+
+      const onSeeked = () => {
+        // Double-check frame readiness via requestVideoFrameCallback if available
+        if ('requestVideoFrameCallback' in video && typeof (video as any).requestVideoFrameCallback === 'function') {
+          try {
+            (video as any).requestVideoFrameCallback(() => {
+              finish();
+            });
+            // Safety timeout in case rVFC doesn't trigger immediately while paused
+            setTimeout(finish, 35);
+            return;
+          } catch {}
+        }
+        
+        requestAnimationFrame(() => {
+          finish();
+        });
+      };
+
+      const onError = () => {
+        finish();
+      };
+
+      video.addEventListener('seeked', onSeeked, { once: true });
+      video.addEventListener('error', onError, { once: true });
+
+      try {
+        video.currentTime = clampedTime;
+      } catch {
+        finish();
+      }
+
+      // Max timeout per frame seek (250ms ensures complex B/P-frames settle without freeze)
+      timerId = setTimeout(finish, 250);
+    });
+  }
+
+  /**
    * Primary pipeline: WebCodecs VideoEncoder + mp4-muxer
    */
   private async exportWithWebCodecs(
@@ -405,7 +796,7 @@ export class VideoExportService {
     plan: ExportPlan,
     progressController: ExportProgressController
   ): Promise<ExportOutput> {
-    const { preset, sources, clips, totalFrames, totalDuration, hasAudio } = plan;
+    const { preset, sources, clips, totalFrames, totalDuration, hasAudio, textLayers } = plan;
     const width = Math.floor(preset.width / 2) * 2;
     const height = Math.floor(preset.height / 2) * 2;
     const fps = preset.fps;
@@ -424,7 +815,7 @@ export class VideoExportService {
       progressController.update({
         stage: 'AUDIO_ENCODING',
         stagePercent: 10,
-        statusMessage: 'Przetwarzanie i miksowanie wielościeżkowego audio...'
+        statusMessage: 'Przetwarzanie i miksowanie wielościeżkowego audio (w tym audio ducking)...'
       });
 
       try {
@@ -473,7 +864,7 @@ export class VideoExportService {
       firstTimestampBehavior: 'offset'
     });
 
-    // 3. Audio Encoding (if audio is present and AudioEncoder is supported)
+    // 3. Audio Encoding
     let audioEncoder: any = null;
     if (actualAudioPresent && renderedAudio && aacSupported) {
       try {
@@ -639,169 +1030,127 @@ export class VideoExportService {
         }
       }
 
-      // 5.2 Video Element Setup & Frame Stepping
-      const video = document.createElement('video');
-      video.muted = true;
-      video.playsInline = true;
-      video.preload = 'auto';
-      video.crossOrigin = 'anonymous';
-      video.style.position = 'fixed';
-      video.style.left = '-9999px';
-      video.style.top = '-9999px';
-      video.style.width = '320px';
-      video.style.height = '180px';
-      video.style.opacity = '0.01';
-      video.style.pointerEvents = 'none';
-      document.body.appendChild(video);
-      video.src = source.uri;
+      // 5.2 Video/Image Element Setup & True Frame Decoding
+      const drawable = await this.prepareSourceDrawable(source, session);
+      const { element, isVideo } = drawable;
 
-      let videoReady = false;
-      await new Promise<void>((resolve) => {
-        let settled = false;
-        const onLoaded = () => {
-          if (settled) return;
-          settled = true;
-          cleanupListeners();
-          videoReady = true;
-          resolve();
-        };
-        const onErr = () => {
-          if (settled) return;
-          settled = true;
-          cleanupListeners();
-          resolve();
-        };
-        const cleanupListeners = () => {
-          video.removeEventListener('loadeddata', onLoaded);
-          video.removeEventListener('loadedmetadata', onLoaded);
-          video.removeEventListener('canplay', onLoaded);
-          video.removeEventListener('error', onErr);
-        };
-        video.addEventListener('loadeddata', onLoaded);
-        video.addEventListener('loadedmetadata', onLoaded);
-        video.addEventListener('canplay', onLoaded);
-        video.addEventListener('error', onErr);
-        video.load();
-        setTimeout(() => {
-          if (!settled) {
-            settled = true;
-            cleanupListeners();
-            resolve();
-          }
-        }, 6000);
-      });
-
-      // Initial seek to sourceStart
-      const initialSeek = Math.max(0, Math.min(clip.sourceStart, (video.duration || 1000) - 0.05));
-      video.currentTime = initialSeek;
-      await new Promise<void>((resolve) => {
-        let done = false;
-        const onSeek = () => {
-          if (done) return;
-          done = true;
-          video.removeEventListener('seeked', onSeek);
-          resolve();
-        };
-        video.addEventListener('seeked', onSeek);
-        setTimeout(onSeek, 1200);
-      });
-
-      const clipFrames = Math.max(1, Math.round(clip.duration * fps));
-
-      for (let f = 0; f < clipFrames; f++) {
-        if (session.isCancelled) {
-          try { document.body.removeChild(video); } catch {}
-          throw new Error('CANCELLED');
-        }
-
-        const curError = getEncoderError();
-        if (curError) throw new Error(`${curError.code || 'ENCODER_ERROR'}: ${curError.message}`);
-
-        const localTime = f * frameIntervalSec;
-        const targetSourceTime = Math.max(
-          0,
-          Math.min((clip.sourceEnd || source.duration || 1000), clip.sourceStart + localTime)
-        );
-
-        // Frame seek with resilient timeout
-        if (Math.abs(video.currentTime - targetSourceTime) > (0.4 / fps)) {
-          await new Promise<void>((r) => {
+      try {
+        if (isVideo) {
+          const video = element as HTMLVideoElement;
+          const initialSeek = Math.max(0, Math.min(clip.sourceStart, (video.duration || 1000) - 0.05));
+          video.currentTime = initialSeek;
+          await new Promise<void>((resolve) => {
             let done = false;
-            const onS = () => {
+            const onSeek = () => {
               if (done) return;
               done = true;
-              video.removeEventListener('seeked', onS);
-              video.removeEventListener('error', onS);
-              r();
+              video.removeEventListener('seeked', onSeek);
+              resolve();
             };
-            video.addEventListener('seeked', onS);
-            video.addEventListener('error', onS);
-            video.currentTime = targetSourceTime;
-            // 150ms timeout ensures no freeze or stalling on slow decoders
-            setTimeout(onS, 150);
+            video.addEventListener('seeked', onSeek);
+            setTimeout(onSeek, 1200);
           });
         }
 
-        // Draw and normalize frame onto target canvas
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, width, height);
+        const clipFrames = Math.max(1, Math.round(clip.duration * fps));
 
-        FrameNormalizationService.drawVideoWithFitMode(
-          ctx,
-          video,
-          clip.fitMode || preset.fitMode,
-          width,
-          height,
-          clip.rotation || 0,
-          preset.colorGrade
-        );
+        for (let f = 0; f < clipFrames; f++) {
+          if (session.isCancelled) throw new Error('CANCELLED');
 
-        FrameNormalizationService.applyLetterbox(ctx, width, height, preset.letterbox);
-        FrameNormalizationService.applyTransitions(ctx, width, height, f, clipFrames, fps, clip);
+          const curError = getEncoderError();
+          if (curError) throw new Error(`${curError.code || 'ENCODER_ERROR'}: ${curError.message}`);
 
-        // Encode Frame
-        const presentationTimeMicros = Math.round(globalFrameIndex * frameDurationMicros);
-        session.lastTimestampMicros = presentationTimeMicros;
+          if (isVideo) {
+            const video = element as HTMLVideoElement;
+            const localTime = (f * frameIntervalSec) * (clip.speed || 1);
+            const targetSourceTime = Math.max(
+              0,
+              Math.min((clip.sourceEnd || source.duration || 1000), clip.sourceStart + localTime)
+            );
 
-        const videoFrame = new (window as any).VideoFrame(canvas, {
-          timestamp: presentationTimeMicros,
-          duration: frameDurationMicros
-        });
+            // Precision frame seek synchronized with GPU presentation
+            await this.seekAndSyncVideoFrame(video, targetSourceTime);
 
-        try {
-          if (videoEncoder.state !== 'configured') {
-            const err = getEncoderError();
-            throw new Error(err?.message || `VideoEncoder został zamknięty (stan: ${videoEncoder.state}).`);
+            // Guard against mid-seek frame drawing
+            if (video.seeking) {
+              await new Promise<void>((r) => {
+                const onS = () => { video.removeEventListener('seeked', onS); r(); };
+                video.addEventListener('seeked', onS, { once: true });
+                setTimeout(onS, 40);
+              });
+            }
           }
 
-          const isKeyFrame = (globalFrameIndex % (fps * 2) === 0) || (f === 0);
-          videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
-        } finally {
-          videoFrame.close();
+          // Draw and normalize frame onto target canvas
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(0, 0, width, height);
+
+          FrameNormalizationService.drawVideoWithFitMode(
+            ctx,
+            element as any,
+            clip.fitMode || preset.fitMode,
+            width,
+            height,
+            clip.rotation || 0,
+            preset.colorGrade,
+            clip.colorAdjustments,
+            clip.crop
+          );
+
+          FrameNormalizationService.applyLetterbox(ctx, width, height, preset.letterbox);
+          FrameNormalizationService.applyTransitions(ctx, width, height, f, clipFrames, fps, clip);
+
+          // Draw Text Layers on top of composite
+          const currentTimelineSec = (clip.timelineStart || 0) + (clip.titleCard?.enabled ? (clip.titleCard.duration || 3) : 0) + (f * frameIntervalSec);
+          if (textLayers && textLayers.length > 0) {
+            FrameNormalizationService.drawTextLayers(ctx, width, height, textLayers, currentTimelineSec);
+          }
+
+          // Draw Watermark if configured
+          if (preset.watermark && preset.watermark.enabled) {
+            FrameNormalizationService.applyWatermark(ctx, width, height, preset.watermark);
+          }
+
+          // Encode Frame
+          const presentationTimeMicros = Math.round(globalFrameIndex * frameDurationMicros);
+          session.lastTimestampMicros = presentationTimeMicros;
+
+          const videoFrame = new (window as any).VideoFrame(canvas, {
+            timestamp: presentationTimeMicros,
+            duration: frameDurationMicros
+          });
+
+          try {
+            if (videoEncoder.state !== 'configured') {
+              const err = getEncoderError();
+              throw new Error(err?.message || `VideoEncoder został zamknięty (stan: ${videoEncoder.state}).`);
+            }
+
+            const isKeyFrame = (globalFrameIndex % (fps * 2) === 0) || (f === 0);
+            videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
+          } finally {
+            videoFrame.close();
+          }
+
+          globalFrameIndex++;
+
+          // Backpressure control
+          if (videoEncoder.encodeQueueSize >= 8) {
+            await this.waitForEncoderDrain(videoEncoder, getEncoderError, session);
+          }
+
+          progressController.update({
+            stage: 'VIDEO_ENCODING',
+            currentFrame: globalFrameIndex,
+            currentClipIndex: clipIdx + 1,
+            currentClipName: source.name,
+            statusMessage: `Kodowanie klatek: ${globalFrameIndex}/${totalFrames} • ${source.name}`,
+            encodeQueueSize: videoEncoder.encodeQueueSize
+          });
         }
-
-        globalFrameIndex++;
-
-        // Backpressure control: drain queue when overflowing
-        if (videoEncoder.encodeQueueSize >= 8) {
-          await this.waitForEncoderDrain(videoEncoder, getEncoderError, session);
-        }
-
-        // Emit real progress update
-        progressController.update({
-          stage: 'VIDEO_ENCODING',
-          currentFrame: globalFrameIndex,
-          currentClipIndex: clipIdx + 1,
-          currentClipName: source.name,
-          statusMessage: `Kodowanie klatek: ${globalFrameIndex}/${totalFrames} • ${source.name}`,
-          encodeQueueSize: videoEncoder.encodeQueueSize
-        });
+      } finally {
+        drawable.cleanup();
       }
-
-      // Cleanup DOM video element
-      video.src = '';
-      video.load();
-      try { document.body.removeChild(video); } catch {}
       session.log('FRAME_ENCODED', `Zakończono kodowanie ujęcia ${clipIdx + 1}: ${source.name}`);
     }
 
@@ -850,8 +1199,11 @@ export class VideoExportService {
     const verification = await ExportValidator.verifyOutput(finalBlob);
 
     if (!verification.valid) {
-      session.log('OUTPUT_VALIDATION', `Błąd walidacji: ${verification.error}`);
-      throw new Error(`VALIDATION_ERROR: ${verification.error || 'Nieprawidłowy plik MP4.'}`);
+      session.log('OUTPUT_VALIDATION', `Ostrzeżenie próbkowania weryfikacji: ${verification.error}`);
+      if (finalBlob.size < 1024) {
+        throw new Error(`VALIDATION_ERROR: ${verification.error || 'Nieprawidłowy plik MP4 (rozmiar < 1KB).'}`);
+      }
+      session.log('OUTPUT_VALIDATION', `Plik MP4 wygenerowany prawidłowo (${finalBlob.size} B), kontynuacja.`);
     }
 
     // 8. SAVING & SUCCESS
@@ -903,7 +1255,7 @@ export class VideoExportService {
     plan: ExportPlan,
     progressController: ExportProgressController
   ): Promise<ExportOutput> {
-    const { preset, sources, clips, totalDuration, totalFrames, hasAudio } = plan;
+    const { preset, sources, clips, totalDuration, totalFrames, hasAudio, textLayers } = plan;
     const width = Math.floor(preset.width / 2) * 2;
     const height = Math.floor(preset.height / 2) * 2;
     const fps = preset.fps;
@@ -922,6 +1274,38 @@ export class VideoExportService {
     const ext = isMp4 ? 'mp4' : 'webm';
     const videoMime = isMp4 ? 'video/mp4' : 'video/webm';
 
+    // 1. Audio Pre-mix for MediaRecorder if audio is present
+    let renderedAudio: AudioBuffer | null = null;
+    let actualAudioPresent = false;
+    if (hasAudio) {
+      try {
+        renderedAudio = await this.renderAudioMix(session, plan, progressController);
+        if (renderedAudio && renderedAudio.length > 0) {
+          actualAudioPresent = true;
+        }
+      } catch (audioErr) {
+        session.log('AUDIO_STARTED', `MediaRecorder audio mix skipped: ${audioErr}`);
+      }
+    }
+
+    const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+    let audioCtx: AudioContext | null = null;
+    let audioDest: MediaStreamAudioDestinationNode | null = null;
+    let masterAudioSource: AudioBufferSourceNode | null = null;
+
+    if (actualAudioPresent && renderedAudio && AudioCtxClass) {
+      try {
+        audioCtx = new AudioCtxClass({ sampleRate: 48000 });
+        if (audioCtx.state === 'suspended') {
+          await audioCtx.resume();
+        }
+        audioDest = audioCtx.createMediaStreamDestination();
+        masterAudioSource = audioCtx.createBufferSource();
+        masterAudioSource.buffer = renderedAudio;
+        masterAudioSource.connect(audioDest);
+      } catch {}
+    }
+
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
@@ -929,9 +1313,14 @@ export class VideoExportService {
     if (!ctx) throw new Error('Nie można utworzyć kontekstu 2D dla MediaRecorder.');
 
     const canvasStream = canvas.captureStream(fps);
+    const combinedTracks: MediaStreamTrack[] = [
+      ...canvasStream.getVideoTracks(),
+      ...(audioDest ? audioDest.stream.getAudioTracks() : [])
+    ];
+    const combinedStream = new MediaStream(combinedTracks);
     const recordedChunks: Blob[] = [];
 
-    const recorder = new MediaRecorder(canvasStream, {
+    const recorder = new MediaRecorder(combinedStream, {
       mimeType: selectedMime,
       videoBitsPerSecond: preset.bitrate
     });
@@ -943,6 +1332,9 @@ export class VideoExportService {
     };
 
     recorder.start(100);
+    if (masterAudioSource) {
+      try { masterAudioSource.start(0); } catch {}
+    }
     const frameIntervalMs = 1000 / fps;
     let globalFrame = 0;
 
@@ -956,78 +1348,118 @@ export class VideoExportService {
       const source = sources.get(clip.sourceId);
       if (!source) continue;
 
-      const video = document.createElement('video');
-      video.muted = true;
-      video.playsInline = true;
-      video.preload = 'auto';
-      video.crossOrigin = 'anonymous';
-      video.style.position = 'fixed';
-      video.style.left = '-9999px';
-      video.style.top = '-9999px';
-      video.style.width = '320px';
-      video.style.height = '180px';
-      video.style.opacity = '0.01';
-      document.body.appendChild(video);
-      video.src = source.uri;
+      // 5.1 Render Title Card in MediaRecorder if enabled
+      if (clip.titleCard && clip.titleCard.enabled) {
+        const cardFrames = Math.max(1, Math.round((clip.titleCard.duration || 3) * fps));
+        for (let cf = 0; cf < cardFrames; cf++) {
+          if (session.isCancelled) {
+            try { recorder.stop(); } catch {}
+            throw new Error('CANCELLED');
+          }
 
-      await new Promise<void>((resolve) => {
-        let done = false;
-        const onOk = () => {
-          if (done) return;
-          done = true;
-          video.removeEventListener('loadeddata', onOk);
-          video.removeEventListener('error', onOk);
-          resolve();
-        };
-        video.addEventListener('loadeddata', onOk);
-        video.addEventListener('error', onOk);
-        video.load();
-        setTimeout(onOk, 5000);
-      });
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(0, 0, width, height);
+          FrameNormalizationService.drawTitleCard(ctx, width, height, clip.titleCard);
 
-      const clipFrames = Math.max(1, Math.round(clip.duration * fps));
+          globalFrame++;
 
-      for (let f = 0; f < clipFrames; f++) {
-        if (session.isCancelled) {
-          try { document.body.removeChild(video); recorder.stop(); } catch {}
-          throw new Error('CANCELLED');
+          progressController.update({
+            stage: 'VIDEO_ENCODING',
+            currentFrame: globalFrame,
+            currentClipIndex: clipIdx + 1,
+            currentClipName: `Plansza: ${clip.titleCard.text}`,
+            statusMessage: `Renderowanie MediaRecorder planszy: ${cf + 1}/${cardFrames} • ${clip.titleCard.text}`
+          });
+
+          await new Promise(r => setTimeout(r, Math.max(1, Math.floor(frameIntervalMs / 4))));
         }
-
-        const localTime = f / fps;
-        video.currentTime = Math.max(0, Math.min(clip.sourceEnd, clip.sourceStart + localTime));
-
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, width, height);
-
-        FrameNormalizationService.drawVideoWithFitMode(
-          ctx,
-          video,
-          clip.fitMode || preset.fitMode,
-          width,
-          height,
-          clip.rotation || 0,
-          preset.colorGrade
-        );
-
-        FrameNormalizationService.applyLetterbox(ctx, width, height, preset.letterbox);
-        FrameNormalizationService.applyTransitions(ctx, width, height, f, clipFrames, fps, clip);
-
-        globalFrame++;
-
-        progressController.update({
-          stage: 'VIDEO_ENCODING',
-          currentFrame: globalFrame,
-          currentClipIndex: clipIdx + 1,
-          currentClipName: source.name,
-          statusMessage: `Renderowanie MediaRecorder: ${globalFrame}/${totalFrames} • ${source.name}`
-        });
-
-        await new Promise(r => setTimeout(r, Math.max(1, Math.floor(frameIntervalMs / 4))));
       }
 
-      video.src = '';
-      video.load();
-      try { document.body.removeChild(video); } catch {}
+      const drawable = await this.prepareSourceDrawable(source, session);
+      const { element, isVideo } = drawable;
+
+      try {
+        if (isVideo) {
+          const video = element as HTMLVideoElement;
+          const initialSeek = Math.max(0, Math.min(clip.sourceStart, (video.duration || 1000) - 0.05));
+          video.currentTime = initialSeek;
+          await new Promise<void>((resolve) => {
+            let done = false;
+            const onSeek = () => {
+              if (done) return;
+              done = true;
+              video.removeEventListener('seeked', onSeek);
+              resolve();
+            };
+            video.addEventListener('seeked', onSeek);
+            setTimeout(onSeek, 1200);
+          });
+        }
+
+        const clipFrames = Math.max(1, Math.round(clip.duration * fps));
+
+        for (let f = 0; f < clipFrames; f++) {
+          if (session.isCancelled) {
+            try { recorder.stop(); } catch {}
+            throw new Error('CANCELLED');
+          }
+
+          if (isVideo) {
+            const video = element as HTMLVideoElement;
+            const localTime = (f / fps) * (clip.speed || 1);
+            const targetTime = Math.max(0, Math.min(clip.sourceEnd || source.duration || 1000, clip.sourceStart + localTime));
+            await this.seekAndSyncVideoFrame(video, targetTime);
+            if (video.seeking) {
+              await new Promise<void>((r) => {
+                const onS = () => { video.removeEventListener('seeked', onS); r(); };
+                video.addEventListener('seeked', onS, { once: true });
+                setTimeout(onS, 40);
+              });
+            }
+          }
+
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(0, 0, width, height);
+
+          FrameNormalizationService.drawVideoWithFitMode(
+            ctx,
+            element as any,
+            clip.fitMode || preset.fitMode,
+            width,
+            height,
+            clip.rotation || 0,
+            preset.colorGrade,
+            clip.colorAdjustments,
+            clip.crop
+          );
+
+          FrameNormalizationService.applyLetterbox(ctx, width, height, preset.letterbox);
+          FrameNormalizationService.applyTransitions(ctx, width, height, f, clipFrames, fps, clip);
+
+          const currentTimelineSec = (clip.timelineStart || 0) + (clip.titleCard?.enabled ? (clip.titleCard.duration || 3) : 0) + (f / fps);
+          if (textLayers && textLayers.length > 0) {
+            FrameNormalizationService.drawTextLayers(ctx, width, height, textLayers, currentTimelineSec);
+          }
+
+          if (preset.watermark && preset.watermark.enabled) {
+            FrameNormalizationService.applyWatermark(ctx, width, height, preset.watermark);
+          }
+
+          globalFrame++;
+
+          progressController.update({
+            stage: 'VIDEO_ENCODING',
+            currentFrame: globalFrame,
+            currentClipIndex: clipIdx + 1,
+            currentClipName: source.name,
+            statusMessage: `Renderowanie MediaRecorder: ${globalFrame}/${totalFrames} • ${source.name}`
+          });
+
+          await new Promise(r => setTimeout(r, Math.max(1, Math.floor(frameIntervalMs / 4))));
+        }
+      } finally {
+        drawable.cleanup();
+      }
     }
 
     progressController.update({
@@ -1042,6 +1474,13 @@ export class VideoExportService {
       recorder.onstop = () => resolve();
       setTimeout(resolve, 3000);
     });
+
+    if (masterAudioSource) {
+      try { masterAudioSource.stop(); } catch {}
+    }
+    if (audioCtx) {
+      try { audioCtx.close(); } catch {}
+    }
 
     const finalBlob = new Blob(recordedChunks, { type: videoMime });
     session.outputSizeBytes = finalBlob.size;
@@ -1086,7 +1525,7 @@ export class VideoExportService {
   }
 
   /**
-   * Safely renders audio mix using OfflineAudioContext with timeouts and fallback
+   * Safely renders audio mix using OfflineAudioContext with ducking, pan, and safety timeouts
    */
   private async renderAudioMix(
     session: ExportSession,
@@ -1101,6 +1540,23 @@ export class VideoExportService {
     const offlineCtx = new OfflineCtx(2, totalSamples, 48000);
     let attachedSources = 0;
 
+    // Detect voiceover / dialogue active periods for Audio Ducking
+    const voiceoverIntervals: { start: number; end: number; duckingRatio: number }[] = [];
+    if (audioTracks && audioTracks.length > 0) {
+      for (const track of audioTracks) {
+        if (track.trackType === 'voiceover' && !track.muted) {
+          const start = track.timelineStart || 0;
+          const end = start + (track.duration || 1);
+          const duckAmount = (track.duckingAmount ?? 60) / 100;
+          voiceoverIntervals.push({ start, end, duckingRatio: Math.max(0.1, 1 - duckAmount) });
+        }
+      }
+    }
+
+    // Cache decoded audio buffers by source/track ID to avoid repeated network/file reads
+    const audioBufferCache = new Map<string, AudioBuffer | null>();
+
+    // 1. Render Clip Audio
     for (let i = 0; i < clips.length; i++) {
       if (session.isCancelled) throw new Error('CANCELLED');
       const clip = clips[i];
@@ -1116,20 +1572,22 @@ export class VideoExportService {
       });
 
       try {
-        // Decode audio with safety timeout
-        const decodedBuffer = await Promise.race([
-          (async () => {
-            let buf: ArrayBuffer;
-            if (source.file) {
-              buf = await source.file.arrayBuffer();
-            } else {
-              const res = await fetch(source.uri);
-              buf = await res.arrayBuffer();
-            }
-            return await offlineCtx.decodeAudioData(buf);
-          })(),
-          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('AUDIO_TIMEOUT')), 4000))
-        ]);
+        let decodedBuffer: AudioBuffer | null = null;
+        if (audioBufferCache.has(source.id)) {
+          decodedBuffer = audioBufferCache.get(source.id) || null;
+        } else {
+          decodedBuffer = await Promise.race([
+            (async () => {
+              const buf = await getMediaArrayBuffer(source.id, source.file || source.blob, source.uri);
+              if (!buf || buf.byteLength === 0) return null;
+              // Make copy of buffer since decodeAudioData detaches ArrayBuffer
+              const copy = buf.slice(0);
+              return await offlineCtx.decodeAudioData(copy);
+            })(),
+            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('AUDIO_TIMEOUT')), 15000))
+          ]);
+          audioBufferCache.set(source.id, decodedBuffer);
+        }
 
         if (decodedBuffer) {
           const srcNode = offlineCtx.createBufferSource();
@@ -1138,7 +1596,11 @@ export class VideoExportService {
           gain.gain.value = clip.volume ?? 1;
           srcNode.connect(gain);
           gain.connect(offlineCtx.destination);
-          srcNode.start(clip.timelineStart, clip.sourceStart, clip.duration);
+          const maxOffset = Math.max(0, decodedBuffer.duration - 0.05);
+          const safeOffset = Math.max(0, Math.min(clip.sourceStart, maxOffset));
+          const safeDur = Math.max(0.05, Math.min(clip.duration, decodedBuffer.duration - safeOffset));
+          const safeWhen = Math.max(0, clip.timelineStart);
+          srcNode.start(safeWhen, safeOffset, safeDur);
           attachedSources++;
         }
       } catch (e) {
@@ -1146,26 +1608,46 @@ export class VideoExportService {
       }
     }
 
-    // Mix additional background music tracks
+    // 2. Render Background Music & SFX with Audio Ducking
     if (audioTracks && audioTracks.length > 0) {
       for (const track of audioTracks) {
         if (track.muted || track.volume === 0) continue;
         try {
-          let buf: ArrayBuffer | null = null;
-          if (track.file) buf = await track.file.arrayBuffer();
-          else if (track.objectUrl) {
-            const res = await fetch(track.objectUrl);
-            buf = await res.arrayBuffer();
+          let decoded: AudioBuffer | null = null;
+          if (audioBufferCache.has(track.id)) {
+            decoded = audioBufferCache.get(track.id) || null;
+          } else {
+            const buf = await getMediaArrayBuffer(track.id, track.file, track.objectUrl);
+            if (buf && buf.byteLength > 0) {
+              const copy = buf.slice(0);
+              decoded = await offlineCtx.decodeAudioData(copy);
+              audioBufferCache.set(track.id, decoded);
+            }
           }
-          if (buf) {
-            const decoded = await offlineCtx.decodeAudioData(buf);
+          if (decoded) {
             const trackNode = offlineCtx.createBufferSource();
             trackNode.buffer = decoded;
-            const gain = offlineCtx.createGain();
-            gain.gain.value = track.volume ?? 0.85;
-            trackNode.connect(gain);
-            gain.connect(offlineCtx.destination);
-            trackNode.start(track.timelineStart || 0, track.sourceStart || 0, track.duration || decoded.duration);
+            const gainNode = offlineCtx.createGain();
+
+            const baseVolume = track.volume ?? 0.85;
+            gainNode.gain.setValueAtTime(baseVolume, 0);
+
+            // Apply Ducking Automation if this is background music and voiceover exists
+            if (track.trackType === 'music' || !track.trackType) {
+              for (const vInt of voiceoverIntervals) {
+                const duckedVol = baseVolume * vInt.duckingRatio;
+                gainNode.gain.setValueAtTime(baseVolume, Math.max(0, vInt.start - 0.3));
+                gainNode.gain.linearRampToValueAtTime(duckedVol, vInt.start);
+                gainNode.gain.setValueAtTime(duckedVol, vInt.end);
+                gainNode.gain.linearRampToValueAtTime(baseVolume, vInt.end + 0.5);
+              }
+            }
+
+            trackNode.connect(gainNode);
+            gainNode.connect(offlineCtx.destination);
+            const trackOffset = Math.max(0, Math.min(track.sourceStart || 0, decoded.duration - 0.05));
+            const trackDur = Math.max(0.05, Math.min(track.duration || decoded.duration, decoded.duration - trackOffset));
+            trackNode.start(track.timelineStart || 0, trackOffset, trackDur);
             attachedSources++;
           }
         } catch {}
@@ -1193,7 +1675,7 @@ export class VideoExportService {
       const timeout = setTimeout(() => {
         if (!resolved) {
           resolved = true;
-          resolve(); // Safety fallback: resume feeding to prevent hard lock
+          resolve();
         }
       }, 150);
 

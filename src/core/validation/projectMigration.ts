@@ -51,7 +51,7 @@ export function createInitialProject(id: string = `proj_${Date.now()}`): Project
     audioTracks: [],
     textLayers: [],
     markers: [],
-    chapters: [...DEFAULT_CHAPTERS],
+    chapters: [],
     versions: []
   };
 }
@@ -178,7 +178,7 @@ export function migrateProjectToLatest(input: any): ProjectState {
     audioTracks: Array.isArray(raw.audioTracks) ? raw.audioTracks : [],
     textLayers: Array.isArray(raw.textLayers) ? raw.textLayers : [],
     markers: Array.isArray(raw.markers) ? raw.markers : [],
-    chapters: Array.isArray(raw.chapters) && raw.chapters.length > 0 ? raw.chapters : [...DEFAULT_CHAPTERS],
+    chapters: Array.isArray(raw.chapters) ? raw.chapters : [],
     versions: Array.isArray(raw.versions) ? raw.versions : []
   };
 }

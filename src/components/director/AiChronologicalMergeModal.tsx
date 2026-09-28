@@ -576,6 +576,18 @@ export function AiChronologicalMergeModal({
               <button
                 onClick={() => {
                   handleApplyCaptions();
+                  const active = sequencedItems.filter(i => i.includeInTimeline);
+                  if (active.length > 0) {
+                    onApplyToTimeline(active.map(i => ({
+                      clip: i.clip,
+                      smartTitle: i.smartTitle,
+                      subtitleCaption: i.subtitleCaption,
+                      category: i.category,
+                      transition: i.transition,
+                      trimStart: i.trimStart,
+                      trimEnd: i.trimEnd
+                    })));
+                  }
                   onClose();
                   onOpenQuickMerge();
                 }}

@@ -1,4 +1,4 @@
-import { StoryMood } from '../types/legacy';
+export type StoryMood = 'high_quality' | 'romantic' | 'energetic' | 'cinematic' | 'modern' | 'nostalgic';
 
 export interface SoundGenre {
   id: string;

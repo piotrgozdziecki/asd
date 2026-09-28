@@ -1,4 +1,4 @@
-import React, { useRef, useState, useMemo } from 'react';
+import React, { useRef, useState, useMemo, useEffect } from 'react';
 import type { 
   TimelineItem, 
   MediaClip, 
@@ -21,8 +21,18 @@ import {
   Bookmark, 
   AlertTriangle,
   ChevronRight,
-  Maximize2
+  Maximize2,
+  Volume2,
+  VolumeX,
+  Plus,
+  Play,
+  Pause,
+  Sliders,
+  Sparkles,
+  Activity,
+  Mic
 } from 'lucide-react';
+import { getOrGenerateWaveform } from '../../core/audio/waveformGenerator';
 
 interface TimelineViewProps {
   items: TimelineItem[];
@@ -34,16 +44,20 @@ interface TimelineViewProps {
   tracks?: TimelineTrack[];
   currentTime: number;
   duration: number;
+  targetFps?: number;
   onTimeUpdate: (time: number) => void;
   onItemSelect: (id: string | null) => void;
   selectedItemId: string | null;
   onItemMove?: (id: string, newStart: number) => void;
+  onItemTrim?: (id: string, newStart: number, newEnd: number) => void;
   onSplitItem?: (id: string, splitTime: number) => void;
   onDuplicateItem?: (id: string) => void;
   onDeleteItem?: (id: string) => void;
   onDeleteMultipleItems?: (ids: string[]) => void;
   onAddMarker?: (marker: TimelineMarker) => void;
   onDeleteMarker?: (id: string) => void;
+  onAddTextLayer?: () => void;
+  onAddAudioTrack?: () => void;
 }
 
 export function TimelineView({
@@ -56,25 +70,34 @@ export function TimelineView({
   tracks = [],
   currentTime,
   duration,
+  targetFps = 30,
   onTimeUpdate,
   onItemSelect,
   selectedItemId,
   onItemMove,
+  onItemTrim,
   onSplitItem,
   onDuplicateItem,
   onDeleteItem,
   onDeleteMultipleItems,
   onAddMarker,
-  onDeleteMarker
+  onDeleteMarker,
+  onAddTextLayer,
+  onAddAudioTrack
 }: TimelineViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const playheadRef = useRef<HTMLDivElement>(null);
 
-  // Zoom level: pixels per second (20 to 120)
-  const [pixelsPerSecond, setPixelsPerSecond] = useState<number>(40);
+  // Zoom level: pixels per second (20 to 200)
+  const [pixelsPerSecond, setPixelsPerSecond] = useState<number>(50);
   const [isSnappingEnabled, setIsSnappingEnabled] = useState<boolean>(true);
+  const [showWaveforms, setShowWaveforms] = useState<boolean>(true);
   const [multiSelectedIds, setMultiSelectedIds] = useState<Set<string>>(new Set());
 
-  // Drag state
+  // Cached waveforms for audio tracks
+  const [audioWaveforms, setAudioWaveforms] = useState<Map<string, number[]>>(new Map());
+
+  // Dragging & Trimming state
   const [draggedItem, setDraggedItem] = useState<{
     id: string;
     type: 'video' | 'audio' | 'text';
@@ -82,7 +105,15 @@ export function TimelineView({
     initialTime: number;
   } | null>(null);
 
-  // Quick lookup maps
+  const [trimmingHandle, setTrimmingHandle] = useState<{
+    id: string;
+    handle: 'left' | 'right';
+    startX: number;
+    initialStart: number;
+    initialEnd: number;
+    clipDuration: number;
+  } | null>(null);
+
   const clipMap = useMemo(() => new Map(mediaLibrary.map(c => [c.id, c])), [mediaLibrary]);
 
   const maxTime = Math.max(
@@ -93,8 +124,8 @@ export function TimelineView({
     60
   );
   
-  const totalSeconds = maxTime + 60; // Extra buffer
-  const rulerInterval = pixelsPerSecond >= 80 ? 1 : pixelsPerSecond >= 40 ? 5 : 10;
+  const totalSeconds = maxTime + 60; // Extra work buffer
+  const rulerInterval = pixelsPerSecond >= 100 ? 1 : pixelsPerSecond >= 40 ? 5 : 10;
 
   const rulerMarks: number[] = [];
   for (let i = 0; i <= totalSeconds; i += rulerInterval) {
@@ -103,6 +134,30 @@ export function TimelineView({
 
   // Selected item object
   const selectedItem = items.find(i => i.id === selectedItemId);
+
+  // Format timecode HH:MM:SS:FF
+  const formatTimecode = (sec: number) => {
+    const s = Math.max(0, sec);
+    const hrs = Math.floor(s / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const secs = Math.floor(s % 60);
+    const frames = Math.floor((s % 1) * targetFps);
+    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}:${frames.toString().padStart(2, '0')}`;
+  };
+
+  // Generate waveforms in background
+  useEffect(() => {
+    if (!showWaveforms) return;
+
+    audioTracks.forEach(track => {
+      const url = track.objectUrl || (track.file ? URL.createObjectURL(track.file) : null);
+      if (url && !audioWaveforms.has(track.id)) {
+        getOrGenerateWaveform(url, track.id, 80).then(wf => {
+          setAudioWaveforms(prev => new Map(prev).set(track.id, wf));
+        });
+      }
+    });
+  }, [audioTracks, showWaveforms]);
 
   // Split at playhead
   const handleSplitAtPlayhead = () => {
@@ -129,8 +184,61 @@ export function TimelineView({
     });
   };
 
-  // Keyboard Shortcuts for Timeline Editing
-  React.useEffect(() => {
+  // Fit timeline zoom to view all clips
+  const handleFitTimeline = () => {
+    if (!containerRef.current || duration <= 0) return;
+    const containerWidth = containerRef.current.clientWidth - 100;
+    const optimalPps = Math.max(15, Math.min(150, Math.floor(containerWidth / Math.max(10, duration))));
+    setPixelsPerSecond(optimalPps);
+  };
+
+  // Center playhead in view
+  const handleCenterPlayhead = () => {
+    if (!containerRef.current) return;
+    const targetScroll = (currentTime * pixelsPerSecond) - (containerRef.current.clientWidth / 2);
+    containerRef.current.scrollTo({ left: Math.max(0, targetScroll), behavior: 'smooth' });
+  };
+
+  // Trimming mouse handlers
+  useEffect(() => {
+    if (!trimmingHandle) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const deltaPx = e.clientX - trimmingHandle.startX;
+      const deltaSec = deltaPx / pixelsPerSecond;
+      const item = items.find(i => i.id === trimmingHandle.id);
+      const media = item ? clipMap.get(item.clipId) : null;
+      if (!item || !media) return;
+
+      const speed = item.speed || 1;
+
+      if (trimmingHandle.handle === 'left') {
+        const candidateStart = Math.max(0, Math.min(trimmingHandle.initialEnd - 0.2, trimmingHandle.initialStart + (deltaSec * speed)));
+        if (onItemTrim) {
+          onItemTrim(item.id, candidateStart, item.sourceEnd);
+        }
+      } else {
+        const candidateEnd = Math.max(trimmingHandle.initialStart + 0.2, Math.min(media.duration, trimmingHandle.initialEnd + (deltaSec * speed)));
+        if (onItemTrim) {
+          onItemTrim(item.id, item.sourceStart, candidateEnd);
+        }
+      }
+    };
+
+    const handleMouseUp = () => {
+      setTrimmingHandle(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [trimmingHandle, pixelsPerSecond, items, clipMap, onItemTrim]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const activeTag = document.activeElement?.tagName.toLowerCase();
       if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
@@ -155,6 +263,13 @@ export function TimelineView({
           e.preventDefault();
           onDuplicateItem(selectedItem.id);
         }
+      } else if (e.code === 'KeyM' && !e.ctrlKey && !e.metaKey) {
+        if (selectedItem) {
+          e.preventDefault();
+          if (onItemTrim) {
+            // Mute toggle
+          }
+        }
       }
     };
 
@@ -162,494 +277,329 @@ export function TimelineView({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedItemId, selectedItem, currentTime, onDeleteItem, onDeleteMultipleItems, multiSelectedIds, onSplitItem, onDuplicateItem]);
 
-  const handleDragStart = (e: React.DragEvent<HTMLDivElement>, id: string, type: 'video' | 'audio' | 'text', startTime: number) => {
-    e.dataTransfer.setData('text/plain', id);
-    e.dataTransfer.effectAllowed = 'move';
-    const dragImg = new Image();
-    dragImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-    e.dataTransfer.setDragImage(dragImg, 0, 0);
-    setDraggedItem({ id, type, startOffset: 0, initialTime: startTime });
-  };
-
-  // Visual constants for professional look
-  const trackHeight = 80;
-  const itemHeight = 60;
-  const playheadColor = '#FDE047';
-
-  // Memoized styles for performance (Req 26)
-  const timelineStyle = useMemo(() => ({
-    width: `${totalSeconds * pixelsPerSecond}px`
-  }), [totalSeconds, pixelsPerSecond]);
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-  };
-
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    if (!draggedItem || !onItemMove) {
-      setDraggedItem(null);
-      return;
-    }
-    
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    
-    const trackHeaderWidth = window.innerWidth >= 768 ? 64 : 48;
-    const scrollLeft = containerRef.current?.scrollLeft || 0;
-    
-    const x = e.clientX - rect.left - trackHeaderWidth + scrollLeft - draggedItem.startOffset;
-    let newTime = Math.max(0, x / pixelsPerSecond);
-    
-    // Magnetic Snapping to other items or markers
-    if (isSnappingEnabled) {
-      const SNAP_THRESHOLD = 0.4;
-      const snapPoints = [
-        ...items.filter(i => i.id !== draggedItem.id).map(i => i.timelineStart),
-        ...items.filter(i => i.id !== draggedItem.id).map(i => i.timelineStart + i.duration),
-        ...markers.map(m => m.time),
-        currentTime
-      ];
-      
-      for (const point of snapPoints) {
-        if (Math.abs(newTime - point) < SNAP_THRESHOLD) {
-          newTime = point;
-          break;
-        }
-      }
-    }
-
-    onItemMove(draggedItem.id, newTime);
-    setDraggedItem(null);
-  };
-
-  const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if ((e.target as HTMLElement).closest('.timeline-clip')) return;
-    if ((e.target as HTMLElement).closest('.marker-pin')) return;
-    
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    
-    const trackHeaderWidth = window.innerWidth >= 768 ? 64 : 48;
-    const scrollLeft = containerRef.current?.scrollLeft || 0;
-    
-    if (e.clientX - rect.left < trackHeaderWidth) return;
-    
-    const x = e.clientX - rect.left - trackHeaderWidth + scrollLeft;
-    let newTime = Math.max(0, x / pixelsPerSecond);
-    
-    // Snapping
-    if (isSnappingEnabled) {
-      const SNAP_THRESHOLD = 0.3;
-      const snapPoints = [
-        ...items.map(i => i.timelineStart),
-        ...items.map(i => i.timelineStart + i.duration),
-        ...markers.map(m => m.time)
-      ];
-      
-      for (const point of snapPoints) {
-        if (Math.abs(newTime - point) < SNAP_THRESHOLD) {
-          newTime = point;
-          break;
-        }
-      }
-    }
-
-    onTimeUpdate(newTime);
-    onItemSelect(null);
-  };
-
-  const formatTimecode = (sec: number) => {
-    const m = Math.floor(sec / 60);
-    const s = Math.floor(sec % 60);
-    const f = Math.floor((sec % 1) * 30);
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}:${f.toString().padStart(2, '0')}`;
-  };
-
-  const getSelectionStyle = (isSelected: boolean) => 
-    isSelected ? 'border-[#D4AF37] ring-2 ring-[#D4AF37] z-20' : 'border-[#333] hover:border-[#555] z-10';
-
   return (
-    <div className="flex flex-col h-full bg-[#0D0D0D] border-t border-[#2A2824] overflow-hidden select-none">
-      
-      {/* Timeline Toolbar */}
-      <div className="h-11 border-b border-[#2A2824] flex items-center px-2 sm:px-4 justify-between shrink-0 bg-[#0A0A0A] text-xs overflow-x-auto no-scrollbar touch-pan-x w-full max-w-full gap-2">
-        
-        {/* Left: Timecode and Quick Tools */}
-        <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
-          <div className="flex items-center gap-1.5 sm:gap-2 bg-[#161514] px-2 sm:px-2.5 py-1 rounded-lg border border-[#2A2824]">
-            <span className="text-[10px] font-mono text-[#777] hidden xs:inline">POZ:</span>
-            <span className="font-mono font-bold text-[#D4AF37] text-[11px] sm:text-xs">{formatTimecode(currentTime)}</span>
-          </div>
-
-          <div className="h-4 w-px bg-[#2A2824]" />
-
-          {/* Razor / Split Tool */}
+    <div className="flex flex-col h-full bg-[#0E0E12] border-t border-[#222228] select-none text-xs">
+      {/* Top Controls Toolbar */}
+      <div className="h-11 border-b border-[#222228] bg-[#141418] px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0">
+        {/* Left: Action Buttons */}
+        <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar py-1">
           <button
             onClick={handleSplitAtPlayhead}
-            disabled={!selectedItem || currentTime <= selectedItem.timelineStart || currentTime >= (selectedItem.timelineStart + selectedItem.duration)}
-            className="p-1.5 sm:px-2 sm:py-1 rounded bg-[#181818] hover:bg-[#252525] text-white disabled:opacity-30 disabled:hover:bg-[#181818] flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
-            title="Rozetnij zaznaczony klip w miejscu kursora (S)"
+            disabled={!selectedItem}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#1C1C22] hover:bg-[#282830] text-white disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer border border-[#2E2E38] font-mono text-[11px]"
+            title="Podziel zaznaczony klip w miejscu kursora (Klawisz: S)"
           >
             <Scissors className="w-3.5 h-3.5 text-[#D4AF37]" />
-            <span className="text-[11px] hidden sm:inline">Rozetnij</span>
+            <span className="hidden sm:inline">Rozetnij</span>
           </button>
 
-          {/* Duplicate Tool */}
           <button
             onClick={() => selectedItem && onDuplicateItem && onDuplicateItem(selectedItem.id)}
-            disabled={!selectedItem || !onDuplicateItem}
-            className="p-1.5 sm:px-2 sm:py-1 rounded bg-[#181818] hover:bg-[#252525] text-white disabled:opacity-30 disabled:hover:bg-[#181818] flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
-            title="Zduplikuj zaznaczony klip"
+            disabled={!selectedItem}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#1C1C22] hover:bg-[#282830] text-white disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer border border-[#2E2E38] font-mono text-[11px]"
+            title="Duplikuj klip (Klawisz: D)"
           >
-            <Copy className="w-3.5 h-3.5 text-blue-400" />
-            <span className="text-[11px] hidden sm:inline">Duplikuj</span>
+            <Copy className="w-3.5 h-3.5 text-[#D4AF37]" />
+            <span className="hidden sm:inline">Duplikuj</span>
           </button>
 
-          {/* Delete Tool */}
           <button
-            onClick={() => selectedItemId && onDeleteItem && onDeleteItem(selectedItemId)}
-            disabled={!selectedItemId || !onDeleteItem}
-            className="p-1.5 sm:px-2 sm:py-1 rounded bg-[#181818] hover:bg-red-950/40 text-stone-300 hover:text-red-400 disabled:opacity-30 disabled:hover:bg-[#181818] flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
-            title="Usuń zaznaczony element z osi czasu (Delete)"
+            onClick={() => selectedItem && onDeleteItem && onDeleteItem(selectedItem.id)}
+            disabled={!selectedItem}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#1C1C22] hover:bg-rose-950/40 text-white hover:text-rose-400 disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer border border-[#2E2E38] font-mono text-[11px]"
+            title="Usuń zaznaczony klip (Klawisz: Delete)"
           >
-            <Trash2 className="w-3.5 h-3.5 text-red-400" />
-            <span className="text-[11px] hidden sm:inline">Usuń</span>
+            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+            <span className="hidden sm:inline">Usuń</span>
           </button>
 
-          {/* Marker Tool */}
-          <button
-            onClick={handleAddMarkerAtPlayhead}
-            className="p-1.5 sm:px-2 sm:py-1 rounded bg-[#181818] hover:bg-[#252525] text-white flex items-center gap-1.5 transition-colors cursor-pointer border border-[#2A2824]"
-            title="Wstaw znacznik w miejscu kursora"
-          >
-            <Bookmark className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-[11px] hidden sm:inline">Znacznik</span>
-          </button>
+          <div className="h-4 w-px bg-[#2E2E38] mx-1" />
+
+          {onAddTextLayer && (
+            <button
+              onClick={onAddTextLayer}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#1C1C22] hover:bg-[#282830] text-white transition-colors cursor-pointer border border-[#2E2E38] font-mono text-[11px]"
+              title="Dodaj warstwę napisów"
+            >
+              <Type className="w-3.5 h-3.5 text-sky-400" />
+              <span className="hidden sm:inline">+ Napis</span>
+            </button>
+          )}
+
+          {onAddAudioTrack && (
+            <button
+              onClick={onAddAudioTrack}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#1C1C22] hover:bg-[#282830] text-white transition-colors cursor-pointer border border-[#2E2E38] font-mono text-[11px]"
+              title="Dodaj ścieżkę dźwiękową"
+            >
+              <Music className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">+ Muzyka</span>
+            </button>
+          )}
         </div>
 
-        {/* Right: Snapping & Zoom Controls */}
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          
-          {/* Snapping toggle */}
+        {/* Center: Live Timecode & Frame counter */}
+        <div className="flex items-center gap-2 px-3 py-1 bg-[#0A0A0D] border border-[#2A2A34] rounded-lg font-mono text-xs">
+          <span className="text-[#D4AF37] font-bold tracking-wider">{formatTimecode(currentTime)}</span>
+          <span className="text-[#666]">/</span>
+          <span className="text-[#AAA]">{formatTimecode(duration)}</span>
+        </div>
+
+        {/* Right: Zoom & Utility controls */}
+        <div className="flex items-center gap-1">
           <button
-            onClick={() => setIsSnappingEnabled(!isSnappingEnabled)}
-            className={`p-1.5 sm:px-2 sm:py-1 rounded flex items-center gap-1 text-[11px] font-mono border transition-colors cursor-pointer ${
-              isSnappingEnabled 
-                ? 'bg-[#D4AF37]/20 border-[#D4AF37]/50 text-[#D4AF37]' 
-                : 'bg-[#181818] border-[#2A2824] text-[#777]'
+            onClick={() => setShowWaveforms(!showWaveforms)}
+            className={`p-1.5 rounded-lg border text-[11px] transition-colors cursor-pointer font-mono ${
+              showWaveforms ? 'bg-[#221E12] border-[#D4AF37] text-[#D4AF37]' : 'bg-[#1C1C22] border-[#2E2E38] text-[#888]'
             }`}
-            title="Włącz/wyłącz przyciąganie magnetyczne do krawędzi klipów i znaczników"
+            title="Pokaż/Ukryj falę audio"
           >
-            <Magnet className="w-3 h-3" />
-            <span className="hidden sm:inline">Magnes</span>
+            <Activity className="w-3.5 h-3.5" />
           </button>
-
-          <div className="h-4 w-px bg-[#2A2824]" />
-
-          {/* Zoom controls */}
-          <button
-            onClick={() => setPixelsPerSecond(prev => Math.max(15, prev - 10))}
-            className="p-1 rounded bg-[#181818] hover:bg-[#252525] text-[#AAA69D] hover:text-white border border-[#2A2824] cursor-pointer"
-            title="Oddal oś czasu"
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-
-          <span className="text-[10px] font-mono text-[#777] min-w-[28px] sm:min-w-[32px] text-center">
-            {pixelsPerSecond}p
-          </span>
 
           <button
-            onClick={() => setPixelsPerSecond(prev => Math.min(120, prev + 10))}
-            className="p-1 rounded bg-[#181818] hover:bg-[#252525] text-[#AAA69D] hover:text-white border border-[#2A2824] cursor-pointer"
-            title="Przybliż oś czasu"
+            onClick={handleCenterPlayhead}
+            className="p-1.5 rounded-lg bg-[#1C1C22] hover:bg-[#282830] border border-[#2E2E38] text-[#AAA] hover:text-white transition-colors cursor-pointer font-mono"
+            title="Wyśrodkuj widok na kursorze"
           >
-            <ZoomIn className="w-3.5 h-3.5" />
+            <Maximize2 className="w-3.5 h-3.5" />
           </button>
 
-          {/* Fit entire project to timeline width */}
           <button
-            onClick={() => {
-              if (!containerRef.current) return;
-              const availableWidth = containerRef.current.clientWidth - 100;
-              const projectTotalTime = Math.max(
-                ...items.map(i => i.timelineStart + i.duration),
-                ...textLayers.map(t => t.timelineStart + t.duration),
-                ...audioTracks.map(a => a.timelineStart + a.duration),
-                10
-              );
-              if (projectTotalTime > 0 && availableWidth > 150) {
-                const calculatedPps = Math.max(10, Math.min(120, availableWidth / projectTotalTime));
-                setPixelsPerSecond(Math.round(calculatedPps));
-              }
-            }}
-            className="px-1.5 sm:px-2 py-1 rounded bg-[#1C1A14] hover:bg-[#D4AF37]/20 text-[#D4AF37] border border-[#D4AF37]/40 flex items-center gap-1 text-[10px] font-mono font-bold cursor-pointer transition-colors"
-            title="Autodopasowanie: zmieść cały film na ekranie"
+            onClick={handleFitTimeline}
+            className="px-2 py-1.5 rounded-lg bg-[#1C1C22] hover:bg-[#282830] border border-[#2E2E38] text-[#AAA] hover:text-white transition-colors cursor-pointer font-mono text-[10px] font-bold"
+            title="Dopasuj oś czasu do ekranu (Fit)"
           >
-            <Maximize2 className="w-3 h-3" />
-            <span>Auto</span>
+            FIT
           </button>
+
+          <div className="flex items-center bg-[#1C1C22] border border-[#2E2E38] rounded-lg p-0.5">
+            <button
+              onClick={() => setPixelsPerSecond(Math.max(20, pixelsPerSecond - 15))}
+              className="p-1 hover:bg-[#282830] rounded text-[#AAA] hover:text-white cursor-pointer"
+              title="Oddal (Zoom Out)"
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+            </button>
+            <span className="text-[10px] font-mono text-[#777] px-1">{Math.round((pixelsPerSecond / 50) * 100)}%</span>
+            <button
+              onClick={() => setPixelsPerSecond(Math.min(200, pixelsPerSecond + 15))}
+              className="p-1 hover:bg-[#282830] rounded text-[#AAA] hover:text-white cursor-pointer"
+              title="Przybliż (Zoom In)"
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
-
       </div>
 
-      {/* Timeline Scrolling Area */}
+      {/* Main Timeline Workspace */}
       <div 
         ref={containerRef}
-        className="flex-1 overflow-x-auto overflow-y-auto relative custom-scrollbar bg-[#0D0D0D]"
-        onClick={handleTimelineClick}
+        className="flex-1 overflow-x-auto overflow-y-auto relative custom-scrollbar bg-[#0E0E12]"
+        onClick={(e) => {
+          if (e.target === containerRef.current) {
+            onItemSelect(null);
+          }
+        }}
       >
-        <div 
-          className="relative h-full" 
-          style={{ width: `${totalSeconds * pixelsPerSecond}px`, minWidth: '100%', minHeight: '220px' }}
-        >
-          {/* Chapter Blocks Track */}
-          <div className="h-6 border-b border-[#2A2824] sticky top-0 bg-[#0A0A0A] z-40 flex">
-            {chapters.map((ch, idx) => {
-              const chWidth = Math.max(10, (ch.endTime - ch.startTime) * pixelsPerSecond);
-              const chLeft = ch.startTime * pixelsPerSecond;
+        <div style={{ width: `${totalSeconds * pixelsPerSecond + 100}px`, minHeight: '260px' }} className="relative pb-8">
+          
+          {/* Time Ruler */}
+          <div 
+            className="h-7 border-b border-[#24242C] bg-[#121216] sticky top-0 z-20 flex cursor-pointer"
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const clickX = e.clientX - rect.left;
+              const newTime = Math.max(0, clickX / pixelsPerSecond);
+              onTimeUpdate(newTime);
+            }}
+          >
+            {rulerMarks.map(sec => (
+              <div 
+                key={sec} 
+                className="absolute top-0 h-full border-l border-[#24242C] flex items-end pb-1 pl-1 text-[9px] font-mono text-[#666]"
+                style={{ left: `${sec * pixelsPerSecond}px` }}
+              >
+                <span>{sec % 60 === 0 ? `${sec / 60}m` : `${sec}s`}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Interactive Playhead Line */}
+          <div 
+            ref={playheadRef}
+            className="absolute top-0 bottom-0 z-30 pointer-events-none transition-transform duration-75 flex flex-col items-center"
+            style={{ 
+              transform: `translateX(${currentTime * pixelsPerSecond}px)`,
+              left: 0
+            }}
+          >
+            <div className="w-3.5 h-3.5 bg-[#FDE047] rotate-45 -mt-1.5 shadow-[0_0_8px_rgba(253,224,71,0.8)]" />
+            <div className="w-0.5 h-full bg-[#FDE047] shadow-[0_0_6px_rgba(253,224,71,0.6)]" />
+          </div>
+
+          {/* TRACK 1: VIDEO TRACK */}
+          <div className="relative py-2 border-b border-[#1E1E26] bg-[#101015]/60 min-h-[76px] flex items-center">
+            <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5 text-[10px] font-mono text-[#888] bg-black/60 px-2 py-0.5 rounded border border-[#222] pointer-events-none">
+              <Video className="w-3 h-3 text-[#D4AF37]" />
+              <span>WIDEO</span>
+            </div>
+
+            {items.map((item, idx) => {
+              const media = clipMap.get(item.clipId);
+              const isSelected = selectedItemId === item.id || multiSelectedIds.has(item.id);
+              const itemWidth = Math.max(30, item.duration * pixelsPerSecond);
+              const itemLeft = item.timelineStart * pixelsPerSecond;
+
               return (
-                <div 
-                  key={ch.id || idx}
-                  className="absolute top-0 bottom-0 border-r border-[#2A2824] bg-[#161514] text-[9px] font-mono font-bold text-[#AAA69D] px-2 flex items-center overflow-hidden whitespace-nowrap"
-                  style={{ left: `${chLeft}px`, width: `${chWidth}px` }}
-                  title={`${ch.name} (${ch.startTime}s - ${ch.endTime}s)`}
+                <div
+                  key={item.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onItemSelect(item.id);
+                  }}
+                  className={`absolute top-2 h-14 rounded-xl border flex items-center overflow-hidden transition-shadow group cursor-pointer ${
+                    isSelected 
+                      ? 'border-[#D4AF37] ring-2 ring-[#D4AF37]/50 bg-[#252014] z-10 shadow-lg' 
+                      : 'border-[#2E2E38] bg-[#18181F] hover:border-[#444450]'
+                  }`}
+                  style={{
+                    left: `${itemLeft}px`,
+                    width: `${itemWidth}px`
+                  }}
                 >
-                  <span className="text-[#D4AF37] mr-1">#{idx + 1}</span> {ch.name}
+                  {/* Left Trim Handle */}
+                  <div
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      setTrimmingHandle({
+                        id: item.id,
+                        handle: 'left',
+                        startX: e.clientX,
+                        initialStart: item.sourceStart,
+                        initialEnd: item.sourceEnd,
+                        clipDuration: media?.duration || 10
+                      });
+                    }}
+                    className="absolute left-0 top-0 bottom-0 w-3 bg-[#D4AF37]/40 hover:bg-[#D4AF37] cursor-ew-resize z-20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Przeciągnij, aby przyciąć początek"
+                  >
+                    <div className="w-0.5 h-4 bg-black rounded" />
+                  </div>
+
+                  {/* Thumbnail and Info */}
+                  <div className="flex items-center gap-2 px-3 min-w-0 pointer-events-none">
+                    {media?.thumbnailUrl && (
+                      <img src={media.thumbnailUrl} alt="Thumb" className="w-10 h-10 object-cover rounded shrink-0 border border-white/10" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-bold text-white truncate">{media?.name || `Klip ${idx + 1}`}</p>
+                      <div className="flex items-center gap-1.5 text-[9px] font-mono text-[#AAA]">
+                        <span>{item.duration.toFixed(1)}s</span>
+                        {item.speed && item.speed !== 1 && (
+                          <span className="text-[#D4AF37] font-bold">{item.speed}x</span>
+                        )}
+                        {item.transitionIn && item.transitionIn !== 'cut' && (
+                          <span className="text-sky-400">✨ {item.transitionIn}</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Trim Handle */}
+                  <div
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      setTrimmingHandle({
+                        id: item.id,
+                        handle: 'right',
+                        startX: e.clientX,
+                        initialStart: item.sourceStart,
+                        initialEnd: item.sourceEnd,
+                        clipDuration: media?.duration || 10
+                      });
+                    }}
+                    className="absolute right-0 top-0 bottom-0 w-3 bg-[#D4AF37]/40 hover:bg-[#D4AF37] cursor-ew-resize z-20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Przeciągnij, aby przyciąć koniec"
+                  >
+                    <div className="w-0.5 h-4 bg-black rounded" />
+                  </div>
                 </div>
               );
             })}
           </div>
 
-          {/* Ruler & Markers */}
-          <div className="h-6 border-b border-[#2A2824] sticky top-6 bg-[#121212]/95 backdrop-blur-sm z-30 flex ml-12 md:ml-16">
-            {rulerMarks.map(time => (
-              <div 
-                key={time} 
-                className="absolute top-0 flex flex-col items-center"
-                style={{ left: `${time * pixelsPerSecond}px` }}
-              >
-                <div className="w-px h-2 bg-[#333]" />
-                <span className="text-[9px] text-[#666] font-mono transform -translate-x-1/2 mt-0.5">
-                  {Math.floor(time / 60)}:{(time % 60).toString().padStart(2, '0')}
-                </span>
-              </div>
-            ))}
-
-            {/* Visual Markers on Ruler */}
-            {markers.map(m => (
-              <div
-                key={m.id}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onTimeUpdate(m.time);
-                }}
-                className="marker-pin absolute top-0 transform -translate-x-1/2 cursor-pointer z-30 group"
-                style={{ left: `${m.time * pixelsPerSecond}px` }}
-                title={`${m.label} (${formatTimecode(m.time)})`}
-              >
-                <div 
-                  className="w-2.5 h-3 rounded-t-sm flex items-center justify-center shadow-md transition-transform group-hover:scale-125"
-                  style={{ backgroundColor: m.color || '#D4AF37' }}
-                />
-                <div 
-                  className="w-0.5 h-3 mx-auto"
-                  style={{ backgroundColor: m.color || '#D4AF37' }}
-                />
-              </div>
-            ))}
-          </div>
-
-          {/* Tracks Area */}
-          <div 
-            className="mt-2 space-y-1.5 relative z-10 pl-[1px] pb-10 ml-12 md:ml-16"
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}
-          >
-            
-            {/* Text Track (T1) */}
-            <div className="h-10 bg-[#161514] border-y border-[#2A2824]/50 relative group">
-              <div className="fixed left-0 w-12 md:w-16 h-10 bg-[#0F0F0F] border-r border-[#2A2824] z-30 flex flex-col items-center justify-center shadow-lg">
-                <Type className="w-3.5 h-3.5 text-[#AAA69D]" />
-                <span className="text-[9px] font-bold text-[#AAA69D] tracking-widest font-mono">T1</span>
-              </div>
-              
-              {textLayers.map(layer => {
-                const isSelected = selectedItemId === layer.id;
-                return (
-                  <div
-                    key={layer.id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, layer.id, 'text', layer.timelineStart)}
-                    onClick={(e) => { e.stopPropagation(); onItemSelect(layer.id); }}
-                    className={`timeline-clip absolute h-full rounded-md border overflow-hidden cursor-pointer transition-colors flex items-center px-2 bg-[#2D2342] ${getSelectionStyle(isSelected)} ${draggedItem?.id === layer.id ? 'opacity-50' : ''}`}
-                    style={{
-                      left: `${layer.timelineStart * pixelsPerSecond}px`,
-                      width: `${layer.duration * pixelsPerSecond}px`,
-                    }}
-                  >
-                    <span className="text-[10px] font-mono text-white truncate max-w-full drop-shadow-md">
-                      "{layer.text}"
-                    </span>
-                  </div>
-                );
-              })}
+          {/* TRACK 2: TEXT & SUBTITLES */}
+          <div className="relative py-1.5 border-b border-[#1E1E26] bg-[#0C0C10] min-h-[46px] flex items-center">
+            <div className="absolute left-2 top-1.5 z-10 flex items-center gap-1.5 text-[10px] font-mono text-[#888] bg-black/60 px-2 py-0.5 rounded border border-[#222] pointer-events-none">
+              <Type className="w-3 h-3 text-sky-400" />
+              <span>NAPISY</span>
             </div>
 
-            {/* Video Track (V1) */}
-            <div className="h-20 bg-[#161514] border-y border-[#2A2824]/50 relative group">
-              <div className="fixed left-0 w-12 md:w-16 h-20 bg-[#0F0F0F] border-r border-[#2A2824] z-30 flex flex-col items-center justify-center shadow-lg">
-                <Video className="w-3.5 h-3.5 text-[#D4AF37]" />
-                <span className="text-[9px] font-bold text-[#D4AF37] tracking-widest font-mono">V1</span>
-              </div>
-              
-              {items.map((item, idx) => {
-                const media = clipMap.get(item.clipId);
-                const isSelected = selectedItemId === item.id || multiSelectedIds.has(item.id);
-                const isMissing = !media || (!media.objectUrl && !media.file && !media.driveFileId);
-                const isVertical = media?.orientation === 'portrait';
-                
-                return (
-                  <div
-                    key={item.id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, item.id, 'video', item.timelineStart)}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (e.shiftKey || e.metaKey || e.ctrlKey) {
-                        setMultiSelectedIds(prev => {
-                          const next = new Set(prev);
-                          if (next.has(item.id)) next.delete(item.id);
-                          else next.add(item.id);
-                          return next;
-                        });
-                      } else {
-                        setMultiSelectedIds(new Set([item.id]));
-                        onItemSelect(item.id);
-                      }
-                    }}
-                    className={`timeline-clip absolute h-full rounded-md border overflow-hidden cursor-pointer transition-all ${getSelectionStyle(isSelected)} ${draggedItem?.id === item.id ? 'opacity-50' : ''} ${isMissing ? 'bg-red-950/60 border-red-500' : 'bg-[#1C1A17]'}`}
-                    style={{
-                      left: `${item.timelineStart * pixelsPerSecond}px`,
-                      width: `${item.duration * pixelsPerSecond}px`,
-                    }}
-                  >
-                    {media?.thumbnailUrl && (
-                      <div 
-                        className="absolute inset-0 opacity-40 bg-repeat-x bg-contain"
-                        style={{ backgroundImage: `url(${media.thumbnailUrl})` }}
-                      />
-                    )}
-                    <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/30 to-black/80" />
-                    
-                    {/* Item Labels & Badges */}
-                    <div className="relative p-2 flex flex-col justify-between z-0 h-full">
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-[10px] font-mono text-white truncate max-w-full font-bold drop-shadow">
-                          {idx + 1}. {media?.name || 'Ujęcie'}
-                        </span>
-                        
-                        <div className="flex items-center gap-1 shrink-0">
-                          {item.titleCard?.enabled && (
-                            <span className="text-[8px] bg-[#D4AF37] text-black font-extrabold px-1 py-0.5 rounded flex items-center gap-0.5" title={`Plansza: ${item.titleCard.text}`}>
-                              <Type className="w-2.5 h-2.5" /> PLANSZA
-                            </span>
-                          )}
-                          {isMissing && (
-                            <span className="text-[9px] bg-red-600 text-white font-bold px-1 rounded flex items-center gap-0.5 shrink-0">
-                              <AlertTriangle className="w-2.5 h-2.5" /> BRAK
-                            </span>
-                          )}
-                        </div>
-                      </div>
+            {textLayers.map((layer) => {
+              const layerWidth = Math.max(30, layer.duration * pixelsPerSecond);
+              const layerLeft = layer.timelineStart * pixelsPerSecond;
+              return (
+                <div
+                  key={layer.id}
+                  className="absolute top-1.5 h-8 rounded-lg border border-sky-600/40 bg-sky-950/40 hover:border-sky-400 flex items-center px-2.5 cursor-pointer z-10 text-[10px] text-sky-200 font-mono truncate"
+                  style={{
+                    left: `${layerLeft}px`,
+                    width: `${layerWidth}px`
+                  }}
+                  title={layer.text}
+                >
+                  <span className="truncate">{layer.text || 'Napis'}</span>
+                </div>
+              );
+            })}
+          </div>
 
-                      <div className="flex items-center justify-between text-[9px] font-mono text-[#AAA69D]">
-                        <span>{item.duration.toFixed(1)}s</span>
-                        {isVertical && (
-                          <span className="text-[8px] bg-black/60 px-1 rounded text-[#D4AF37]">9:16</span>
-                        )}
-                        {item.speed && item.speed !== 1 && (
-                          <span className="text-[8px] bg-black/60 px-1 rounded text-blue-300">{item.speed}x</span>
-                        )}
-                      </div>
+          {/* TRACK 3: AUDIO & MUSIC */}
+          <div className="relative py-2 border-b border-[#1E1E26] bg-[#101015]/60 min-h-[60px] flex items-center">
+            <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5 text-[10px] font-mono text-[#888] bg-black/60 px-2 py-0.5 rounded border border-[#222] pointer-events-none">
+              <Music className="w-3 h-3 text-emerald-400" />
+              <span>MUZYKA</span>
+            </div>
+
+            {audioTracks.map((track) => {
+              const trackWidth = Math.max(30, track.duration * pixelsPerSecond);
+              const trackLeft = track.timelineStart * pixelsPerSecond;
+              const wf = audioWaveforms.get(track.id);
+
+              return (
+                <div
+                  key={track.id}
+                  className="absolute top-2 h-11 rounded-xl border border-emerald-600/40 bg-emerald-950/30 hover:border-emerald-400 flex items-center overflow-hidden px-2.5 cursor-pointer z-10"
+                  style={{
+                    left: `${trackLeft}px`,
+                    width: `${trackWidth}px`
+                  }}
+                >
+                  {/* Waveform Visualization */}
+                  {showWaveforms && wf && (
+                    <div className="absolute inset-0 flex items-center gap-0.5 px-2 opacity-30 pointer-events-none">
+                      {wf.map((val, wIdx) => (
+                        <div 
+                          key={wIdx} 
+                          className="flex-1 bg-emerald-400 rounded-full"
+                          style={{ height: `${val * 100}%` }}
+                        />
+                      ))}
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-            
-            {/* Audio Track (A1) */}
-            <div className="h-16 bg-[#161514] border-y border-[#2A2824]/50 relative group">
-              <div className="fixed left-0 w-12 md:w-16 h-16 bg-[#0F0F0F] border-r border-[#2A2824] z-30 flex flex-col items-center justify-center shadow-lg">
-                <Music className="w-3.5 h-3.5 text-[#AAA69D]" />
-                <span className="text-[9px] font-bold text-[#AAA69D] tracking-widest font-mono">A1</span>
-              </div>
+                  )}
 
-              {audioTracks.map(track => {
-                const isSelected = selectedItemId === track.id;
-                return (
-                  <div
-                    key={track.id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, track.id, 'audio', track.timelineStart)}
-                    onClick={(e) => { e.stopPropagation(); onItemSelect(track.id); }}
-                    className={`timeline-clip absolute h-full rounded-md border overflow-hidden cursor-pointer transition-colors flex items-center px-2 bg-[#1B3A36] ${getSelectionStyle(isSelected)} ${draggedItem?.id === track.id ? 'opacity-50' : ''}`}
-                    style={{
-                      left: `${track.timelineStart * pixelsPerSecond}px`,
-                      width: `${track.duration * pixelsPerSecond}px`,
-                    }}
-                  >
-                    <span className="relative z-0 text-[10px] font-mono text-white truncate max-w-full drop-shadow-md ml-1">
-                      🎵 {track.name}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-
-          </div>
-
-          {/* Playhead */}
-          <div 
-            className="absolute top-0 bottom-0 w-px bg-[#D4AF37] z-40 pointer-events-none transition-all duration-75"
-            style={{ 
-              left: `${currentTime * pixelsPerSecond + (window.innerWidth >= 768 ? 64 : 48)}px`,
-              boxShadow: '0 0 10px rgba(212, 175, 55, 0.6)'
-            }}
-          >
-            <div className="absolute -top-1 -left-1.5 w-3 h-3 bg-[#D4AF37] rotate-45 transform origin-center rounded-sm shadow-md" />
+                  <span className="relative z-10 text-[10px] font-mono text-emerald-200 truncate font-bold">
+                    🎵 {track.name} ({track.duration.toFixed(1)}s)
+                  </span>
+                </div>
+              );
+            })}
           </div>
 
         </div>
       </div>
-
-      {/* Floating Bulk Action Dock for Timeline */}
-      {multiSelectedIds.size > 1 && (
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-50 bg-[#161410] border-2 border-[#D4AF37] rounded-xl px-4 py-2 flex items-center gap-3 shadow-2xl animate-in fade-in slide-in-from-bottom-2 select-none">
-          <span className="text-xs font-bold text-[#D4AF37]">
-            Zaznaczono {multiSelectedIds.size} ujęć na osi
-          </span>
-          {onDeleteMultipleItems && (
-            <button
-              onClick={() => {
-                onDeleteMultipleItems(Array.from(multiSelectedIds));
-                setMultiSelectedIds(new Set());
-                onItemSelect(null);
-              }}
-              className="px-3 py-1 bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-700/80 text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer shadow transition-all hover:scale-105"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Usuń z osi ({multiSelectedIds.size})</span>
-            </button>
-          )}
-          <button
-            onClick={() => setMultiSelectedIds(new Set())}
-            className="text-xs text-[#AAA69D] hover:text-white underline cursor-pointer"
-          >
-            Odznacz
-          </button>
-        </div>
-      )}
     </div>
   );
 }

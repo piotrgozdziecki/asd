@@ -24,6 +24,7 @@ interface QuickActionsBarProps {
   onNavigateToExport: () => void;
   onSelectRatingFilter?: (rating: string) => void;
   onOpenChronologicalModal?: () => void;
+  onOpenWeddingNarrativeModal?: () => void;
 }
 
 export function QuickActionsBar({
@@ -32,7 +33,8 @@ export function QuickActionsBar({
   onOpenDirectorModal,
   onNavigateToExport,
   onSelectRatingFilter,
-  onOpenChronologicalModal
+  onOpenChronologicalModal,
+  onOpenWeddingNarrativeModal
 }: QuickActionsBarProps) {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [activeActionName, setActiveActionName] = useState<string>('');
@@ -217,7 +219,20 @@ export function QuickActionsBar({
             title="Inteligentne scalanie chronologiczne ujęć i generowanie podpisów scen przez AI"
           >
             <Sparkles className="w-3.5 h-3.5 text-[#FDE047] animate-pulse" />
-            <span>Scal & Podpisz AI (Chronologia)</span>
+            <span>Scal & Podpisz AI</span>
+          </button>
+        )}
+
+        {/* 0b. Wedding Narrative Builder */}
+        {onOpenWeddingNarrativeModal && (
+          <button
+            onClick={onOpenWeddingNarrativeModal}
+            disabled={isRunning}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#3A1D28] to-[#24131B] hover:from-[#4E2636] hover:to-[#321A25] border border-[#E879F9]/60 text-[#F472B6] hover:text-[#F43F5E] cursor-pointer transition-all font-bold disabled:opacity-50 shadow-[0_0_15px_rgba(232,121,249,0.15)] shrink-0 whitespace-nowrap"
+            title="Utwórz nostalgiczną narrację ślubną dla Joanny i Piotra z datami, imionami i opisami momentów"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5 text-[#F472B6]" />
+            <span>Narracja Ślubna (Joanna & Piotr)</span>
           </button>
         )}
 

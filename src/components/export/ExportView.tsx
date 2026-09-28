@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import type { ProjectState } from '../../types/project';
 import { videoExportService } from '../../core/export/videoExportService';
+import { exportQueueService } from '../../core/export/exportQueueService';
 import { 
   ExportOutput, 
   ExportProgress, 
@@ -38,9 +39,11 @@ import {
   TimelineClip,
   DiagnosticsCapabilities,
   DiagnosticLogEntry,
-  ExportStage
+  ExportStage,
+  SerialExportTask
 } from '../../core/export/videoExportTypes';
 import { urlRegistry } from '../../core/media/urlRegistry';
+import { resolveClipMediaUrl } from '../../core/media/mediaResolver';
 import { useStudioToast } from '../common/ToastContext';
 
 interface ExportViewProps {
@@ -66,6 +69,7 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [output, setOutput] = useState<ExportOutput | null>(videoExportService.getLastOutput());
   const [error, setError] = useState<ExportError | null>(null);
+  const [queueTasks, setQueueTasks] = useState<SerialExportTask[]>([]);
 
   // Diagnostics & Developer Panel State
   const [showDiagnostics, setShowDiagnostics] = useState(false);
@@ -76,6 +80,13 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
 
   // Video preview player ref
   const videoPlayerRef = useRef<HTMLVideoElement>(null);
+  const [isPlayingResult, setIsPlayingResult] = useState(false);
+
+  useEffect(() => {
+    if (output?.url && videoPlayerRef.current) {
+      videoPlayerRef.current.load();
+    }
+  }, [output?.url]);
 
   // Sync preset changes
   const applyPreset = (mode: ExportPresetMode) => {
@@ -102,25 +113,32 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
 
   // Compute Sources & Ordered Timeline
   const mediaSources: MediaSource[] = useMemo(() => {
-    return (project.mediaLibrary || []).map(clip => ({
-      id: clip.id,
-      uri: clip.objectUrl || (clip.file ? urlRegistry.create(clip.file) : ''),
-      file: clip.file,
-      name: clip.name,
-      size: clip.size || 0,
-      duration: clip.duration || 1,
-      width: clip.width || 1920,
-      height: clip.height || 1080,
-      fps: clip.fps || 30,
-      videoCodec: clip.mimeType?.includes('webm') ? 'VP9' : 'H.264',
-      audioCodec: clip.hasAudio ? 'AAC' : 'Brak',
-      audioChannels: clip.audioChannels || (clip.hasAudio ? 2 : 0),
-      sampleRate: clip.hasAudio ? 48000 : 0,
-      orientation: clip.orientation || 'landscape',
-      hasAudio: Boolean(clip.hasAudio),
-      supported: clip.status !== 'ERROR' && clip.status !== 'error',
-      thumbnailUrl: clip.thumbnailUrl
-    }));
+    return (project.mediaLibrary || []).map(clip => {
+      const activeUri = (clip.objectUrl && urlRegistry.isAlive(clip.objectUrl))
+        ? clip.objectUrl
+        : (clip.file ? urlRegistry.create(clip.file) : (clip.objectUrl || ''));
+
+      return {
+        id: clip.id,
+        uri: activeUri,
+        file: clip.file,
+        type: clip.type || (/\.(jpe?g|png|webp|gif|svg|bmp)$/i.test(clip.name) ? 'image' : 'video'),
+        name: clip.name,
+        size: clip.size || 0,
+        duration: clip.duration || 1,
+        width: clip.width || 1920,
+        height: clip.height || 1080,
+        fps: clip.fps || 30,
+        videoCodec: clip.mimeType?.includes('webm') ? 'VP9' : 'H.264',
+        audioCodec: clip.hasAudio ? 'AAC' : 'Brak',
+        audioChannels: clip.audioChannels || (clip.hasAudio ? 2 : 0),
+        sampleRate: clip.hasAudio ? 48000 : 0,
+        orientation: clip.orientation || 'landscape',
+        hasAudio: Boolean(clip.hasAudio),
+        supported: clip.status !== 'ERROR' && clip.status !== 'error',
+        thumbnailUrl: clip.thumbnailUrl
+      };
+    });
   }, [project.mediaLibrary]);
 
   const timelineClips: TimelineClip[] = useMemo(() => {
@@ -135,9 +153,11 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
         duration: item.duration,
         volume: item.volume ?? 1,
         muted: Boolean(item.muted),
+        speed: item.speed || 1,
         rotation: item.rotation || 0,
         crop: item.crop,
         fitMode: (item.fitMode as FitMode) || fitMode,
+        colorAdjustments: item.colorAdjustments,
         titleCard: item.titleCard,
         transitionIn: item.transitionIn,
         transitionOut: item.transitionOut,
@@ -181,8 +201,18 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
     return `${mb.toFixed(1)} MB`;
   };
 
-  // Subscribe to service progress
+  // Subscribe to service progress and export queue
   useEffect(() => {
+    const unsubQueue = exportQueueService.subscribe((tasks) => {
+      setQueueTasks(tasks);
+      const active = tasks.find((t) => t.status === 'processing');
+      if (active) {
+        setIsExporting(true);
+        if (active.progress) setProgress(active.progress);
+        if (active.output) setOutput(active.output);
+      }
+    });
+
     const unsubscribe = videoExportService.subscribe((p) => {
       setProgress(p);
       if (p.stage === 'COMPLETED' || p.stage === 'FAILED' || p.stage === 'CANCELLED') {
@@ -190,8 +220,83 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
       }
       setLogs(videoExportService.getDiagnosticLogs());
     });
-    return unsubscribe;
+
+    return () => {
+      unsubQueue();
+      unsubscribe();
+    };
   }, []);
+
+  const handleEnqueueExport = async () => {
+    if (totalClipsCount === 0) {
+      toast.showError('Dodaj przynajmniej jeden film, aby rozpocząć eksport.');
+      return;
+    }
+
+    try {
+      const resolvedSources: MediaSource[] = await Promise.all(
+        (project.mediaLibrary || []).map(async (clip) => {
+          const freshUri = await resolveClipMediaUrl(clip);
+          return {
+            id: clip.id,
+            uri: freshUri || clip.objectUrl || '',
+            file: clip.file,
+            type: clip.type || (/\.(jpe?g|png|webp|gif|svg|bmp)$/i.test(clip.name) ? 'image' : 'video'),
+            name: clip.name,
+            size: clip.size || 0,
+            duration: clip.duration || 1,
+            width: clip.width || 1920,
+            height: clip.height || 1080,
+            fps: clip.fps || 30,
+            videoCodec: clip.mimeType?.includes('webm') ? 'VP9' : 'H.264',
+            audioCodec: clip.hasAudio ? 'AAC' : 'Brak',
+            audioChannels: clip.audioChannels || (clip.hasAudio ? 2 : 0),
+            sampleRate: clip.hasAudio ? 48000 : 0,
+            orientation: clip.orientation || 'landscape',
+            hasAudio: Boolean(clip.hasAudio),
+            supported: clip.status !== 'ERROR' && clip.status !== 'error',
+            thumbnailUrl: clip.thumbnailUrl
+          };
+        })
+      );
+
+      const plan = videoExportService.prepareExport(
+        resolvedSources.length > 0 ? resolvedSources : mediaSources,
+        timelineClips,
+        {
+          resolution,
+          fps,
+          fitMode,
+          colorGrade: (project.settings?.colorGrade as any) || 'none',
+          letterbox: project.settings?.letterbox === 'cinemascope' ? 'cinemascope' : 'none'
+        },
+        {
+          audioTracks: project.audioTracks || []
+        }
+      );
+
+      const task = exportQueueService.enqueueTask({
+        title: `Eksport ${resolution} (${fps} FPS)`,
+        projectName: project.name || 'Projekt Wideo',
+        config: {
+          presetMode,
+          resolution,
+          fps,
+          fitMode,
+          colorGrade: (project.settings?.colorGrade as any) || 'none',
+          letterbox: project.settings?.letterbox === 'cinemascope' ? 'cinemascope' : 'none',
+          title: project.name,
+          clipCount: totalClipsCount,
+          durationSec: totalDurationSec
+        },
+        plan
+      });
+
+      toast.showSuccess(`Dodano do kolejki eksportu: ${task.title}`);
+    } catch (err: any) {
+      toast.showError(`Nie udało się przygotować zadania: ${err.message}`);
+    }
+  };
 
   const handleStartExport = async () => {
     if (totalClipsCount === 0) {
@@ -204,8 +309,35 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
     setIsExporting(true);
 
     try {
+      // Ensure all clips have resolved, active media URLs
+      const resolvedSources: MediaSource[] = await Promise.all(
+        (project.mediaLibrary || []).map(async (clip) => {
+          const freshUri = await resolveClipMediaUrl(clip);
+          return {
+            id: clip.id,
+            uri: freshUri || clip.objectUrl || '',
+            file: clip.file,
+            type: clip.type || (/\.(jpe?g|png|webp|gif|svg|bmp)$/i.test(clip.name) ? 'image' : 'video'),
+            name: clip.name,
+            size: clip.size || 0,
+            duration: clip.duration || 1,
+            width: clip.width || 1920,
+            height: clip.height || 1080,
+            fps: clip.fps || 30,
+            videoCodec: clip.mimeType?.includes('webm') ? 'VP9' : 'H.264',
+            audioCodec: clip.hasAudio ? 'AAC' : 'Brak',
+            audioChannels: clip.audioChannels || (clip.hasAudio ? 2 : 0),
+            sampleRate: clip.hasAudio ? 48000 : 0,
+            orientation: clip.orientation || 'landscape',
+            hasAudio: Boolean(clip.hasAudio),
+            supported: clip.status !== 'ERROR' && clip.status !== 'error',
+            thumbnailUrl: clip.thumbnailUrl
+          };
+        })
+      );
+
       const plan = videoExportService.prepareExport(
-        mediaSources,
+        resolvedSources.length > 0 ? resolvedSources : mediaSources,
         timelineClips,
         {
           resolution,
@@ -215,7 +347,8 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
           letterbox: project.settings?.letterbox || 'none'
         },
         {
-          audioTracks: project.audioTracks || []
+          audioTracks: project.audioTracks || [],
+          textLayers: project.textLayers || []
         }
       );
 
@@ -376,13 +509,24 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
           </button>
 
           {totalClipsCount > 0 && !isExporting && !output && (
-            <button
-              onClick={handleStartExport}
-              className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-[#D4AF37] to-[#FDE047] hover:brightness-110 text-black font-extrabold text-sm rounded-xl transition-all shadow-lg hover:scale-[1.02] cursor-pointer uppercase tracking-wider min-h-[44px]"
-            >
-              <Play className="w-4 h-4 fill-black" />
-              <span>ROZPOCZNIJ EKSPORT</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleEnqueueExport}
+                className="flex items-center gap-2 px-4 py-3 bg-[#242018] hover:bg-[#322A1F] text-[#D4AF37] border border-[#4A3D22] font-bold text-xs rounded-xl transition-all cursor-pointer min-h-[44px]"
+                title="Dodaj do kolejki bez natychmiastowego zablokowania ekranu"
+              >
+                <Layers className="w-4 h-4 text-[#D4AF37]" />
+                <span>DODAJ DO KOLEJKI</span>
+              </button>
+
+              <button
+                onClick={handleStartExport}
+                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-[#D4AF37] to-[#FDE047] hover:brightness-110 text-black font-extrabold text-sm rounded-xl transition-all shadow-lg hover:scale-[1.02] cursor-pointer uppercase tracking-wider min-h-[44px]"
+              >
+                <Play className="w-4 h-4 fill-black" />
+                <span>ROZPOCZNIJ EKSPORT</span>
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -759,14 +903,32 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
           </div>
 
           {/* Large video player preview */}
-          <div className="relative aspect-video max-w-3xl mx-auto bg-black rounded-xl overflow-hidden border border-[#2E2E36] shadow-2xl">
+          <div className="relative aspect-video max-w-3xl mx-auto bg-black rounded-xl overflow-hidden border border-[#2E2E36] shadow-2xl group">
             <video
               ref={videoPlayerRef}
               src={output.url}
               controls
               playsInline
-              className="w-full h-full object-contain"
+              preload="auto"
+              onPlay={() => setIsPlayingResult(true)}
+              onPause={() => setIsPlayingResult(false)}
+              onEnded={() => setIsPlayingResult(false)}
+              className="w-full h-full object-contain cursor-pointer"
             />
+            {!isPlayingResult && (
+              <div 
+                className="absolute inset-0 flex items-center justify-center pointer-events-none pb-12"
+              >
+                <button
+                  type="button"
+                  onClick={handlePlayResult}
+                  className="w-16 h-16 rounded-full bg-gradient-to-tr from-[#C29B27] via-[#D4AF37] to-[#FDE047] text-black flex items-center justify-center shadow-[0_0_30px_rgba(212,175,55,0.7)] hover:scale-110 active:scale-95 transition-transform pointer-events-auto cursor-pointer"
+                  title="Kliknij, aby odtworzyć film"
+                >
+                  <Play className="w-7 h-7 fill-black ml-1" />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Technical Specs Summary */}
@@ -853,6 +1015,137 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
               <RotateCcw className="w-4 h-4" />
               <span>NOWY PROJEKT</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Serial Export Queue Panel */}
+      {queueTasks.length > 0 && (
+        <div className="bg-[#121115] border border-[#2B261D] rounded-2xl p-5 shadow-xl space-y-4">
+          <div className="flex items-center justify-between border-b border-[#242018] pb-3">
+            <div className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-[#D4AF37]" />
+              <h3 className="text-xs font-bold text-[#D4AF37] uppercase tracking-wider font-mono">
+                Seryjna Kolejka Eksportu ({queueTasks.length})
+              </h3>
+            </div>
+            {queueTasks.some(t => t.status === 'completed' || t.status === 'cancelled' || t.status === 'failed') && (
+              <button
+                onClick={() => exportQueueService.clearCompleted()}
+                className="text-xs text-[#888892] hover:text-white transition-colors cursor-pointer font-mono"
+              >
+                Wyczyść Zakończone
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            {queueTasks.map((task) => (
+              <div 
+                key={task.id} 
+                className={`p-4 rounded-xl border transition-all ${
+                  task.status === 'processing'
+                    ? 'bg-[#1C1810] border-[#D4AF37] shadow-lg'
+                    : task.status === 'completed'
+                    ? 'bg-[#121814] border-emerald-900/50'
+                    : task.status === 'failed'
+                    ? 'bg-[#1D1214] border-rose-900/50'
+                    : 'bg-[#16161A] border-[#24242A]'
+                }`}
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-white">{task.title}</span>
+                      <span className="text-[10px] text-[#888892] font-mono">({task.projectName})</span>
+                      <span className={`px-2 py-0.5 text-[10px] font-mono font-bold rounded-full ${
+                        task.status === 'processing'
+                          ? 'bg-[#D4AF37]/20 text-[#FDE047] border border-[#D4AF37]/40 animate-pulse'
+                          : task.status === 'completed'
+                          ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/60'
+                          : task.status === 'failed'
+                          ? 'bg-rose-950/60 text-rose-300 border border-rose-800/60'
+                          : 'bg-[#222228] text-[#888892] border border-[#33333E]'
+                      }`}>
+                        {task.status === 'processing' ? 'Renderowanie...' :
+                         task.status === 'completed' ? 'Ukończono ✓' :
+                         task.status === 'failed' ? 'Błąd ✗' :
+                         task.status === 'cancelled' ? 'Anulowano' : 'Oczekuje w kolejce'}
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] text-[#888892] font-mono mt-1 flex items-center gap-3">
+                      <span>{task.config.resolution} • {task.config.fps} FPS</span>
+                      {task.config.clipCount !== undefined && <span>• {task.config.clipCount} ujęć</span>}
+                      {task.config.durationSec !== undefined && <span>• {formatDuration(task.config.durationSec)}</span>}
+                    </div>
+                  </div>
+
+                  {/* Task Action Buttons */}
+                  <div className="flex items-center gap-2 self-start sm:self-auto">
+                    {task.status === 'processing' && (
+                      <button
+                        onClick={() => exportQueueService.cancelTask(task.id)}
+                        className="px-3 py-1.5 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/60 font-semibold text-xs rounded-lg transition-colors cursor-pointer min-h-[36px]"
+                      >
+                        Anuluj
+                      </button>
+                    )}
+
+                    {task.status === 'queued' && (
+                      <button
+                        onClick={() => exportQueueService.removeTask(task.id)}
+                        className="px-3 py-1.5 bg-[#222228] hover:bg-rose-950/40 text-[#AAA] hover:text-rose-300 border border-[#33333E] text-xs rounded-lg transition-colors cursor-pointer min-h-[36px]"
+                      >
+                        Usuń
+                      </button>
+                    )}
+
+                    {task.status === 'failed' && (
+                      <button
+                        onClick={() => exportQueueService.retryTask(task.id)}
+                        className="px-3 py-1.5 bg-rose-900/60 hover:bg-rose-900 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer min-h-[36px]"
+                      >
+                        Ponów
+                      </button>
+                    )}
+
+                    {task.status === 'completed' && task.output && (
+                      <button
+                        onClick={() => videoExportService.saveOutput(task.output!)}
+                        className="px-3 py-1.5 bg-[#D4AF37] hover:bg-[#E5C158] text-black font-extrabold text-xs rounded-lg transition-colors shadow-md flex items-center gap-1 cursor-pointer min-h-[36px]"
+                      >
+                        <Download className="w-3.5 h-3.5 fill-black" />
+                        <span>Pobierz MP4</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Progress bar for active task */}
+                {task.status === 'processing' && task.progress && (
+                  <div className="mt-3 space-y-1.5 pt-2 border-t border-[#2B2416]">
+                    <div className="flex items-center justify-between text-xs font-mono">
+                      <span className="text-[#D4AF37]">{task.progress.statusMessage}</span>
+                      <span className="text-white font-bold">{task.progress.percent}%</span>
+                    </div>
+                    <div className="h-2 w-full bg-[#1A1A1E] rounded-full overflow-hidden border border-[#2E2E36]">
+                      <div 
+                        className="h-full bg-gradient-to-r from-[#B8942A] to-[#FDE047] transition-all duration-150"
+                        style={{ width: `${task.progress.percent}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Error message for failed task */}
+                {task.status === 'failed' && task.error && (
+                  <div className="mt-2 p-2.5 bg-rose-950/40 border border-rose-800/40 rounded-lg text-xs font-mono text-rose-300">
+                    <strong>Błąd:</strong> {task.error.message}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}

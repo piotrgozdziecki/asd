@@ -40,6 +40,8 @@ import type {
   TransitionType
 } from '../../types/project';
 import { urlRegistry } from '../../core/media/urlRegistry';
+import { resolveClipMediaUrl, resolveAudioTrackUrl } from '../../core/media/mediaResolver';
+import { FrameCompositor } from '../../core/render/FrameCompositor';
 
 interface PreviewViewProps {
   project: ProjectState;
@@ -93,6 +95,8 @@ export function PreviewView({ project }: PreviewViewProps) {
   const imagePoolRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const audioPoolRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const createdUrlsRef = useRef<Set<string>>(new Set());
+  const offscreenHostRef = useRef<HTMLDivElement>(null);
+  const lastActiveClipIdRef = useRef<string | null>(null);
 
   // Frame timing
   const targetFps = project.settings?.targetFps || 30;
@@ -142,7 +146,7 @@ export function PreviewView({ project }: PreviewViewProps) {
     return { width: 1920, height: 1080, label: '16:9 Projekt' };
   }, [selectedAspectRatio, project.settings?.aspectRatio]);
 
-  // Resolve media URL reliably (File -> Object URL -> Thumbnail)
+  // Resolve media URL reliably (File -> Object URL -> Thumbnail for images only)
   const getMediaUrl = useCallback((clip: MediaClip): string | null => {
     if (!clip) return null;
     if (clip.objectUrl && (clip.objectUrl.startsWith('blob:') || clip.objectUrl.startsWith('http:') || clip.objectUrl.startsWith('https:') || clip.objectUrl.startsWith('data:'))) {
@@ -159,7 +163,11 @@ export function PreviewView({ project }: PreviewViewProps) {
         console.warn(`[PreviewView] Failed to create object URL for clip ${clip.name}:`, err);
       }
     }
-    return clip.thumbnailUrl || null;
+    // Strictly protect video elements: NEVER return image thumbnail as video src!
+    if (clip.type === 'image') {
+      return clip.thumbnailUrl || null;
+    }
+    return clip.proxyUrl || null;
   }, []);
 
   const handleReloadEngine = () => {
@@ -184,9 +192,26 @@ export function PreviewView({ project }: PreviewViewProps) {
 
     (project.mediaLibrary || []).forEach(clip => {
       const url = getMediaUrl(clip);
-      if (!url) return;
 
       if (clip.type === 'video') {
+        if (!url) {
+          // Asynchronously resolve from IndexedDB if not cached in memory
+          resolveClipMediaUrl(clip).then(freshUrl => {
+            if (freshUrl && !videoPool.has(clip.id)) {
+              const video = document.createElement('video');
+              video.preload = 'auto';
+              video.playsInline = true;
+              video.muted = isMuted;
+              video.src = freshUrl;
+              if (offscreenHostRef.current && !video.parentNode) {
+                offscreenHostRef.current.appendChild(video);
+              }
+              videoPool.set(clip.id, video);
+            }
+          });
+          return;
+        }
+
         let video = videoPool.get(clip.id);
         if (!video) {
           video = document.createElement('video');
@@ -197,11 +222,15 @@ export function PreviewView({ project }: PreviewViewProps) {
           }
           video.muted = isMuted;
           video.src = url;
+          if (offscreenHostRef.current && !video.parentNode) {
+            offscreenHostRef.current.appendChild(video);
+          }
           videoPool.set(clip.id, video);
         } else if (video.src !== url && !video.src.endsWith(url)) {
           video.src = url;
         }
       } else if (clip.type === 'image') {
+        if (!url) return;
         let img = imagePool.get(clip.id);
         if (!img) {
           img = new Image();
@@ -449,50 +478,9 @@ export function PreviewView({ project }: PreviewViewProps) {
       ctx.restore();
     }
 
-    // 3. Render Text Layers & Subtitles
-    const activeTextLayers = (project.textLayers || []).filter(
-      t => time >= t.timelineStart && time < t.timelineStart + t.duration
-    );
-
-    activeTextLayers.forEach(layer => {
-      ctx.save();
-      const baseFontSize = layer.fontSize || 36;
-      const fontSize = Math.max(16, baseFontSize * (targetH / 1080));
-      
-      let fontFamily = 'Cinzel, serif';
-      if (layer.style === 'minimalist') fontFamily = 'sans-serif';
-      if (layer.style === 'classic') fontFamily = '"Playfair Display", serif';
-      if (layer.style === 'elegant') fontFamily = '"Great Vibes", cursive, serif';
-
-      ctx.font = `${fontSize}px ${fontFamily}`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-
-      const posX = (layer.position?.x ?? 0.5) * targetW;
-      const posY = (layer.position?.y ?? 0.85) * targetH;
-
-      // Background pill if configured
-      if (layer.backgroundColor) {
-        const metrics = ctx.measureText(layer.text);
-        const padX = fontSize * 0.6;
-        const padY = fontSize * 0.3;
-        ctx.fillStyle = layer.backgroundColor;
-        ctx.fillRect(
-          posX - metrics.width / 2 - padX, 
-          posY - fontSize / 2 - padY, 
-          metrics.width + padX * 2, 
-          fontSize + padY * 2
-        );
-      }
-
-      ctx.shadowColor = 'rgba(0,0,0,0.9)';
-      ctx.shadowBlur = 12;
-      ctx.shadowOffsetX = 2;
-      ctx.shadowOffsetY = 3;
-
-      ctx.fillStyle = layer.color || '#F7F4EE';
-      ctx.fillText(layer.text, posX, posY);
-      ctx.restore();
+    // 3. Render Text Layers & Subtitles with FrameCompositor
+    (project.textLayers || []).forEach(layer => {
+      FrameCompositor.drawTextLayer(ctx, targetW, targetH, layer, time);
     });
 
     // 4. Safe Zones (Action Safe 90% + Title Safe 80%)
@@ -583,16 +571,23 @@ export function PreviewView({ project }: PreviewViewProps) {
         ? 0 
         : Math.min(1, (activeItem.volume ?? 1) * currentMasterVol * (project.settings?.audioBalance?.clipVolume ?? 0.7));
       
+      const isMutedEffective = Boolean(activeItem.muted || currentMuted || clipVol === 0);
+      if (activeVideo.muted !== isMutedEffective) {
+        activeVideo.muted = isMutedEffective;
+      }
       activeVideo.volume = clipVol;
       activeVideo.playbackRate = speed * currentSpeed;
 
-      // Only seek if difference exceeds threshold to prevent audio stutter during smooth playback
-      const drift = Math.abs(activeVideo.currentTime - targetSourceTime);
-      if (!isCurrentlyPlaying || drift > 0.25) {
+      const isNewClip = lastActiveClipIdRef.current !== activeClip.id;
+      if (isNewClip) {
+        lastActiveClipIdRef.current = activeClip.id;
         if (Number.isFinite(targetSourceTime)) {
-          try {
-            activeVideo.currentTime = targetSourceTime;
-          } catch (e) {}
+          try { activeVideo.currentTime = targetSourceTime; } catch (e) {}
+        }
+      } else if (!isCurrentlyPlaying || Math.abs(activeVideo.currentTime - targetSourceTime) > 0.8) {
+        // Only seek when stopped or on major drift (scrubbing), never during smooth continuous playback!
+        if (Number.isFinite(targetSourceTime)) {
+          try { activeVideo.currentTime = targetSourceTime; } catch (e) {}
         }
       }
 
@@ -605,9 +600,6 @@ export function PreviewView({ project }: PreviewViewProps) {
             })
             .catch(() => {
               (activeVideo as any)._isPlayPending = false;
-              // Autoplay safety: mute and retry
-              activeVideo.muted = true;
-              activeVideo.play().catch(() => {});
             });
         }
       } else {
@@ -615,6 +607,8 @@ export function PreviewView({ project }: PreviewViewProps) {
           activeVideo.pause();
         }
       }
+    } else {
+      lastActiveClipIdRef.current = null;
     }
 
     // 2. Sync Project Audio Tracks (Background Music / Voiceovers)
@@ -633,6 +627,13 @@ export function PreviewView({ project }: PreviewViewProps) {
           }
         } else if (track.objectUrl) {
           audio.src = track.objectUrl;
+        } else {
+          resolveAudioTrackUrl(track).then(fresh => {
+            if (fresh && audio) audio.src = fresh;
+          });
+        }
+        if (offscreenHostRef.current && !audio.parentNode) {
+          offscreenHostRef.current.appendChild(audio);
         }
         audioPool.set(track.id, audio);
       }
@@ -642,7 +643,7 @@ export function PreviewView({ project }: PreviewViewProps) {
         const trackOffset = time - track.timelineStart;
         const trackLocalTime = track.sourceStart + trackOffset;
 
-        if (Math.abs(audio.currentTime - trackLocalTime) > 0.2) {
+        if (Math.abs(audio.currentTime - trackLocalTime) > 0.4) {
           if (audio.readyState >= 1) {
             audio.currentTime = trackLocalTime;
           }
@@ -681,12 +682,26 @@ export function PreviewView({ project }: PreviewViewProps) {
       lastPerfTime = perfNow;
 
       if (isPlayingRef.current) {
-        let nextTime = currentTimeRef.current + dt;
+        let nextTime: number;
+
+        // If active video is smoothly playing, derive timeline progress from hardware video clock
+        const activeItem = getActiveItemsAt(currentTimeRef.current);
+        const activeClip = activeItem ? mediaMap.get(activeItem.clipId) : null;
+        const activeVideo = activeClip?.type === 'video' ? videoPoolRef.current.get(activeClip.id) : null;
+
+        if (activeVideo && !activeVideo.paused && activeVideo.readyState >= 2 && activeItem) {
+          const speed = activeItem.speed || 1;
+          const vidProgress = Math.max(0, (activeVideo.currentTime - activeItem.sourceStart) / speed);
+          nextTime = activeItem.timelineStart + vidProgress;
+        } else {
+          nextTime = currentTimeRef.current + dt;
+        }
 
         if (nextTime >= totalDuration) {
           if (isLoopingRef.current) {
             nextTime = 0;
             currentTimeRef.current = 0;
+            lastActiveClipIdRef.current = null;
           } else {
             nextTime = totalDuration;
             currentTimeRef.current = totalDuration;
@@ -715,7 +730,7 @@ export function PreviewView({ project }: PreviewViewProps) {
 
     animationFrameId = requestAnimationFrame(renderLoop);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [totalDuration, syncMediaElements, drawCanvas]);
+  }, [totalDuration, syncMediaElements, drawCanvas, getActiveItemsAt, mediaMap]);
 
   // Handle Seek / Scrubbing
   const handleSeek = (newTime: number) => {
@@ -779,6 +794,42 @@ export function PreviewView({ project }: PreviewViewProps) {
     }
   };
 
+  // Master Play / Pause toggle with user gesture audio priming
+  const togglePlay = () => {
+    const nextPlaying = !isPlaying;
+    setIsPlaying(nextPlaying);
+    isPlayingRef.current = nextPlaying;
+
+    if (nextPlaying) {
+      if (currentTimeRef.current >= totalDuration) {
+        currentTimeRef.current = 0;
+        setCurrentTime(0);
+        lastActiveClipIdRef.current = null;
+      }
+      // Audio & Video unlock on user gesture
+      const activeItem = getActiveItemsAt(currentTimeRef.current);
+      if (activeItem) {
+        const clip = mediaMap.get(activeItem.clipId);
+        if (clip && clip.type === 'video') {
+          const vid = videoPoolRef.current.get(clip.id);
+          if (vid) {
+            vid.muted = isMutedRef.current || Boolean(activeItem.muted);
+            vid.play().catch(() => {});
+          }
+        }
+      }
+      (project.audioTracks || []).forEach(track => {
+        const audio = audioPoolRef.current.get(track.id);
+        if (audio && !track.muted && !isMutedRef.current) {
+          audio.play().catch(() => {});
+        }
+      });
+    } else {
+      videoPoolRef.current.forEach(v => { try { v.pause(); } catch(e) {} });
+      audioPoolRef.current.forEach(a => { try { a.pause(); } catch(e) {} });
+    }
+  };
+
   // Keyboard shortcut handler
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -786,7 +837,7 @@ export function PreviewView({ project }: PreviewViewProps) {
 
       if (e.code === 'Space') {
         e.preventDefault();
-        setIsPlaying(prev => !prev);
+        togglePlay();
       } else if (e.code === 'ArrowLeft') {
         e.preventDefault();
         stepFrame(e.shiftKey ? -10 : -1);
@@ -989,6 +1040,12 @@ export function PreviewView({ project }: PreviewViewProps) {
             </div>
           )}
         </div>
+        {/* Offscreen DOM Host to ensure hardware accelerated GPU decoding without Chromium compositor culling */}
+        <div 
+          ref={offscreenHostRef} 
+          style={{ position: 'fixed', bottom: 0, right: 0, width: 16, height: 16, opacity: 0.001, pointerEvents: 'none', zIndex: -9999 }} 
+          aria-hidden="true"
+        />
       </div>
 
       {/* BOTTOM CONTROL DECK: TIMECODE, SCRUBBER & TRANSPORT */}

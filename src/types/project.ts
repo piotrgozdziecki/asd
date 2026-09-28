@@ -36,6 +36,32 @@ export interface ClipTechnicalAnalysis {
   sceneType?: string;
 }
 
+export type LookPreset = 
+  | 'none' 
+  | 'cinematic' 
+  | 'warm' 
+  | 'cool' 
+  | 'vintage' 
+  | 'bw' 
+  | 'film' 
+  | 'natural' 
+  | 'golden_hour';
+
+export interface ClipColorAdjustments {
+  exposure: number; // -100 to 100 (default 0)
+  contrast: number; // -100 to 100 (default 0)
+  brightness: number; // -100 to 100 (default 0)
+  saturation: number; // -100 to 100 (default 0)
+  temperature: number; // -100 to 100 (default 0, cool/warm)
+  tint: number; // -100 to 100 (default 0, green/magenta)
+  sharpness: number; // 0 to 100 (default 0)
+  highlights: number; // -100 to 100 (default 0)
+  shadows: number; // -100 to 100 (default 0)
+  vignette: number; // 0 to 100 (default 0)
+  lookPreset?: LookPreset;
+  lookIntensity?: number; // 0 to 100 (default 100)
+}
+
 export interface MediaClip {
   id: string; // Stable ID
   file?: File;
@@ -52,6 +78,10 @@ export interface MediaClip {
   fps?: number;
   hasAudio?: boolean;
   audioChannels?: number;
+  sampleRate?: number;
+  videoCodec?: string;
+  audioCodec?: string;
+  bitrate?: number;
   size: number; // bytes
   thumbnailUrl?: string;
   category: ClipCategory;
@@ -64,17 +94,33 @@ export interface MediaClip {
   capturedAt?: string;
   missingReason?: string;
 
-  // Etap 7: Smart Director & Quality Analysis
+  // Smart Director & Quality Analysis
   analysis?: ClipTechnicalAnalysis;
   similarGroupId?: string;
   duplicateStatus?: DuplicateStatus;
   bestInGroup?: boolean;
   proxyUrl?: string;
   isProxyReady?: boolean;
+
+  // Color & Audio
+  colorAdjustments?: ClipColorAdjustments;
+  waveform?: number[];
 }
 
-export type TransitionType = 'cut' | 'fade' | 'dissolve' | 'dip_black' | 'dip_white';
-export type FitMode = 'fit' | 'fill' | 'original' | 'crop';
+export type TransitionType = 
+  | 'cut' 
+  | 'fade' 
+  | 'dissolve' 
+  | 'dip_black' 
+  | 'dip_white' 
+  | 'zoom' 
+  | 'slide' 
+  | 'wipe' 
+  | 'blur' 
+  | 'light_leak' 
+  | 'film_burn';
+
+export type FitMode = 'fit' | 'fill' | 'original' | 'crop' | 'smart_crop';
 
 export interface TitleCard {
   enabled: boolean;
@@ -97,38 +143,46 @@ export interface TimelineItem {
   // Timing relative to the timeline
   timelineStart: number;
   duration: number; // (sourceEnd - sourceStart) / speed
-  speed: number; // 0.5 to 2.0 (default 1.0)
+  speed: number; // 0.25 to 2.0 (default 1.0)
   
   // Audio Adjustments
   volume: number; // 0.0 to 2.0 (default 1.0)
   fadeIn: number; // duration in seconds
   fadeOut: number;
+  pan?: number; // -1 to 1 (stereo balance)
   muted: boolean;
+  solo?: boolean;
   
   // Visual Adjustments
   fitMode?: FitMode;
+  smartCropFocus?: 'center' | 'top' | 'face_safe' | 'manual';
   crop?: { x: number; y: number; width: number; height: number };
   scale: number;
   position?: { x: number; y: number }; // Relative offset -1 to 1
   rotation: number; // 0, 90, 180, 270
+  
+  // Per-item Color Correction Override
+  colorAdjustments?: ClipColorAdjustments;
   
   // Transitions
   transitionIn?: TransitionType;
   transitionOut?: TransitionType;
   transitionDuration?: number; // default 0.5s
 
-  // Text Title Card (Intertitles / Plansza Tekstowa) before the clip
+  // Text Title Card before the clip
   titleCard?: TitleCard;
 }
 
 export interface TimelineTrack {
   id: string;
-  type: 'video' | 'audio' | 'voiceover' | 'text';
+  type: 'video' | 'audio' | 'voiceover' | 'text' | 'effects';
   name: string;
   muted: boolean;
+  solo?: boolean;
   locked: boolean;
   hidden: boolean;
   volume: number; // 0.0 to 1.0
+  height?: number; // px
 }
 
 export interface AudioTrackItem {
@@ -138,6 +192,7 @@ export interface AudioTrackItem {
   objectUrl?: string;
   driveFileId?: string;
   duration: number;
+  trackType?: 'music' | 'voiceover' | 'sfx' | 'ambience';
   
   sourceStart: number;
   sourceEnd: number;
@@ -146,20 +201,35 @@ export interface AudioTrackItem {
   volume: number;
   fadeIn: number;
   fadeOut: number;
+  pan?: number; // -1 to 1
   muted?: boolean;
+  solo?: boolean;
+  duckingAmount?: number; // 0 to 100%
+  waveform?: number[];
 }
+
+export type TextLayerType = 'title' | 'subtitle' | 'caption' | 'lower_third' | 'end_card' | 'date' | 'quote' | 'chapter';
+export type TextAnimation = 'none' | 'fade' | 'slide' | 'typewriter' | 'scale' | 'blur_in';
 
 export interface TextLayer {
   id: string;
   text: string;
-  type: 'title' | 'caption' | 'date' | 'quote' | 'chapter';
+  type: TextLayerType;
   style: 'classic' | 'elegant' | 'minimalist' | 'cinematic';
   timelineStart: number;
   duration: number;
   position: { x: number; y: number }; // relative 0-1
   fontSize: number;
+  fontWeight?: 'normal' | 'bold' | '300' | '600' | '800';
+  fontFamily?: string;
   color: string;
   backgroundColor?: string;
+  outlineColor?: string;
+  outlineWidth?: number;
+  shadow?: boolean;
+  opacity?: number;
+  animation?: TextAnimation;
+  subtitleSpeaker?: string;
 }
 
 export type MarkerType = 'best_moment' | 'music' | 'important' | 'ambience' | 'comment';
@@ -192,16 +262,41 @@ export type ColorGradingPreset =
 export interface ProjectSettings {
   targetResolution: '720p' | '1080p' | '4k';
   targetFps: 24 | 25 | 30 | 60;
-  aspectRatio: '16:9' | '9:16' | '4:3';
+  aspectRatio: '16:9' | '9:16' | '4:3' | '1:1' | '2.39:1';
   fitMode: FitMode;
   colorGrade?: ColorGradingPreset;
+  colorAdjustments?: ClipColorAdjustments;
   letterbox?: 'none' | 'cinemascope' | 'standard';
   audioDucking?: boolean;
+  duckingIntensity?: number; // 0 to 100%
+  masterVolume?: number; // 0.0 to 1.5 (default 1.0)
   audioBalance: {
     musicVolume: number; // 0 to 1
     clipVolume: number; // 0 to 1
+    voiceoverVolume?: number;
   };
+  performanceMode?: 'quality' | 'balanced' | 'performance';
   useProxyMode?: boolean; // When enabled, uses 540p proxy for timeline & preview (final export always uses originals)
+  watermark?: {
+    enabled: boolean;
+    text: string;
+    position: 'bottom_right' | 'top_right' | 'bottom_left' | 'top_left';
+    opacity: number;
+  };
+}
+
+export interface ExportHistoryRecord {
+  id: string;
+  fileName: string;
+  createdAt: number;
+  duration: number;
+  resolution: string;
+  fps: number;
+  sizeBytes: number;
+  format: string;
+  status: 'COMPLETED' | 'FAILED';
+  url?: string;
+  error?: string;
 }
 
 export interface ProjectState {
@@ -225,6 +320,7 @@ export interface ProjectState {
   chapters: WeddingChapter[];
   
   versions: ProjectVersion[];
+  exportHistory?: ExportHistoryRecord[];
 }
 
 export type AppErrorCode = 

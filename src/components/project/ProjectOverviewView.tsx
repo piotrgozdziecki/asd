@@ -12,7 +12,8 @@ import {
   Video,
   Film,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Sparkles
 } from 'lucide-react';
 import type { ProjectState } from '../../types/project';
 

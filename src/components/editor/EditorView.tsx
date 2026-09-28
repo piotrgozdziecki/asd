@@ -13,6 +13,7 @@ import type {
   TimelineMarker 
 } from '../../types/project';
 import { urlRegistry } from '../../core/media/urlRegistry';
+import { localIndexedDB } from '../../core/storage/indexedDBProvider';
 
 interface EditorViewProps {
   project: ProjectState;
@@ -116,24 +117,46 @@ export function EditorView({
     setSelectedItemId(newText.id);
   };
 
-  const handleAudioSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAudioSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     
     const file = files[0];
+    const trackId = `audio_${Date.now()}`;
     const url = urlRegistry.create(file);
-    
+    try {
+      await localIndexedDB.saveMediaBlob(trackId, file);
+    } catch {}
+
+    // Probe duration accurately
+    let duration = 30;
+    try {
+      const probeAudio = new Audio();
+      probeAudio.src = url;
+      await new Promise<void>((resolve) => {
+        probeAudio.onloadedmetadata = () => {
+          if (probeAudio.duration && Number.isFinite(probeAudio.duration) && probeAudio.duration > 0) {
+            duration = Math.round(probeAudio.duration * 100) / 100;
+          }
+          resolve();
+        };
+        probeAudio.onerror = () => resolve();
+        setTimeout(resolve, 3000);
+      });
+    } catch {}
+
     const newAudio: AudioTrackItem = {
-      id: `audio_${Date.now()}`,
+      id: trackId,
       name: file.name,
+      file,
       objectUrl: url,
       sourceStart: 0,
-      sourceEnd: 60,
+      sourceEnd: duration,
       timelineStart: currentTime,
-      duration: 60,
+      duration,
       volume: 1,
-      fadeIn: 1.5,
-      fadeOut: 2
+      fadeIn: Math.min(1.5, duration * 0.1),
+      fadeOut: Math.min(2, duration * 0.1)
     };
     
     onAddAudioTrack(newAudio);

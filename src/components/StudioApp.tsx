@@ -9,6 +9,7 @@ import { AiAssistantModal } from './ai/AiAssistantModal';
 import { VoiceRecorderModal } from './VoiceRecorderModal';
 import { AiWeddingDirectorModal } from './director/AiWeddingDirectorModal';
 import { AiChronologicalMergeModal } from './director/AiChronologicalMergeModal';
+import { WeddingNarrativeModal } from './director/WeddingNarrativeModal';
 import { ProjectHealthPanel } from './director/ProjectHealthPanel';
 import { QuickActionsBar } from './director/QuickActionsBar';
 import { useProject } from '../hooks/useProject';
@@ -18,6 +19,7 @@ import { onFirestoreConnectionChange, isFirestoreConnected } from '../lib/fireba
 import { useStudioToast } from './common/ToastContext';
 import { probeVideoMetadata } from '../core/media/metadataProber';
 import { urlRegistry } from '../core/media/urlRegistry';
+import { localIndexedDB } from '../core/storage/indexedDBProvider';
 import type { MediaClip, TimelineItem, AudioTrackItem, TextLayer, WeddingChapter, ClipCategory } from '../types/project';
 
 export function StudioApp() {
@@ -25,6 +27,7 @@ export function StudioApp() {
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isDirectorModalOpen, setIsDirectorModalOpen] = useState(false);
   const [isChronologicalModalOpen, setIsChronologicalModalOpen] = useState(false);
+  const [isWeddingNarrativeModalOpen, setIsWeddingNarrativeModalOpen] = useState(false);
   const [isHealthPanelOpen, setIsHealthPanelOpen] = useState(false);
   const [isVoiceRecorderOpen, setIsVoiceRecorderOpen] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -201,6 +204,14 @@ export function StudioApp() {
           tags: [],
           createdAt: new Date().toISOString()
         };
+
+        // Persist media blob in IndexedDB for reliable offline rendering & exports
+        try {
+          await localIndexedDB.saveMediaBlob(clipId, file);
+        } catch (idbErr) {
+          console.warn(`[StudioApp] Error saving media blob ${clipId}:`, idbErr);
+        }
+
         newClips.push(clip);
       } catch (e: any) {
         console.error(`Błąd wczytywania ${file.name}:`, e);
@@ -519,6 +530,7 @@ export function StudioApp() {
               onOpenDirectorModal={() => setIsDirectorModalOpen(true)}
               onNavigateToExport={() => setActiveTab('export')}
               onOpenChronologicalModal={() => setIsChronologicalModalOpen(true)}
+              onOpenWeddingNarrativeModal={() => setIsWeddingNarrativeModalOpen(true)}
             />
           </div>
 
@@ -573,6 +585,7 @@ export function StudioApp() {
                 onClearAllMedia={handleResetProject}
                 onResetProject={handleResetProject}
                 onOpenChronologicalModal={() => setIsChronologicalModalOpen(true)}
+                onNavigateToExport={() => setActiveTab('export')}
               />
             </div>
           )}
@@ -648,7 +661,18 @@ export function StudioApp() {
         clips={project.mediaLibrary}
         onApplyToTimeline={handleApplyChronologicalMerge}
         onApplyCaptionsToLibrary={handleApplyCaptionsToLibrary}
-        onOpenQuickMerge={() => setActiveTab('montage')}
+        onOpenQuickMerge={() => setActiveTab('export')}
+      />
+
+      {/* Wedding Narrative Builder Modal */}
+      <WeddingNarrativeModal
+        isOpen={isWeddingNarrativeModalOpen}
+        onClose={() => setIsWeddingNarrativeModalOpen(false)}
+        project={project}
+        onApplyProject={(updated) => {
+          pushState(updated);
+          setActiveTab('montage');
+        }}
       />
 
       {/* Voiceover Recorder Modal */}

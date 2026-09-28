@@ -1,8 +1,9 @@
 import { ProjectState, TimelineItem, MediaClip } from '../../types/project';
 import { IRenderProvider, RenderOptions, RenderProgress, RenderResult } from './renderTypes';
 import { urlRegistry } from '../media/urlRegistry';
-import { resolveClipMediaUrl } from '../media/mediaResolver';
+import { resolveClipMediaUrl, resolveAudioTrackUrl, getMediaArrayBuffer } from '../media/mediaResolver';
 import { localIndexedDB } from '../storage/indexedDBProvider';
+import { FrameCompositor } from './FrameCompositor';
 
 export class LocalBrowserRenderProvider implements IRenderProvider {
   id = 'local_canvas_recorder';
@@ -30,24 +31,37 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
       const timeout = setTimeout(() => {
         cleanup();
         resolve({ valid: false, duration: 0, error: 'Przekroczono limit czasu weryfikacji odtwarzania wygenerowanego filmu.' });
-      }, 7000);
+      }, 10000);
 
       const cleanup = () => {
         clearTimeout(timeout);
         testVideo.onloadedmetadata = null;
+        testVideo.onseeked = null;
         testVideo.onerror = null;
         testVideo.src = '';
         URL.revokeObjectURL(testUrl);
       };
 
-      testVideo.onloadedmetadata = () => {
+      testVideo.onloadedmetadata = async () => {
         const dur = testVideo.duration;
         const valid = dur > 0 && testVideo.videoWidth > 0;
-        cleanup();
-        if (valid) {
-          resolve({ valid: true, duration: dur });
-        } else {
+        if (!valid) {
+          cleanup();
           resolve({ valid: false, duration: dur, error: 'Metadane wideo są nieprawidłowe (szerokość lub czas trwania = 0).' });
+          return;
+        }
+
+        try {
+          testVideo.currentTime = dur * 0.5;
+          await new Promise<void>(res => {
+            testVideo.onseeked = () => res();
+            setTimeout(res, 1500);
+          });
+          cleanup();
+          resolve({ valid: true, duration: dur });
+        } catch {
+          cleanup();
+          resolve({ valid: false, duration: dur, error: 'Błąd podczas weryfikacji odtwarzania wygenerowanego filmu.' });
         }
       };
 
@@ -70,13 +84,11 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
       throw new Error('Eksport został anulowany przed rozpoczęciem.');
     }
 
-    // 1. Validate & prepare sorted timeline items
-    const sortedItems = [...project.timelineItems].sort((a, b) => a.timelineStart - b.timelineStart);
+    const sortedItems = [...(project.timelineItems || [])].sort((a, b) => a.timelineStart - b.timelineStart);
     if (sortedItems.length === 0) {
       throw new Error('Brak klipów na osi czasu do wyrenderowania.');
     }
 
-    // STAGE 1 — project validation
     onProgress({
       stage: 'preparing',
       percent: 1,
@@ -84,12 +96,12 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
       totalFrames: 100,
       fps: 0,
       targetFps: options.fps || 30,
-      statusMessage: 'STAGE 1: Walidacja projektu i przygotowanie potoku...',
-      diagnostics: { provider: this.id, stageDetails: 'STAGE 1: project validation' }
+      statusMessage: 'Walidacja projektu i przygotowanie potoku MediaRecorder...',
+      diagnostics: { provider: this.id, stageDetails: 'STAGE 1: Walidacja projektu' }
     });
 
     const clipMap = new Map<string, MediaClip>();
-    project.mediaLibrary.forEach(c => clipMap.set(c.id, c));
+    (project.mediaLibrary || []).forEach(c => clipMap.set(c.id, c));
 
     for (const item of sortedItems) {
       const clip = clipMap.get(item.clipId);
@@ -99,7 +111,7 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
     }
 
     // Calculate dimensions
-    const isVertical = options.aspectRatio === '9:16' || project.settings.aspectRatio === '9:16';
+    const isVertical = options.aspectRatio === '9:16' || project.settings?.aspectRatio === '9:16';
     let width = 1920;
     let height = 1080;
 
@@ -110,16 +122,17 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
       width = isVertical ? 2160 : 3840;
       height = isVertical ? 3840 : 2160;
     } else {
-      // 1080p default
       width = isVertical ? 1080 : 1920;
       height = isVertical ? 1920 : 1080;
     }
+
+    width = width - (width % 2);
+    height = height - (height % 2);
 
     const fps = options.fps || 30;
     const totalDuration = sortedItems.reduce((max, item) => Math.max(max, item.timelineStart + item.duration), 0);
     const totalFrames = Math.max(1, Math.round(totalDuration * fps));
 
-    // 4. Determine MediaRecorder mimeType (prefer MP4 container if supported)
     const candidateMimes = [
       'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
       'video/mp4;codecs=avc1,aac',
@@ -131,41 +144,170 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
     ];
     const selectedMime = candidateMimes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
 
-    onProgress({
-      stage: 'preparing',
-      percent: 2,
-      currentFrame: 0,
-      totalFrames,
-      fps: 0,
-      targetFps: fps,
-      statusMessage: 'STAGE 2: Inicjalizacja potoku renderowania i buforów...',
-      diagnostics: { stageDetails: 'STAGE 2: Recorder initialization', mimeType: selectedMime }
-    });
-
-    // 2. Prepare Canvas & 2D Context
+    // 1. Prepare Canvas & Context
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
-    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) {
       throw new Error('Nie można utworzyć kontekstu 2D dla renderowania wideo.');
     }
 
-    // Fill background
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, width, height);
 
-    // 3. Audio setup (Web Audio API)
-    const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
-    const audioCtx = new AudioCtxClass();
+    // 2. Pre-mix audio using OfflineAudioContext for glitch-free playback
+    onProgress({
+      stage: 'encoding_audio',
+      percent: 4,
+      currentFrame: 0,
+      totalFrames,
+      fps: 0,
+      targetFps: fps,
+      statusMessage: 'Miksowanie wielościeżkowego audio (OfflineAudioContext)...',
+      diagnostics: { stageDetails: 'STAGE 2: Pre-render miksu audio' }
+    });
+
+    const sampleRate = 48000;
+    const totalSamples = Math.max(1, Math.ceil(totalDuration * sampleRate));
+    const OfflineCtxClass = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
+    let masterAudioBuffer: AudioBuffer | null = null;
+
+    if (OfflineCtxClass) {
+      try {
+        const offlineCtx = new OfflineCtxClass(2, totalSamples, sampleRate);
+        const audioBufferCache = new Map<string, AudioBuffer | null>();
+
+        // Attach clip audio
+        const videoItems = sortedItems.filter(item => {
+          if (item.muted || item.volume === 0) return false;
+          const clip = clipMap.get(item.clipId);
+          return clip && clip.type === 'video';
+        });
+
+        for (const item of videoItems) {
+          if (signal?.aborted) throw new Error('Anulowano.');
+          const clip = clipMap.get(item.clipId);
+          if (!clip) continue;
+
+          let decoded = audioBufferCache.get(clip.id);
+          if (decoded === undefined) {
+            let arrayBuf: ArrayBuffer | null = null;
+            if (clip.file) {
+              try { arrayBuf = await clip.file.arrayBuffer(); } catch {}
+            }
+            if (!arrayBuf) {
+              const src = await resolveClipMediaUrl(clip);
+              if (src) {
+                try {
+                  const res = await fetch(src);
+                  arrayBuf = await res.arrayBuffer();
+                } catch {
+                  arrayBuf = null;
+                }
+              }
+            }
+            if (!arrayBuf) {
+              arrayBuf = await getMediaArrayBuffer(clip.id);
+            }
+
+            if (arrayBuf && arrayBuf.byteLength > 0) {
+              try {
+                const copy = arrayBuf.slice(0);
+                decoded = await offlineCtx.decodeAudioData(copy);
+                audioBufferCache.set(clip.id, decoded);
+              } catch {
+                audioBufferCache.set(clip.id, null);
+                decoded = null;
+              }
+            } else {
+              audioBufferCache.set(clip.id, null);
+              decoded = null;
+            }
+          }
+
+          if (decoded && decoded.duration > 0) {
+            try {
+              const source = offlineCtx.createBufferSource();
+              source.buffer = decoded;
+              const gain = offlineCtx.createGain();
+              const baseVolume = (item.volume ?? 1) * (project.settings?.audioBalance?.clipVolume ?? 1);
+              const startTime = Math.max(0, item.timelineStart);
+              const endTime = startTime + item.duration;
+
+              gain.gain.setValueAtTime(baseVolume, startTime);
+              if (item.fadeIn && item.fadeIn > 0) {
+                gain.gain.setValueAtTime(0, startTime);
+                gain.gain.linearRampToValueAtTime(baseVolume, startTime + Math.min(item.fadeIn, item.duration));
+              }
+              if (item.fadeOut && item.fadeOut > 0) {
+                const fadeOutStart = Math.max(startTime, endTime - item.fadeOut);
+                gain.gain.setValueAtTime(baseVolume, fadeOutStart);
+                gain.gain.linearRampToValueAtTime(0, endTime);
+              }
+
+              source.connect(gain);
+              gain.connect(offlineCtx.destination);
+
+              const maxOffset = Math.max(0, decoded.duration - 0.05);
+              const safeOffset = Math.max(0, Math.min(item.sourceStart || 0, maxOffset));
+              const safeDuration = Math.max(0.05, Math.min(item.duration, decoded.duration - safeOffset));
+              source.start(startTime, safeOffset, safeDuration);
+            } catch {}
+          }
+        }
+
+        // Attach background audio tracks
+        const audioTracks = (project.audioTracks || []).filter(t => !t.muted);
+        for (const track of audioTracks) {
+          try {
+            let arrayBuf: ArrayBuffer | null = null;
+            if (track.file) {
+              arrayBuf = await track.file.arrayBuffer();
+            } else {
+              const freshUrl = await resolveAudioTrackUrl(track);
+              arrayBuf = await getMediaArrayBuffer(track.id, undefined, freshUrl || track.objectUrl);
+            }
+
+            if (arrayBuf && arrayBuf.byteLength > 0) {
+              const copy = arrayBuf.slice(0);
+              const decoded = await offlineCtx.decodeAudioData(copy);
+              if (decoded && decoded.duration > 0) {
+                const source = offlineCtx.createBufferSource();
+                source.buffer = decoded;
+                const gain = offlineCtx.createGain();
+                gain.gain.value = (track.volume ?? 1) * (project.settings?.audioBalance?.musicVolume ?? 0.8);
+                source.connect(gain);
+                gain.connect(offlineCtx.destination);
+
+                const trackOffset = Math.max(0, Math.min(track.sourceStart || 0, decoded.duration - 0.05));
+                const trackDur = Math.max(0.05, Math.min(track.duration || decoded.duration, decoded.duration - trackOffset));
+                source.start(track.timelineStart || 0, trackOffset, trackDur);
+              }
+            }
+          } catch {}
+        }
+
+        masterAudioBuffer = await offlineCtx.startRendering();
+      } catch {}
+    }
+
+    // 3. Audio Context & MediaRecorder setup
+    const AudioCtxClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const audioCtx = new AudioCtxClass({ sampleRate: 48000 });
     if (audioCtx.state === 'suspended') {
       await audioCtx.resume();
     }
     const audioDest = audioCtx.createMediaStreamDestination();
 
-    // 5. Create Stream & Recorder
+    let masterAudioSource: AudioBufferSourceNode | null = null;
+    if (masterAudioBuffer) {
+      masterAudioSource = audioCtx.createBufferSource();
+      masterAudioSource.buffer = masterAudioBuffer;
+      masterAudioSource.connect(audioDest);
+    }
+
     const canvasStream = canvas.captureStream(fps);
-    // Combine video tracks and audio tracks
     const combinedTracks: MediaStreamTrack[] = [
       ...canvasStream.getVideoTracks(),
       ...audioDest.stream.getAudioTracks()
@@ -186,97 +328,188 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
     };
 
     recorder.start(100);
+    if (masterAudioSource) {
+      masterAudioSource.start(0);
+    }
 
-    // Background Audio Track Setup
-    const bgAudioElements: HTMLAudioElement[] = [];
-    for (const track of project.audioTracks) {
-      if (track.objectUrl && !track.muted) {
-        try {
-          const bgAudio = new Audio(track.objectUrl);
-          bgAudio.crossOrigin = 'anonymous';
-          const bgSource = audioCtx.createMediaElementSource(bgAudio);
-          const bgGain = audioCtx.createGain();
-          bgGain.gain.value = (track.volume ?? 1) * (project.settings.audioBalance?.musicVolume ?? 0.8);
-          bgSource.connect(bgGain);
-          bgGain.connect(audioDest);
-          bgAudioElements.push(bgAudio);
-        } catch (err) {
-          console.warn('Could not attach background audio track:', track.name, err);
-        }
+    // 4. Preload all clip elements
+    const mediaElements = new Map<string, HTMLVideoElement | HTMLImageElement>();
+    for (const item of sortedItems) {
+      if (signal?.aborted) throw new Error('Anulowano.');
+      const clip = clipMap.get(item.clipId);
+      if (!clip || mediaElements.has(clip.id)) continue;
+
+      const src = (options.useProxyMedia && clip.proxyUrl)
+        ? clip.proxyUrl
+        : await resolveClipMediaUrl(clip);
+      if (!src) continue;
+
+      if (clip.type === 'video') {
+        const video = document.createElement('video');
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = 'auto';
+
+        video.style.position = 'fixed';
+        video.style.bottom = '0px';
+        video.style.right = '0px';
+        video.style.width = '16px';
+        video.style.height = '16px';
+        video.style.opacity = '0.001';
+        video.style.pointerEvents = 'none';
+        video.style.zIndex = '-9999';
+        document.body.appendChild(video);
+
+        if (src.startsWith('http')) video.crossOrigin = 'anonymous';
+        video.src = src;
+
+        await new Promise<void>((resolve) => {
+          let done = false;
+          const onReady = () => {
+            if (done) return;
+            done = true;
+            cleanup();
+            resolve();
+          };
+          const cleanup = () => {
+            video.removeEventListener('loadedmetadata', onReady);
+            video.removeEventListener('canplay', onReady);
+            video.removeEventListener('error', onReady);
+          };
+          video.addEventListener('loadedmetadata', onReady);
+          video.addEventListener('canplay', onReady);
+          video.addEventListener('error', onReady);
+          video.load();
+          setTimeout(onReady, 8000);
+        });
+
+        mediaElements.set(clip.id, video);
+      } else {
+        const img = new Image();
+        if (src.startsWith('http')) img.crossOrigin = 'anonymous';
+        img.src = src;
+        await new Promise<void>((resolve) => {
+          img.onload = () => resolve();
+          img.onerror = () => resolve();
+          setTimeout(resolve, 5000);
+        });
+        mediaElements.set(clip.id, img);
       }
     }
 
-    // 6. Sequential Render Loop with frame-by-frame precision
-    // To preserve memory and avoid loading 50 video tags simultaneously, we process clips sequentially!
-    let renderedTime = 0;
-    const frameDurationSec = 1 / fps;
-    const frameDurationMs = 1000 / fps;
-    const renderStartTime = Date.now();
+    // 5. Deterministic Frame by Frame rendering loop
+    const frameIntervalSec = 1 / fps;
+    const startTime = Date.now();
 
     try {
-      for (let i = 0; i < sortedItems.length; i++) {
+      for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
         if (signal?.aborted) {
           throw new Error('Eksport został przerwany przez użytkownika.');
         }
 
-        const item = sortedItems[i];
-        const clip = clipMap.get(item.clipId);
-        if (!clip) continue;
+        const currentTime = frameIndex * frameIntervalSec;
 
-        const clipSourceUrl = (options.useProxyMedia && clip.proxyUrl)
-          ? clip.proxyUrl
-          : await resolveClipMediaUrl(clip);
-        if (!clipSourceUrl) {
-          console.warn(`[localRender] Brak źródła dla klipu: "${clip.name}"`);
-          continue;
-        }
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, width, height);
 
-        const elapsed = (Date.now() - renderStartTime) / 1000;
-        const currentFrame = Math.round(renderedTime * fps);
-        const percent = Math.min(95, Math.round((renderedTime / totalDuration) * 90) + 5);
-        const fraction = Math.max(0.01, percent / 100);
-        const etaSeconds = Math.max(0, Math.ceil((elapsed / fraction) * (1 - fraction)));
-        const elapsedSeconds = Math.round(elapsed);
+        const activeItems = sortedItems.filter(
+          item => currentTime >= item.timelineStart && currentTime < (item.timelineStart + item.duration)
+        );
 
-        onProgress({
-          stage: 'rendering',
-          percent,
-          currentFrame,
-          totalFrames,
-          fps,
-          targetFps: fps,
-          etaSeconds,
-          elapsedSeconds,
-          speedMultiplier: 1.0,
-          statusMessage: `STAGE 4: Renderowanie ujęcia ${i + 1}/${sortedItems.length}: "${clip.name}"`,
-          diagnostics: { lastClipName: clip.name, stageDetails: 'STAGE 4: frame-by-frame rendering' }
-        });
+        for (const activeItem of activeItems) {
+          const clip = clipMap.get(activeItem.clipId);
+          const mediaEl = clip ? mediaElements.get(clip.id) : null;
+          if (!mediaEl || !clip) continue;
 
-        if (clip.type === 'image') {
-          // Render photo for item.duration
-          await this.renderImageClip(ctx, clipSourceUrl, item, width, height, fps, signal, () => {
-            renderedTime += frameDurationSec;
-            this.drawOverlays(ctx, project, renderedTime, width, height);
-          });
-        } else {
-          // Render video
-          await this.renderVideoClip(
+          const timeInItem = currentTime - activeItem.timelineStart;
+          const speed = activeItem.speed || 1;
+
+          if (mediaEl instanceof HTMLVideoElement) {
+            const targetSourceTime = activeItem.sourceStart + (timeInItem * speed);
+            const diff = Math.abs(mediaEl.currentTime - targetSourceTime);
+            if (diff > (0.25 / fps)) {
+              mediaEl.currentTime = targetSourceTime;
+              await new Promise<void>((res) => {
+                const onSeeked = () => {
+                  mediaEl.removeEventListener('seeked', onSeeked);
+                  res();
+                };
+                mediaEl.addEventListener('seeked', onSeeked);
+                setTimeout(() => {
+                  mediaEl.removeEventListener('seeked', onSeeked);
+                  res();
+                }, 500);
+              });
+            }
+          }
+
+          const srcW = mediaEl instanceof HTMLVideoElement ? mediaEl.videoWidth : ('naturalWidth' in mediaEl ? mediaEl.naturalWidth : (mediaEl as HTMLCanvasElement).width);
+          const srcH = mediaEl instanceof HTMLVideoElement ? mediaEl.videoHeight : ('naturalHeight' in mediaEl ? mediaEl.naturalHeight : (mediaEl as HTMLCanvasElement).height);
+
+          FrameCompositor.drawMedia(
             ctx,
-            clipSourceUrl,
-            item,
+            mediaEl,
+            srcW || width,
+            srcH || height,
             width,
             height,
-            fps,
-            audioCtx,
-            audioDest,
-            project.settings.audioBalance?.clipVolume ?? 0.7,
-            signal,
-            (currentClipTime) => {
-              renderedTime += frameDurationSec;
-              this.drawOverlays(ctx, project, renderedTime, width, height);
-            },
-            clip
+            {
+              fitMode: activeItem.fitMode || 'fit',
+              rotation: activeItem.rotation || 0,
+              scale: activeItem.scale || 1,
+              position: activeItem.position,
+              crop: activeItem.crop,
+              colorAdjustments: activeItem.colorAdjustments || clip.colorAdjustments,
+              globalPreset: project.settings?.colorGrade
+            }
           );
+
+          // Apply transitions
+          const transInType = activeItem.transitionIn || (activeItem.fadeIn ? 'fade' : 'cut');
+          const transInDuration = activeItem.transitionDuration || activeItem.fadeIn || 0;
+          if (transInDuration > 0 && timeInItem < transInDuration) {
+            const transProgress = 1 - Math.max(0, Math.min(1, timeInItem / transInDuration));
+            FrameCompositor.applyTransition(ctx, width, height, transProgress, transInType);
+          }
+
+          const timeLeft = activeItem.duration - timeInItem;
+          const transOutType = activeItem.transitionOut || (activeItem.fadeOut ? 'fade' : 'cut');
+          const transOutDuration = activeItem.transitionDuration || activeItem.fadeOut || 0;
+          if (transOutDuration > 0 && timeLeft < transOutDuration) {
+            const transProgress = 1 - Math.max(0, Math.min(1, timeLeft / transOutDuration));
+            FrameCompositor.applyTransition(ctx, width, height, transProgress, transOutType);
+          }
+        }
+
+        // Draw Subtitles & Text Layers with FrameCompositor
+        if (project.textLayers && project.textLayers.length > 0) {
+          for (const textLayer of project.textLayers) {
+            FrameCompositor.drawTextLayer(ctx, width, height, textLayer, currentTime);
+          }
+        }
+
+        // Small delay to let captureStream and MediaRecorder absorb the frame
+        await new Promise(r => setTimeout(r, Math.max(1, 1000 / fps / 2)));
+
+        if (frameIndex % 8 === 0 || frameIndex === totalFrames - 1) {
+          const elapsed = (Date.now() - startTime) / 1000;
+          const percent = Math.min(95, 10 + Math.round((frameIndex / totalFrames) * 85));
+          const currentFps = Math.max(1, Math.round((frameIndex + 1) / Math.max(0.1, elapsed)));
+          const remainingFrames = totalFrames - (frameIndex + 1);
+          const etaSeconds = Math.max(1, Math.ceil(remainingFrames / currentFps));
+
+          onProgress({
+            stage: 'rendering',
+            percent,
+            currentFrame: frameIndex + 1,
+            totalFrames,
+            fps: currentFps,
+            targetFps: fps,
+            etaSeconds,
+            elapsedSeconds: Math.round(elapsed),
+            speedMultiplier: Number(((currentFps / fps) || 1).toFixed(1)),
+            statusMessage: `Renderowanie MediaRecorder: ${frameIndex + 1}/${totalFrames} (${percent}%)`
+          });
         }
       }
 
@@ -287,8 +520,8 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
         totalFrames,
         fps,
         targetFps: fps,
-        statusMessage: 'STAGE 8: Zatrzymywanie nagrywania i finalizacja pliku...',
-        diagnostics: { stageDetails: 'STAGE 8: MediaRecorder finalization' }
+        statusMessage: 'Zatrzymywanie nagrywania i finalizacja kontenera...',
+        diagnostics: { stageDetails: 'MediaRecorder finalize' }
       });
 
       // Stop recorder and wait for final chunks
@@ -297,14 +530,11 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
         recorder.stop();
       });
 
-      // Stop background audio
-      bgAudioElements.forEach(a => {
-        try { a.pause(); a.src = ''; } catch (e) {}
-      });
-      try { audioCtx.close(); } catch (e) {}
+      if (masterAudioSource) {
+        try { masterAudioSource.stop(); } catch {}
+      }
+      try { audioCtx.close(); } catch {}
 
-      // Combine chunks into final Blob
-      // Ensure the output mimeType specifies MP4 or WebM accurately based on real encoder
       const isMp4Mime = selectedMime.includes('mp4');
       const finalMime = isMp4Mime ? 'video/mp4' : 'video/webm';
       const fileExt = isMp4Mime ? 'mp4' : 'webm';
@@ -317,24 +547,12 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
         totalFrames,
         fps,
         targetFps: fps,
-        statusMessage: `STAGE 9: Weryfikacja integralności pliku (${fileExt.toUpperCase()})...`,
-        diagnostics: { stageDetails: 'STAGE 9: Output validation', size: finalBlob.size }
+        statusMessage: `Weryfikacja integralności pliku (${fileExt.toUpperCase()})...`
       });
 
       const verification = await this.verifyOutput(finalBlob);
       if (!verification.valid) {
-        const errorMsg = verification.error || 'Weryfikacja pliku wideo nie powiodła się.';
-        onProgress({
-          stage: 'error',
-          percent: 98,
-          currentFrame: totalFrames,
-          totalFrames,
-          fps,
-          targetFps: fps,
-          statusMessage: `BŁĄD WALIDACJI: ${errorMsg}`,
-          diagnostics: { lastError: errorMsg }
-        });
-        throw new Error(errorMsg);
+        throw new Error(verification.error || 'Weryfikacja pliku wideo nie powiodła się.');
       }
 
       const cleanProjectName = (project.name || 'Film_Slubny')
@@ -364,420 +582,27 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
         verifiedPlayable: true
       };
 
-    } catch (err: any) {
+    } catch (err: unknown) {
       try {
         if (recorder.state !== 'inactive') recorder.stop();
-        bgAudioElements.forEach(a => { a.pause(); a.src = ''; });
+        if (masterAudioSource) {
+          try { masterAudioSource.stop(); } catch {}
+        }
         audioCtx.close();
-      } catch (e) {}
+      } catch {}
       throw err;
-    }
-  }
-
-  /**
-   * Frame-by-frame video clip rendering
-   */
-  private async renderVideoClip(
-    ctx: CanvasRenderingContext2D,
-    url: string,
-    item: TimelineItem,
-    targetWidth: number,
-    targetHeight: number,
-    fps: number,
-    audioCtx: AudioContext,
-    audioDest: MediaStreamAudioDestinationNode,
-    masterClipVolume: number,
-    signal?: AbortSignal,
-    onFrameRendered?: (time: number) => void,
-    clip?: MediaClip
-  ): Promise<void> {
-    const video = document.createElement('video');
-    video.src = url;
-    video.muted = item.muted;
-    video.playsInline = true;
-    
-    const isExternal = url.startsWith('http://') || url.startsWith('https://');
-    const isSameOrigin = typeof window !== 'undefined' && url.startsWith(window.location.origin);
-    if (isExternal && !isSameOrigin) {
-      video.crossOrigin = 'anonymous';
-    }
-
-    const waitForVideo = (vid: HTMLVideoElement): Promise<boolean> => {
-      if (vid.readyState >= 1 && vid.videoWidth > 0) return Promise.resolve(true);
-
-      return new Promise<boolean>((resolve) => {
-        let done = false;
-        const onReady = () => {
-          if (done) return;
-          done = true;
-          cleanup();
-          resolve(true);
-        };
-        const onErr = () => {
-          if (done) return;
-          done = true;
-          cleanup();
-          resolve(false);
-        };
-        const cleanup = () => {
-          vid.removeEventListener('loadedmetadata', onReady);
-          vid.removeEventListener('canplay', onReady);
-          vid.removeEventListener('error', onErr);
-        };
-
-        vid.addEventListener('loadedmetadata', onReady);
-        vid.addEventListener('canplay', onReady);
-        vid.addEventListener('error', onErr);
-        vid.load();
-
-        setTimeout(() => {
-          if (!done) {
-            done = true;
-            cleanup();
-            resolve(vid.videoWidth > 0 || vid.readyState >= 1);
-          }
-        }, 12000);
-      });
-    };
-
-    let loaded = await waitForVideo(video);
-
-    // If failed with crossOrigin, retry without crossOrigin
-    if (!loaded && video.crossOrigin) {
-      video.removeAttribute('crossorigin');
-      video.src = url;
-      loaded = await waitForVideo(video);
-    }
-
-    // If failed and clip.file exists, try creating direct fresh blob URL
-    if (!loaded && clip?.file) {
-      try {
-        const freshUrl = URL.createObjectURL(clip.file);
-        video.src = freshUrl;
-        loaded = await waitForVideo(video);
-      } catch (e) {}
-    }
-
-    // If failed and proxy exists, try proxy
-    if (!loaded && clip?.proxyUrl) {
-      try {
-        video.src = clip.proxyUrl;
-        loaded = await waitForVideo(video);
-      } catch (e) {}
-    }
-
-    if (!loaded && (video.videoWidth === 0 && video.readyState < 1)) {
-      // If video codec is unsupported by device decoder, fall back to high-res thumbnail frame
-      if (clip?.thumbnailUrl && clip.thumbnailUrl.length > 5) {
-        console.warn(`[localRender] Video decoder failed for "${clip.name}". Falling back to clip frame image.`);
-        await this.renderImageClip(ctx, clip.thumbnailUrl, item, targetWidth, targetHeight, fps, signal, () => {
-          if (onFrameRendered) onFrameRendered(0);
-        });
-        return;
-      }
-
-      const err = video.error;
-      const detail = err ? `Code ${err.code}: ${err.message}` : 'Timeout';
-      throw new Error(`Nie można załadować wideo do renderowania (${detail}).`);
-    }
-
-    let audioSource: MediaElementAudioSourceNode | null = null;
-    let gainNode: GainNode | null = null;
-
-    if (!item.muted) {
-      try {
-        audioSource = audioCtx.createMediaElementSource(video);
-        gainNode = audioCtx.createGain();
-        gainNode.gain.value = (item.volume ?? 1) * masterClipVolume;
-        audioSource.connect(gainNode);
-        gainNode.connect(audioDest);
-      } catch (e) {
-        // Audio might already be connected or not present
-      }
-    }
-
-    const durationToPlay = item.duration;
-    const startSourceTime = item.sourceStart;
-    const endSourceTime = item.sourceEnd;
-    const speed = item.speed || 1;
-
-    video.currentTime = startSourceTime;
-    video.playbackRate = speed;
-
-    await new Promise<void>((res) => {
-      video.onseeked = () => res();
-    });
-
-    await video.play();
-
-    const startPerf = performance.now();
-    const targetMs = (durationToPlay * 1000);
-
-    return new Promise<void>((resolve, reject) => {
-      let isDone = false;
-
-      const renderInterval = setInterval(() => {
-        if (signal?.aborted) {
-          cleanup();
-          reject(new Error('Anulowano renderowanie.'));
-          return;
-        }
-
-        const elapsedMs = performance.now() - startPerf;
-        const currentClipSec = elapsedMs / 1000;
-
-        // Draw frame with fitMode and transitions
-        this.drawMediaToCanvas(ctx, video, item, targetWidth, targetHeight, currentClipSec);
-        if (onFrameRendered) onFrameRendered(video.currentTime);
-
-        if (elapsedMs >= targetMs || video.currentTime >= endSourceTime || video.ended) {
-          cleanup();
-          resolve();
-        }
-      }, 1000 / fps);
-
-      const cleanup = () => {
-        if (isDone) return;
-        isDone = true;
-        clearInterval(renderInterval);
-        video.pause();
-        video.src = '';
-        if (audioSource && gainNode) {
+    } finally {
+      for (const el of mediaElements.values()) {
+        if (el instanceof HTMLVideoElement) {
           try {
-            audioSource.disconnect();
-            gainNode.disconnect();
-          } catch (e) {}
-        }
-      };
-    });
-  }
-
-  /**
-   * Photo rendering over time
-   */
-  private async renderImageClip(
-    ctx: CanvasRenderingContext2D,
-    url: string,
-    item: TimelineItem,
-    targetWidth: number,
-    targetHeight: number,
-    fps: number,
-    signal?: AbortSignal,
-    onFrameRendered?: () => void
-  ): Promise<void> {
-    const img = new Image();
-    img.src = url;
-    await new Promise<void>((res, rej) => {
-      img.onload = () => res();
-      img.onerror = () => rej(new Error('Nie można wczytać zdjęcia do renderowania.'));
-    });
-
-    const totalFrames = Math.round(item.duration * fps);
-    for (let f = 0; f < totalFrames; f++) {
-      if (signal?.aborted) throw new Error('Anulowano renderowanie.');
-      const currentSec = f / fps;
-      this.drawMediaToCanvas(ctx, img, item, targetWidth, targetHeight, currentSec);
-      if (onFrameRendered) onFrameRendered();
-      await new Promise(r => setTimeout(r, 1000 / fps));
-    }
-  }
-
-  /**
-   * Draws video or image onto canvas honoring aspect ratio, filters, fitMode, and fade transitions
-   */
-  private drawMediaToCanvas(
-    ctx: CanvasRenderingContext2D,
-    media: HTMLVideoElement | HTMLImageElement,
-    item: TimelineItem,
-    targetWidth: number,
-    targetHeight: number,
-    currentTimeInClip?: number
-  ) {
-    const sourceWidth = 'videoWidth' in media ? media.videoWidth : media.naturalWidth;
-    const sourceHeight = 'videoHeight' in media ? media.videoHeight : media.naturalHeight;
-
-    if (!sourceWidth || !sourceHeight) return;
-
-    const sourceAspect = sourceWidth / sourceHeight;
-    const targetAspect = targetWidth / targetHeight;
-    const fitMode = item.fitMode || 'fit';
-
-    // 1. Calculate Transition and Fade Opacity & White Flash Glow
-    let alpha = 1;
-    let whiteFlashAlpha = 0;
-
-    const transInType = item.transitionIn || (item.fadeIn ? 'fade' : 'cut');
-    const transInDuration = item.transitionDuration || item.fadeIn || 0;
-    if (currentTimeInClip !== undefined && transInDuration > 0 && currentTimeInClip < transInDuration) {
-      const progress = Math.max(0, Math.min(1, currentTimeInClip / transInDuration));
-      if (transInType === 'fade' || transInType === 'dissolve') {
-        alpha *= progress;
-      } else if (transInType === 'dip_black') {
-        alpha *= (progress * progress);
-      } else if (transInType === 'dip_white') {
-        whiteFlashAlpha = Math.max(whiteFlashAlpha, (1 - progress) * 0.95);
-      }
-    }
-
-    if (currentTimeInClip !== undefined) {
-      const timeLeft = item.duration - currentTimeInClip;
-      const transOutType = item.transitionOut || (item.fadeOut ? 'fade' : 'cut');
-      const transOutDuration = item.transitionDuration || item.fadeOut || 0;
-      if (transOutDuration > 0 && timeLeft < transOutDuration) {
-        const progress = Math.max(0, Math.min(1, timeLeft / transOutDuration));
-        if (transOutType === 'fade' || transOutType === 'dissolve') {
-          alpha *= progress;
-        } else if (transOutType === 'dip_black') {
-          alpha *= (progress * progress);
-        } else if (transOutType === 'dip_white') {
-          whiteFlashAlpha = Math.max(whiteFlashAlpha, (1 - progress) * 0.95);
+            el.pause();
+            el.src = '';
+            el.load();
+            if (el.parentNode) el.parentNode.removeChild(el);
+          } catch {}
         }
       }
-    }
-
-    ctx.save();
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-
-    // 2. Intelligent Kadrowanie (Aspect Ratio, Fit & Ambient Fill)
-    const aspectDiff = Math.abs(sourceAspect - targetAspect);
-
-    // If there is significant aspect ratio mismatch (e.g. 9:16 vertical on 16:9 widescreen)
-    // and fitMode is 'fit', render professional Wedding Studio Ambient Fill in background
-    if (fitMode === 'fit' && aspectDiff > 0.35) {
-      ctx.save();
-      ctx.filter = 'blur(28px) brightness(0.48) contrast(1.1)';
-      let bgW = targetWidth;
-      let bgH = targetHeight;
-      if (sourceAspect > targetAspect) {
-        bgH = targetHeight;
-        bgW = targetHeight * sourceAspect;
-      } else {
-        bgW = targetWidth;
-        bgH = targetWidth / sourceAspect;
-      }
-      const bgX = (targetWidth - bgW) / 2;
-      const bgY = (targetHeight - bgH) / 2;
-      ctx.drawImage(media, bgX, bgY, bgW, bgH);
-      ctx.restore();
-    }
-
-    // Determine Foreground Crop / Scale Bounds
-    let sX = 0, sY = 0, sW = sourceWidth, sH = sourceHeight;
-    let renderW = targetWidth, renderH = targetHeight;
-    let renderX = 0, renderY = 0;
-
-    if (item.crop) {
-      sX = Math.max(0, Math.min(sourceWidth, item.crop.x * sourceWidth));
-      sY = Math.max(0, Math.min(sourceHeight, item.crop.y * sourceHeight));
-      sW = Math.max(1, Math.min(sourceWidth - sX, item.crop.width * sourceWidth));
-      sH = Math.max(1, Math.min(sourceHeight - sY, item.crop.height * sourceHeight));
-    }
-
-    const effectiveAspect = sW / sH;
-
-    if (fitMode === 'fit') {
-      if (effectiveAspect > targetAspect) {
-        renderW = targetWidth;
-        renderH = targetWidth / effectiveAspect;
-        renderY = (targetHeight - renderH) / 2;
-      } else {
-        renderH = targetHeight;
-        renderW = targetHeight * effectiveAspect;
-        renderX = (targetWidth - renderW) / 2;
-      }
-    } else if (fitMode === 'fill') {
-      if (effectiveAspect > targetAspect) {
-        renderH = targetHeight;
-        renderW = targetHeight * effectiveAspect;
-        renderX = (targetWidth - renderW) / 2;
-      } else {
-        renderW = targetWidth;
-        renderH = targetWidth / effectiveAspect;
-        // Top-biased crop (0.32 from top instead of 0.5 center) to keep bride/groom faces in frame
-        renderY = (targetHeight - renderH) * 0.32;
-      }
-    } else if (fitMode === 'original') {
-      renderW = sW;
-      renderH = sH;
-      renderX = (targetWidth - renderW) / 2;
-      renderY = (targetHeight - renderH) / 2;
-    }
-
-    // 3. Apply Custom Transforms: Scale, Position, Rotation
-    const centerX = renderX + renderW / 2;
-    const centerY = renderY + renderH / 2;
-
-    ctx.translate(centerX, centerY);
-
-    if (item.rotation) {
-      ctx.rotate((item.rotation * Math.PI) / 180);
-    }
-
-    if (item.position) {
-      const offsetX = item.position.x * targetWidth * 0.5;
-      const offsetY = item.position.y * targetHeight * 0.5;
-      ctx.translate(offsetX, offsetY);
-    }
-
-    if (item.scale && item.scale !== 1) {
-      ctx.scale(item.scale, item.scale);
-    }
-
-    // Shadow for fitted foreground on ambient background
-    if (fitMode === 'fit' && aspectDiff > 0.35) {
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
-      ctx.shadowBlur = 24;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 4;
-    }
-
-    ctx.drawImage(media, sX, sY, sW, sH, -renderW / 2, -renderH / 2, renderW, renderH);
-    ctx.restore();
-
-    // 4. Dip to White Flash effect
-    if (whiteFlashAlpha > 0) {
-      ctx.save();
-      ctx.fillStyle = `rgba(255, 252, 240, ${whiteFlashAlpha})`;
-      ctx.fillRect(0, 0, targetWidth, targetHeight);
-      ctx.restore();
-    }
-  }
-
-  /**
-   * Draws text layers & subtitles onto the current frame
-   */
-  private drawOverlays(
-    ctx: CanvasRenderingContext2D,
-    project: ProjectState,
-    currentTime: number,
-    targetWidth: number,
-    targetHeight: number
-  ) {
-    if (!project.textLayers || project.textLayers.length === 0) return;
-
-    for (const textItem of project.textLayers) {
-      if (currentTime >= textItem.timelineStart && currentTime <= (textItem.timelineStart + textItem.duration)) {
-        ctx.save();
-        const posX = textItem.position ? textItem.position.x * targetWidth : targetWidth / 2;
-        const posY = textItem.position ? textItem.position.y * targetHeight : targetHeight * 0.85;
-        const baseFontSize = (textItem.fontSize || 2) * (targetHeight / 40);
-
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.font = `bold ${Math.round(baseFontSize)}px "Cinzel", "Playfair Display", "Times New Roman", serif`;
-
-        // Shadow for readability
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
-        ctx.shadowBlur = 12;
-        ctx.shadowOffsetX = 2;
-        ctx.shadowOffsetY = 2;
-
-        ctx.fillStyle = textItem.color || '#D4AF37';
-        ctx.fillText(textItem.text, posX, posY);
-        ctx.restore();
-      }
+      mediaElements.clear();
     }
   }
 }

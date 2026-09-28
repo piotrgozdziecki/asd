@@ -25,6 +25,8 @@ import {
   Check
 } from 'lucide-react';
 import type { TimelineItem, MediaClip, TextLayer, AudioTrackItem, ColorGradingPreset } from '../../types/project';
+import { urlRegistry } from '../../core/media/urlRegistry';
+import { resolveClipMediaUrl, resolveAudioTrackUrl } from '../../core/media/mediaResolver';
 
 export type ScaleMode = 'fit' | 'fill' | '16:9' | '9:16' | '4:3' | 'original';
 
@@ -173,24 +175,60 @@ export function PreviewPlayer({
   const activeTitleCard = useMemo(() => {
     if (!activeTimelineItem?.titleCard?.enabled) return null;
     const itemOffset = currentTime - activeTimelineItem.timelineStart;
-    const cardDuration = activeTimelineItem.titleCard.duration || 3;
+    // Cap title card display so it introduces the scene and never masks more than 35% of a short clip
+    const maxAllowedDur = Math.max(0.8, activeTimelineItem.duration * 0.35);
+    const cardDuration = Math.min(maxAllowedDur, activeTimelineItem.titleCard.duration || 2.5);
     if (itemOffset < cardDuration) {
       return activeTimelineItem.titleCard;
     }
     return null;
   }, [currentTime, activeTimelineItem]);
 
+  const [resolvedUrls, setResolvedUrls] = useState<Record<string, string>>({});
+  const [resolvedAudioUrls, setResolvedAudioUrls] = useState<Record<string, string>>({});
+
+  // Resolve audio tracks URLs
+  useEffect(() => {
+    let isCancelled = false;
+    audioTracks.forEach(track => {
+      if (track.objectUrl && (track.objectUrl.startsWith('http') || track.objectUrl.startsWith('data:') || urlRegistry.isAlive(track.objectUrl))) {
+        return;
+      }
+      resolveAudioTrackUrl(track).then(fresh => {
+        if (!isCancelled && fresh) {
+          setResolvedAudioUrls(prev => ({ ...prev, [track.id]: fresh }));
+        }
+      });
+    });
+    return () => { isCancelled = true; };
+  }, [audioTracks]);
+
   const activeMedia = useMemo(() => {
     if (!activeTimelineItem) return null;
     return mediaMap.get(activeTimelineItem.clipId) || null;
   }, [activeTimelineItem, mediaMap]);
+
+  // Asynchronously resolve active media if objectUrl is not alive
+  useEffect(() => {
+    if (!activeMedia) return;
+    if (activeMedia.objectUrl && (activeMedia.objectUrl.startsWith('http') || activeMedia.objectUrl.startsWith('data:') || urlRegistry.isAlive(activeMedia.objectUrl))) {
+      return;
+    }
+    let isCancelled = false;
+    resolveClipMediaUrl(activeMedia).then(fresh => {
+      if (!isCancelled && fresh) {
+        setResolvedUrls(prev => ({ ...prev, [activeMedia.id]: fresh }));
+      }
+    });
+    return () => { isCancelled = true; };
+  }, [activeMedia]);
 
   // Resolve valid playable URL for media
   const activeMediaUrl = useMemo(() => {
     if (!activeMedia) return null;
     if (activeMedia.file) {
       try {
-        if (!activeMedia.objectUrl || activeMedia.objectUrl.startsWith('blob:null')) {
+        if (!activeMedia.objectUrl || activeMedia.objectUrl.startsWith('blob:null') || !urlRegistry.isAlive(activeMedia.objectUrl)) {
           const url = URL.createObjectURL(activeMedia.file);
           activeMedia.objectUrl = url;
         }
@@ -199,9 +237,18 @@ export function PreviewPlayer({
         console.warn("Could not create object URL for file:", e);
       }
     }
-    if (activeMedia.objectUrl) return activeMedia.objectUrl;
-    return activeMedia.thumbnailUrl || null;
-  }, [activeMedia]);
+    if (activeMedia.objectUrl && (activeMedia.objectUrl.startsWith('http') || activeMedia.objectUrl.startsWith('data:') || urlRegistry.isAlive(activeMedia.objectUrl))) {
+      return activeMedia.objectUrl;
+    }
+    if (resolvedUrls[activeMedia.id]) {
+      return resolvedUrls[activeMedia.id];
+    }
+    if (activeMedia.type === 'image') {
+      return activeMedia.thumbnailUrl || null;
+    }
+    // Strictly protect video elements: NEVER return image thumbnail as video src!
+    return null;
+  }, [activeMedia, resolvedUrls]);
 
   // First clip time for quick jump
   const firstClipStart = useMemo(() => {
@@ -253,12 +300,16 @@ export function PreviewPlayer({
     const video = videoRef.current;
     if (!video || !activeTimelineItem || activeMedia?.type === 'image') return;
 
-    video.volume = (muted || activeTimelineItem.muted) ? 0 : Math.min(1, (activeTimelineItem.volume ?? 1) * masterVolume);
+    const finalMuted = muted || Boolean(activeTimelineItem.muted);
+    if (video.muted !== finalMuted) {
+      video.muted = finalMuted;
+    }
+    video.volume = finalMuted ? 0 : Math.min(1, (activeTimelineItem.volume ?? 1) * masterVolume);
     video.playbackRate = activeTimelineItem.speed || 1;
 
-    // Synchronize playhead time if drift > 0.3s or when paused
+    // Synchronize playhead time if drift > 0.6s or when paused
     const drift = Math.abs(video.currentTime - localSourceTime);
-    if (!playing || drift > 0.3) {
+    if (!playing || drift > 0.6) {
       if (Number.isFinite(localSourceTime) && video.readyState >= 1) {
         try {
           video.currentTime = Math.max(0, localSourceTime);
@@ -376,15 +427,18 @@ export function PreviewPlayer({
         isCinemaMode ? 'fixed inset-0 z-50 rounded-none border-none' : ''
       }`}
     >
-      {/* Hidden audio pool */}
-      <div className="hidden">
+      {/* Offscreen audio pool - never display:none so browser audio pipeline remains active */}
+      <div 
+        style={{ position: 'fixed', bottom: 0, right: 0, width: 16, height: 16, opacity: 0.001, pointerEvents: 'none', zIndex: -9999 }}
+        aria-hidden="true"
+      >
         {audioTracks.map(track => (
           <audio
             key={track.id}
             ref={el => {
               audioRefs.current[track.id] = el;
             }}
-            src={track.objectUrl}
+            src={resolvedAudioUrls[track.id] || track.objectUrl}
             preload="auto"
           />
         ))}
@@ -526,32 +580,47 @@ export function PreviewPlayer({
             </>
           )}
 
-          {activeMedia && activeMediaUrl ? (
+          {activeMedia && (activeMediaUrl || (activeMedia.type === 'video' && activeMedia.thumbnailUrl)) ? (
             activeMedia.type === 'video' ? (
-              <video
-                ref={videoRef}
-                key={activeMedia.id}
-                src={activeMediaUrl}
-                className={`max-w-full max-h-full w-full h-full ${getObjectFitClass()} pointer-events-none transition-transform duration-150`}
-                playsInline
-                muted={muted || activeTimelineItem?.muted}
-                onLoadedMetadata={() => {
-                  setIsVideoReady(true);
-                  setVideoError(null);
-                  if (videoRef.current && Number.isFinite(localSourceTime)) {
-                    videoRef.current.currentTime = Math.max(0, localSourceTime);
-                  }
-                }}
-                onError={() => {
-                  console.warn("Video render error for clip:", activeMedia.name);
-                  setVideoError("Nie można załadować źródła wideo");
-                }}
-                style={getFilterStyle(activeTimelineItem)}
-              />
+              activeMediaUrl ? (
+                <video
+                  ref={videoRef}
+                  key={activeMedia.id}
+                  src={activeMediaUrl}
+                  className={`max-w-full max-h-full w-full h-full ${getObjectFitClass()} pointer-events-none transition-transform duration-150`}
+                  playsInline
+                  muted={muted || activeTimelineItem?.muted}
+                  onLoadedMetadata={() => {
+                    setIsVideoReady(true);
+                    setVideoError(null);
+                    if (videoRef.current && Number.isFinite(localSourceTime)) {
+                      videoRef.current.currentTime = Math.max(0, localSourceTime);
+                    }
+                  }}
+                  onError={() => {
+                    console.warn("Video render error for clip:", activeMedia.name);
+                    setVideoError("Nie można załadować źródła wideo");
+                  }}
+                  style={getFilterStyle(activeTimelineItem)}
+                />
+              ) : (
+                <div className="relative w-full h-full flex items-center justify-center">
+                  <img
+                    src={activeMedia.thumbnailUrl}
+                    alt={activeMedia.name}
+                    className={`max-w-full max-h-full w-full h-full ${getObjectFitClass()} pointer-events-none transition-transform duration-150 opacity-90`}
+                    style={getFilterStyle(activeTimelineItem)}
+                  />
+                  <div className="absolute bottom-4 left-4 bg-black/80 px-2.5 py-1 rounded-lg text-[11px] font-mono text-[#D4AF37] border border-[#D4AF37]/30 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-[#D4AF37] animate-pulse" />
+                    <span>Wczytywanie wideo...</span>
+                  </div>
+                </div>
+              )
             ) : (
               <img
                 key={activeMedia.id}
-                src={activeMediaUrl}
+                src={activeMediaUrl || activeMedia.thumbnailUrl || ''}
                 alt={activeMedia.name}
                 className={`max-w-full max-h-full w-full h-full ${getObjectFitClass()} pointer-events-none transition-transform duration-150`}
                 style={getFilterStyle(activeTimelineItem)}

@@ -1,6 +1,28 @@
-import React from 'react';
-import type { TimelineItem, MediaClip } from '../../types/project';
-import { Scissors, Volume2, Move, Clock, Image as ImageIcon, Sparkles, Type } from 'lucide-react';
+import React, { useState } from 'react';
+import type { 
+  TimelineItem, 
+  MediaClip, 
+  ClipColorAdjustments, 
+  LookPreset, 
+  FitMode, 
+  TransitionType 
+} from '../../types/project';
+import { 
+  Scissors, 
+  Volume2, 
+  Sliders, 
+  RotateCw, 
+  Maximize2, 
+  Sparkles, 
+  Type, 
+  Layers, 
+  Gauge, 
+  Sun, 
+  Eye, 
+  RotateCcw,
+  Film,
+  Zap
+} from 'lucide-react';
 
 interface ClipInspectorProps {
   item: TimelineItem;
@@ -9,376 +31,566 @@ interface ClipInspectorProps {
   onSplit?: (id: string, splitAtSourceTime: number) => void;
 }
 
+type InspectorTab = 'TRANSFORM' | 'COLOR' | 'AUDIO' | 'TRANSITION' | 'TITLE';
+
 export function ClipInspector({ item, media, onUpdate, onSplit }: ClipInspectorProps) {
-  
+  const [activeTab, setActiveTab] = useState<InspectorTab>('TRANSFORM');
+
+  const colorAdj: ClipColorAdjustments = item.colorAdjustments || media.colorAdjustments || {
+    exposure: 0,
+    contrast: 0,
+    brightness: 0,
+    saturation: 0,
+    temperature: 0,
+    tint: 0,
+    sharpness: 0,
+    highlights: 0,
+    shadows: 0,
+    vignette: 0,
+    lookPreset: 'none',
+    lookIntensity: 100
+  };
+
   const handleUpdate = (field: keyof TimelineItem, value: any) => {
     onUpdate(item.id, { [field]: value });
+  };
+
+  const handleColorUpdate = (field: keyof ClipColorAdjustments, value: any) => {
+    const updated: ClipColorAdjustments = {
+      ...colorAdj,
+      [field]: value
+    };
+    onUpdate(item.id, { colorAdjustments: updated });
+  };
+
+  const handleResetColor = () => {
+    const clean: ClipColorAdjustments = {
+      exposure: 0,
+      contrast: 0,
+      brightness: 0,
+      saturation: 0,
+      temperature: 0,
+      tint: 0,
+      sharpness: 0,
+      highlights: 0,
+      shadows: 0,
+      vignette: 0,
+      lookPreset: 'none',
+      lookIntensity: 100
+    };
+    onUpdate(item.id, { colorAdjustments: clean });
   };
 
   const handleTrimChange = (type: 'start' | 'end', val: string) => {
     const num = parseFloat(val);
     if (isNaN(num)) return;
+    const speed = item.speed || 1;
     
     if (type === 'start') {
-      const newStart = Math.max(0, Math.min(num, item.sourceEnd - 0.5));
-      const newDuration = item.sourceEnd - newStart;
+      const newStart = Math.max(0, Math.min(num, item.sourceEnd - 0.2));
+      const newDuration = (item.sourceEnd - newStart) / speed;
       onUpdate(item.id, { sourceStart: newStart, duration: newDuration });
     } else {
-      const newEnd = Math.max(item.sourceStart + 0.5, Math.min(num, media.duration));
-      const newDuration = newEnd - item.sourceStart;
+      const newEnd = Math.max(item.sourceStart + 0.2, Math.min(num, media.duration));
+      const newDuration = (newEnd - item.sourceStart) / speed;
       onUpdate(item.id, { sourceEnd: newEnd, duration: newDuration });
     }
   };
 
   const handleSplit = () => {
     if (!onSplit) return;
-    // Split in the middle for simplicity if we don't have playhead
     const midPoint = item.sourceStart + ((item.sourceEnd - item.sourceStart) / 2);
     onSplit(item.id, midPoint);
   };
 
+  // Convert seconds to Timecode HH:MM:SS:FF at 30 FPS
+  const toTimecode = (sec: number) => {
+    const s = Math.max(0, sec);
+    const hrs = Math.floor(s / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const secs = Math.floor(s % 60);
+    const frames = Math.floor((s % 1) * 30);
+    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}:${frames.toString().padStart(2, '0')}`;
+  };
+
   return (
-    <div className="h-full flex flex-col bg-[#121212] border-l border-[#2A2824] overflow-hidden w-full md:w-80 shrink-0">
-      <div className="h-14 border-b border-[#2A2824] flex items-center px-4 shrink-0">
-        <h3 className="font-serif-luxury font-bold text-[#F2EFE8]">Inspektor</h3>
+    <div className="h-full flex flex-col bg-[#111114] border-l border-[#24242A] overflow-hidden w-full md:w-84 shrink-0 shadow-2xl">
+      {/* Header */}
+      <div className="p-3.5 border-b border-[#24242A] flex items-center justify-between bg-[#16161C]">
+        <div className="flex items-center gap-2 min-w-0">
+          <Layers className="w-4 h-4 text-[#D4AF37] shrink-0" />
+          <h3 className="font-bold text-xs uppercase tracking-wider text-white truncate font-mono">
+            Inspektor Ujęcia
+          </h3>
+        </div>
+        <span className="text-[11px] font-mono text-[#D4AF37] bg-[#2A2414] px-2 py-0.5 rounded border border-[#3E3420]">
+          {toTimecode(item.duration)}
+        </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
-        
-        {/* Basic Info */}
-        <div className="space-y-3">
-          <div className="flex items-start gap-3">
-            <div className="w-16 h-12 bg-black rounded-md overflow-hidden shrink-0 border border-white/10">
-              {media.thumbnailUrl ? (
-                <img src={media.thumbnailUrl} alt="Thumb" className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <ImageIcon className="w-4 h-4 text-[#555]" />
-                </div>
-              )}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-white truncate" title={media.name}>{media.name}</p>
-              <p className="text-xs text-[#AAA69D] font-mono mt-1">
-                {(item.duration).toFixed(1)}s
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Trim Controls */}
-        <div className="space-y-3 pt-4 border-t border-[#2A2824]">
-          <div className="flex items-center justify-between">
-            <h4 className="text-xs font-bold text-[#D4AF37] uppercase flex items-center gap-1.5">
-              <Scissors className="w-3.5 h-3.5" /> Przycinanie
-            </h4>
-            {onSplit && (
-              <button 
-                onClick={handleSplit}
-                className="text-[10px] bg-[#2A2824] text-white px-2 py-1 rounded hover:bg-[#D4AF37] hover:text-black transition-colors"
-              >
-                Podziel w połowie
-              </button>
-            )}
-          </div>
-          
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-mono text-[#AAA69D]">START (s)</label>
-              <input 
-                type="number" 
-                min="0" 
-                max={item.sourceEnd - 0.5} 
-                step="0.1"
-                value={item.sourceStart.toFixed(1)}
-                onChange={(e) => handleTrimChange('start', e.target.value)}
-                className="w-full h-11 bg-[#1A1A1A] border border-[#2A2824] rounded-md px-3 text-sm text-white focus:border-[#D4AF37] focus:outline-none transition-colors"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-mono text-[#AAA69D]">KONIEC (s)</label>
-              <input 
-                type="number" 
-                min={item.sourceStart + 0.5} 
-                max={media.duration} 
-                step="0.1"
-                value={item.sourceEnd.toFixed(1)}
-                onChange={(e) => handleTrimChange('end', e.target.value)}
-                className="w-full h-11 bg-[#1A1A1A] border border-[#2A2824] rounded-md px-3 text-sm text-white focus:border-[#D4AF37] focus:outline-none transition-colors"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Audio Controls */}
-        <div className="space-y-3 pt-4 border-t border-[#2A2824]">
-          <h4 className="text-xs font-bold text-[#D4AF37] uppercase flex items-center gap-1.5">
-            <Volume2 className="w-3.5 h-3.5" /> Dźwięk Oryginalny
-          </h4>
-          
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-[#F2EFE8]">Wycisz</span>
-              <button 
-                onClick={() => handleUpdate('muted', !item.muted)}
-                className={`w-10 h-5 rounded-full relative transition-colors ${item.muted ? 'bg-[#D4AF37]' : 'bg-[#2A2824]'}`}
-              >
-                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${item.muted ? 'left-5' : 'left-0.5'}`} />
-              </button>
-            </div>
-
-            {!item.muted && (
-              <div className="space-y-1.5">
-                <div className="flex justify-between text-[10px] font-mono text-[#AAA69D]">
-                  <label>GŁOŚNOŚĆ</label>
-                  <span>{Math.round(item.volume * 100)}%</span>
-                </div>
-                <input 
-                  type="range" 
-                  min="0" 
-                  max="1" 
-                  step="0.05"
-                  value={item.volume}
-                  onChange={(e) => handleUpdate('volume', parseFloat(e.target.value))}
-                  className="w-full h-8 accent-[#D4AF37]"
-                />
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Framing & Normalization (Req 10: FIT, FILL, ORIGINAL) */}
-        <div className="space-y-3 pt-4 border-t border-[#2A2824]">
-          <h4 className="text-xs font-bold text-[#D4AF37] uppercase flex items-center gap-1.5 font-mono">
-            <Move className="w-3.5 h-3.5" /> Kadr i Dopasowanie
-          </h4>
-          
-          <div className="space-y-2">
-            <label className="text-[10px] font-mono text-[#AAA69D] uppercase">Tryb Kadrowania</label>
-            <div className="grid grid-cols-3 gap-1.5 bg-[#181818] p-1 rounded-lg border border-[#2E2E2E]">
-              {(['fit', 'fill', 'original'] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => handleUpdate('fitMode', mode)}
-                  className={`py-1.5 text-xs font-semibold rounded-md transition-all uppercase cursor-pointer ${
-                    (item.fitMode || 'fit') === mode
-                      ? 'bg-[#D4AF37] text-black shadow-md'
-                      : 'text-[#888] hover:text-white'
-                  }`}
-                >
-                  {mode === 'fit' ? 'FIT' : (mode === 'fill' ? 'FILL' : 'ORIG')}
-                </button>
-              ))}
-            </div>
-            <p className="text-[10px] text-[#777] font-mono">
-              {(item.fitMode || 'fit') === 'fit' && 'Cały obraz widoczny bez przycinania.'}
-              {item.fitMode === 'fill' && 'Wypełnia cały kadr (może przyciąć krawędzie).'}
-              {item.fitMode === 'original' && 'Oryginalne proporcje bez skalowania.'}
-            </p>
-          </div>
-
-          <div className="space-y-1.5 pt-1">
-            <label className="text-[10px] font-mono text-[#AAA69D] uppercase">Obrót (Stopnie)</label>
-            <div className="grid grid-cols-4 gap-1.5 bg-[#181818] p-1 rounded-lg border border-[#2E2E2E]">
-              {[0, 90, 180, 270].map((deg) => (
-                <button
-                  key={deg}
-                  type="button"
-                  onClick={() => handleUpdate('rotation', deg)}
-                  className={`py-1 text-xs font-mono font-bold rounded-md transition-all cursor-pointer ${
-                    (item.rotation || 0) === deg
-                      ? 'bg-[#D4AF37] text-black'
-                      : 'text-[#888] hover:text-white'
-                  }`}
-                >
-                  {deg}°
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Transitions (Basic) */}
-        <div className="space-y-3 pt-4 border-t border-[#2A2824]">
-          <h4 className="text-xs font-bold text-[#D4AF37] uppercase flex items-center gap-1.5">
-            <Move className="w-3.5 h-3.5" /> Przejścia
-          </h4>
-          
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-mono text-[#AAA69D]">EFEKT WEJŚCIA</label>
-            <select 
-              value={item.transitionIn || 'cut'}
-              onChange={(e) => handleUpdate('transitionIn', e.target.value)}
-              className="w-full h-11 bg-[#1A1A1A] border border-[#2A2824] rounded-md px-3 text-sm text-white focus:border-[#D4AF37] focus:outline-none"
-            >
-              <option value="cut">Ostre cięcie (Cut)</option>
-              <option value="fade">Zanik z czerni (Fade)</option>
-              <option value="dissolve">Przenikanie (Dissolve)</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Text Title Card Section (Plansze Tekstowe) */}
-        <div className="space-y-4 pt-4 border-t border-[#2A2824]">
-          <div className="flex items-center justify-between">
-            <h4 className="text-xs font-bold text-[#D4AF37] uppercase flex items-center gap-1.5 font-mono">
-              <Type className="w-3.5 h-3.5" /> Plansza Tekstowa (Intro)
-            </h4>
-            <span className="text-[9px] bg-[#2D2411] border border-[#D4AF37]/30 text-[#FDE047] font-bold px-1.5 py-0.5 rounded uppercase">NOWOŚĆ</span>
-          </div>
-
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-[#F2EFE8]">Dodaj przed ujęciem</span>
-            <button 
-              onClick={() => {
-                const isEnabled = !(item.titleCard?.enabled);
-                handleUpdate('titleCard', {
-                  enabled: isEnabled,
-                  text: item.titleCard?.text || 'Rozdział',
-                  duration: item.titleCard?.duration || 3,
-                  style: item.titleCard?.style || 'elegant',
-                  backgroundColor: item.titleCard?.backgroundColor || '#0A0A0A',
-                  subtitle: item.titleCard?.subtitle || ''
-                });
-              }}
-              className={`w-10 h-5 rounded-full relative transition-colors ${item.titleCard?.enabled ? 'bg-[#D4AF37]' : 'bg-[#2A2824]'}`}
-            >
-              <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${item.titleCard?.enabled ? 'left-5' : 'left-0.5'}`} />
-            </button>
-          </div>
-
-          {item.titleCard?.enabled && (
-            <div className="space-y-4 bg-[#181818] p-3 rounded-xl border border-[#2E2E2E]">
-              {/* AI Auto Generate Button */}
-              <button
-                type="button"
-                onClick={() => {
-                  // Smart AI narrative generator based on clip metadata
-                  const clipNameLower = media.name.toLowerCase();
-                  let aiTitle = 'Piękny Dzień';
-                  let aiSub = 'Ujęcia z przygotowań i zabawy';
-
-                  if (clipNameLower.includes('przygotow') || clipNameLower.includes('makeup') || clipNameLower.includes('ubier')) {
-                    if (clipNameLower.includes('mlodego') || clipNameLower.includes('pan_')) {
-                      aiTitle = 'PRZYGOTOWANIA PANA MŁODEGO';
-                      aiSub = 'Ostatnie detale przed najważniejszą drogą';
-                    } else if (clipNameLower.includes('mlodej') || clipNameLower.includes('panna')) {
-                      aiTitle = 'PRZYGOTOWANIA PANNY MŁODEJ';
-                      aiSub = 'Chwile czułości i najpiękniejszych emocji';
-                    } else {
-                      aiTitle = 'PRZYGOTOWANIA ŚLUBNE';
-                      aiSub = 'Oczekiwanie, uśmiech i chwile z najbliższymi';
-                    }
-                  } else if (clipNameLower.includes('koscio') || clipNameLower.includes('slub') || clipNameLower.includes('ceremon')) {
-                    aiTitle = 'UROCZYSTA CEREMONIA';
-                    aiSub = 'Słowa, które połączyły dwa serca na zawsze';
-                  } else if (clipNameLower.includes('tanie') || clipNameLower.includes('pierwsz')) {
-                    aiTitle = 'PIERWSZY TANIEC';
-                    aiSub = 'Wspólny krok w nową drogę życia';
-                  } else if (clipNameLower.includes('bram') || clipNameLower.includes('gosc')) {
-                    aiTitle = 'WESELNI GOŚCIE';
-                    aiSub = 'Radość, uśmiechy i wspólne gratulacje';
-                  } else if (clipNameLower.includes('plener') || clipNameLower.includes('sesja') || clipNameLower.includes('garden')) {
-                    aiTitle = 'ROMANTYCZNA SESJA';
-                    aiSub = 'Zakochani w świetle zachodzącego słońca';
-                  } else if (clipNameLower.includes('zabawa') || clipNameLower.includes('oczepin') || clipNameLower.includes('party')) {
-                    aiTitle = 'WESELNE ŚWIĘTOWANIE';
-                    aiSub = 'Niezapomniana zabawa na parkiecie do białego rana';
-                  } else if (clipNameLower.includes('obraczk') || clipNameLower.includes('pierscie')) {
-                    aiTitle = 'SYMBOLE MIŁOŚCI';
-                    aiSub = 'Obrączki jako znak wiecznej wierności';
-                  } else {
-                    aiTitle = media.name.replace(/\.[^/.]+$/, "").toUpperCase();
-                    aiSub = 'Magiczne momenty uchwycone w kadrze';
-                  }
-
-                  handleUpdate('titleCard', {
-                    ...item.titleCard,
-                    text: aiTitle,
-                    subtitle: aiSub
-                  });
-                }}
-                className="w-full py-2 bg-gradient-to-r from-[#D4AF37] to-[#FDE047] hover:from-[#B5922C] hover:to-[#D4AF37] text-black font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all shadow-md cursor-pointer"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Generuj tytuł przez WeseleAI</span>
-              </button>
-
-              {/* Text Inputs */}
-              <div className="space-y-3">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-mono text-[#AAA69D]">GŁÓWNY TEKST PLANSZY</label>
-                  <input 
-                    type="text" 
-                    value={item.titleCard.text}
-                    onChange={(e) => handleUpdate('titleCard', { ...item.titleCard, text: e.target.value })}
-                    placeholder="Wpisz tekst planszy..."
-                    className="w-full h-10 bg-[#121212] border border-[#2E2E2E] rounded-md px-3 text-sm text-white focus:border-[#D4AF37] focus:outline-none"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-mono text-[#AAA69D]">PODTYTUŁ / OPIS</label>
-                  <input 
-                    type="text" 
-                    value={item.titleCard.subtitle || ''}
-                    onChange={(e) => handleUpdate('titleCard', { ...item.titleCard, subtitle: e.target.value })}
-                    placeholder="Opcjonalny podtytuł planszy..."
-                    className="w-full h-10 bg-[#121212] border border-[#2E2E2E] rounded-md px-3 text-sm text-white focus:border-[#D4AF37] focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              {/* Style Selection */}
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-mono text-[#AAA69D]">STYL TYPOGRAFII</label>
-                <select
-                  value={item.titleCard.style || 'elegant'}
-                  onChange={(e) => handleUpdate('titleCard', { ...item.titleCard, style: e.target.value })}
-                  className="w-full h-10 bg-[#121212] border border-[#2E2E2E] rounded-md px-2 text-xs text-white focus:border-[#D4AF37] focus:outline-none"
-                >
-                  <option value="classic">Retro Classic (Serif)</option>
-                  <option value="elegant">Luksusowy Gold (Serif N.Y.)</option>
-                  <option value="minimalist">Modern Minimal (Sans-Serif)</option>
-                  <option value="cinematic">Cinematic Bold (Impact)</option>
-                </select>
-              </div>
-
-              {/* Background Color */}
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-mono text-[#AAA69D]">TŁO PLANSZY</label>
-                <select
-                  value={item.titleCard.backgroundColor || '#0A0A0A'}
-                  onChange={(e) => handleUpdate('titleCard', { ...item.titleCard, backgroundColor: e.target.value })}
-                  className="w-full h-10 bg-[#121212] border border-[#2E2E2E] rounded-md px-2 text-xs text-white focus:border-[#D4AF37] focus:outline-none"
-                >
-                  <option value="#0A0A0A">Głęboka Czerń (#0A0A0A)</option>
-                  <option value="#1C1917">Ciepły Ciemny Brąz (#1C1917)</option>
-                  <option value="#0F172A">Nastrojowy Granat (#0F172A)</option>
-                  <option value="gradient">Kinowy Gradient (Slate-Gray)</option>
-                </select>
-              </div>
-
-              {/* Duration Slider */}
-              <div className="space-y-1.5">
-                <div className="flex justify-between text-[10px] font-mono text-[#AAA69D]">
-                  <label>CZAS TRWANIA PLANSZY</label>
-                  <span>{item.titleCard.duration || 3}s</span>
-                </div>
-                <input 
-                  type="range" 
-                  min="2" 
-                  max="6" 
-                  step="1"
-                  value={item.titleCard.duration || 3}
-                  onChange={(e) => handleUpdate('titleCard', { ...item.titleCard, duration: parseInt(e.target.value) })}
-                  className="w-full h-6 accent-[#D4AF37]"
-                />
-              </div>
+      {/* Clip Mini Preview & Specs */}
+      <div className="p-3.5 bg-[#141418] border-b border-[#222228] flex items-center gap-3">
+        <div className="w-16 h-12 bg-black rounded-lg overflow-hidden shrink-0 border border-[#2E2E36] relative">
+          {media.thumbnailUrl ? (
+            <img src={media.thumbnailUrl} alt="Thumb" className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-[#1A1A20]">
+              <Film className="w-4 h-4 text-[#666]" />
             </div>
           )}
         </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-bold text-white truncate" title={media.name}>{media.name}</p>
+          <div className="flex items-center gap-2 text-[10px] text-[#888892] font-mono mt-0.5">
+            <span>{media.width}×{media.height}</span>
+            <span>•</span>
+            <span>{media.fps || 30} FPS</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Navigation Sub-Tabs */}
+      <div className="grid grid-cols-5 bg-[#16161A] border-b border-[#222228] text-[10px] font-mono font-bold">
+        {[
+          { id: 'TRANSFORM', label: 'Kadr', icon: Maximize2 },
+          { id: 'COLOR', label: 'Kolor', icon: Sun },
+          { id: 'AUDIO', label: 'Audio', icon: Volume2 },
+          { id: 'TRANSITION', label: 'Przejścia', icon: Sparkles },
+          { id: 'TITLE', label: 'Plansza', icon: Type }
+        ].map(tab => {
+          const Icon = tab.icon;
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as InspectorTab)}
+              className={`py-2.5 flex flex-col items-center justify-center gap-1 border-b-2 transition-all cursor-pointer ${
+                isActive 
+                  ? 'border-[#D4AF37] text-[#D4AF37] bg-[#221D12]' 
+                  : 'border-transparent text-[#777782] hover:text-white hover:bg-[#1A1A20]'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Main Tab Content */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-5 custom-scrollbar text-xs">
+        
+        {/* TAB 1: TRANSFORM & TRIM */}
+        {activeTab === 'TRANSFORM' && (
+          <div className="space-y-4">
+            {/* Precise Trim */}
+            <div className="space-y-2.5 p-3 rounded-xl bg-[#17171C] border border-[#26262E]">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-[#D4AF37] uppercase flex items-center gap-1.5 font-mono text-[11px]">
+                  <Scissors className="w-3.5 h-3.5" /> Precyzyjne Cięcie
+                </span>
+                {onSplit && (
+                  <button 
+                    onClick={handleSplit}
+                    className="text-[10px] bg-[#2A2414] border border-[#3E3420] text-[#D4AF37] hover:text-white px-2 py-1 rounded-md transition-colors cursor-pointer"
+                  >
+                    Podziel na pół
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5 font-mono">
+                <div className="space-y-1">
+                  <label className="text-[10px] text-[#888892]">PUNKT IN (s)</label>
+                  <input 
+                    type="number" 
+                    min="0" 
+                    max={item.sourceEnd - 0.2} 
+                    step="0.033"
+                    value={item.sourceStart.toFixed(2)}
+                    onChange={(e) => handleTrimChange('start', e.target.value)}
+                    className="w-full bg-[#121215] border border-[#2E2E36] rounded-lg px-2.5 py-1.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none"
+                  />
+                  <span className="text-[9px] text-[#666] block">{toTimecode(item.sourceStart)}</span>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] text-[#888892]">PUNKT OUT (s)</label>
+                  <input 
+                    type="number" 
+                    min={item.sourceStart + 0.2} 
+                    max={media.duration} 
+                    step="0.033"
+                    value={item.sourceEnd.toFixed(2)}
+                    onChange={(e) => handleTrimChange('end', e.target.value)}
+                    className="w-full bg-[#121215] border border-[#2E2E36] rounded-lg px-2.5 py-1.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none"
+                  />
+                  <span className="text-[9px] text-[#666] block">{toTimecode(item.sourceEnd)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Fit & Aspect Ratio */}
+            <div className="space-y-2">
+              <label className="text-[11px] font-bold text-white uppercase font-mono block">
+                Tryb Dopasowania Kadru
+              </label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { id: 'fit', label: 'FIT (Całość)' },
+                  { id: 'fill', label: 'FILL (Wypełnij)' },
+                  { id: 'original', label: 'ORIGINAL' }
+                ].map(mode => (
+                  <button
+                    key={mode.id}
+                    onClick={() => handleUpdate('fitMode', mode.id as FitMode)}
+                    className={`p-2 rounded-lg border text-center font-mono text-[10px] transition-all cursor-pointer ${
+                      (item.fitMode || 'fit') === mode.id
+                        ? 'bg-[#2A2414] border-[#D4AF37] text-[#D4AF37] font-bold'
+                        : 'bg-[#18181D] border-[#2A2A32] text-[#888892] hover:text-white'
+                    }`}
+                  >
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Rotation & Speed */}
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <div className="space-y-1">
+                <label className="text-[10px] text-[#888892] uppercase font-mono">Obrót Kątowy</label>
+                <button
+                  onClick={() => {
+                    const currentRot = item.rotation || 0;
+                    const nextRot = (currentRot + 90) % 360;
+                    handleUpdate('rotation', nextRot);
+                  }}
+                  className="w-full py-2 bg-[#18181D] border border-[#2A2A32] hover:border-[#D4AF37] rounded-lg text-white font-mono flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <RotateCw className="w-3 h-3 text-[#D4AF37]" />
+                  <span>{item.rotation || 0}°</span>
+                </button>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] text-[#888892] uppercase font-mono">Prędkość Odtwarzania</label>
+                <select
+                  value={item.speed || 1.0}
+                  onChange={(e) => {
+                    const spd = parseFloat(e.target.value);
+                    const dur = (item.sourceEnd - item.sourceStart) / spd;
+                    onUpdate(item.id, { speed: spd, duration: dur });
+                  }}
+                  className="w-full bg-[#18181D] border border-[#2A2A32] rounded-lg px-2.5 py-2 text-white font-mono focus:border-[#D4AF37] focus:outline-none"
+                >
+                  <option value={0.25}>0.25× (Super Slow)</option>
+                  <option value={0.5}>0.5× (Slow Motion)</option>
+                  <option value={0.75}>0.75× (Subtle Slow)</option>
+                  <option value={1.0}>1.0× (Normalna)</option>
+                  <option value={1.25}>1.25× (Lekko szybciej)</option>
+                  <option value={1.5}>1.5× (Szybka)</option>
+                  <option value={2.0}>2.0× (Timelapse)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Scale Slider */}
+            <div className="space-y-1 pt-2">
+              <div className="flex justify-between text-[10px] font-mono text-[#888892]">
+                <label>SKALA POWIĘKSZENIA</label>
+                <span className="text-[#D4AF37] font-bold">{Math.round((item.scale || 1.0) * 100)}%</span>
+              </div>
+              <input 
+                type="range" 
+                min="0.5" 
+                max="2.5" 
+                step="0.05"
+                value={item.scale || 1.0}
+                onChange={(e) => handleUpdate('scale', parseFloat(e.target.value))}
+                className="w-full h-2 bg-[#24242C] rounded-lg appearance-none cursor-pointer accent-[#D4AF37]"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* TAB 2: COLOR GRADING & LOOKS */}
+        {activeTab === 'COLOR' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-[#D4AF37] uppercase font-mono text-[11px] flex items-center gap-1.5">
+                <Sun className="w-3.5 h-3.5" /> Korekcja Barwna
+              </span>
+              <button
+                onClick={handleResetColor}
+                className="text-[10px] text-[#AAA] hover:text-white flex items-center gap-1 bg-[#1F1F24] px-2 py-1 rounded border border-[#2E2E36] cursor-pointer"
+              >
+                <RotateCcw className="w-2.5 h-2.5" />
+                <span>Resetuj</span>
+              </button>
+            </div>
+
+            {/* Look Preset Selector */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] text-[#888892] uppercase font-mono">LUT / Styl Kinowy</label>
+              <select
+                value={colorAdj.lookPreset || 'none'}
+                onChange={(e) => handleColorUpdate('lookPreset', e.target.value as LookPreset)}
+                className="w-full bg-[#18181D] border border-[#2E2E36] rounded-lg px-2.5 py-2 text-white font-mono focus:border-[#D4AF37] focus:outline-none"
+              >
+                <option value="none">Brak (Naturalny)</option>
+                <option value="golden_hour">✨ Golden Hour (Ciepły blask)</option>
+                <option value="cinematic">🎬 Cinematic Film Look</option>
+                <option value="warm">🔥 Ciepły Romantyczny</option>
+                <option value="cool">❄️ Chłodny Pastel</option>
+                <option value="vintage">🎞️ Vintage 35mm</option>
+                <option value="bw">🖤 Czarno-Biały (B&W)</option>
+                <option value="vivid_master">💎 Czysty Master Kontrast</option>
+              </select>
+            </div>
+
+            {/* Sliders Grid */}
+            <div className="space-y-3 pt-1">
+              {[
+                { id: 'exposure', label: 'Ekspozycja', min: -100, max: 100, step: 1, val: colorAdj.exposure },
+                { id: 'contrast', label: 'Kontrast', min: -100, max: 100, step: 1, val: colorAdj.contrast },
+                { id: 'brightness', label: 'Jasność', min: -100, max: 100, step: 1, val: colorAdj.brightness },
+                { id: 'saturation', label: 'Nasycenie', min: -100, max: 100, step: 1, val: colorAdj.saturation },
+                { id: 'temperature', label: 'Temperatura (Zimny / Ciepły)', min: -100, max: 100, step: 1, val: colorAdj.temperature },
+                { id: 'vignette', label: 'Winieta (Kinowe przyciemnienie)', min: 0, max: 100, step: 1, val: colorAdj.vignette }
+              ].map(sl => (
+                <div key={sl.id} className="space-y-1">
+                  <div className="flex justify-between text-[10px] font-mono text-[#888892]">
+                    <label>{sl.label}</label>
+                    <span className="text-white font-bold">{sl.val > 0 ? `+${sl.val}` : sl.val}</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min={sl.min} 
+                    max={sl.max} 
+                    step={sl.step}
+                    value={sl.val}
+                    onChange={(e) => handleColorUpdate(sl.id as keyof ClipColorAdjustments, parseInt(e.target.value, 10))}
+                    className="w-full h-1.5 bg-[#24242C] rounded-lg appearance-none cursor-pointer accent-[#D4AF37]"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: AUDIO STUDIO */}
+        {activeTab === 'AUDIO' && (
+          <div className="space-y-4">
+            <span className="font-bold text-[#D4AF37] uppercase font-mono text-[11px] flex items-center gap-1.5">
+              <Volume2 className="w-3.5 h-3.5" /> Dźwięk Ścieżki Ujęcia
+            </span>
+
+            <div className="p-3 bg-[#17171C] rounded-xl border border-[#26262E] space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-white font-medium">Wycisz ujęcie</span>
+                <button 
+                  onClick={() => handleUpdate('muted', !item.muted)}
+                  className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${item.muted ? 'bg-rose-600' : 'bg-[#2E2E36]'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${item.muted ? 'left-6' : 'left-1'}`} />
+                </button>
+              </div>
+
+              {!item.muted && (
+                <div className="space-y-3 pt-2 border-t border-[#222228]">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px] font-mono text-[#888892]">
+                      <label>GŁOŚNOŚĆ</label>
+                      <span className="text-[#D4AF37] font-bold">{Math.round(item.volume * 100)}%</span>
+                    </div>
+                    <input 
+                      type="range" 
+                      min="0" 
+                      max="2" 
+                      step="0.05"
+                      value={item.volume}
+                      onChange={(e) => handleUpdate('volume', parseFloat(e.target.value))}
+                      className="w-full h-2 bg-[#24242C] rounded-lg appearance-none cursor-pointer accent-[#D4AF37]"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px] font-mono text-[#888892]">
+                      <label>PANORAMA STEREO (L / R)</label>
+                      <span className="text-white font-bold">{item.pan ? (item.pan > 0 ? `R +${Math.round(item.pan * 100)}%` : `L ${Math.round(item.pan * 100)}%`) : 'Środek'}</span>
+                    </div>
+                    <input 
+                      type="range" 
+                      min="-1" 
+                      max="1" 
+                      step="0.1"
+                      value={item.pan || 0}
+                      onChange={(e) => handleUpdate('pan', parseFloat(e.target.value))}
+                      className="w-full h-1.5 bg-[#24242C] rounded-lg appearance-none cursor-pointer accent-[#D4AF37]"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: TRANSITIONS 2.0 */}
+        {activeTab === 'TRANSITION' && (
+          <div className="space-y-4">
+            <span className="font-bold text-[#D4AF37] uppercase font-mono text-[11px] flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5" /> Przejścia Kinowe 2.0
+            </span>
+
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <label className="text-[10px] text-[#888892] uppercase font-mono">Przejście Początkowe (IN)</label>
+                <select
+                  value={item.transitionIn || 'cut'}
+                  onChange={(e) => handleUpdate('transitionIn', e.target.value as TransitionType)}
+                  className="w-full bg-[#18181D] border border-[#2E2E36] rounded-lg px-2.5 py-2 text-white font-mono focus:border-[#D4AF37] focus:outline-none"
+                >
+                  <option value="cut">Cięcie (Cut)</option>
+                  <option value="fade">Zanikanie (Fade)</option>
+                  <option value="dissolve">Przenikanie (Cross Dissolve)</option>
+                  <option value="dip_black">Do czerni (Dip to Black)</option>
+                  <option value="dip_white">Do bieli (Dip to White)</option>
+                  <option value="zoom">Zoom In/Out</option>
+                  <option value="slide">Przesunięcie (Slide)</option>
+                  <option value="wipe">Wipe (Odsłonięcie)</option>
+                  <option value="blur">Kinowy Blur</option>
+                  <option value="light_leak">✨ Błysk Światła (Light Leak)</option>
+                  <option value="film_burn">🔥 Spalenizna Taśmy (Film Burn)</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] text-[#888892] uppercase font-mono">Przejście Końcowe (OUT)</label>
+                <select
+                  value={item.transitionOut || 'cut'}
+                  onChange={(e) => handleUpdate('transitionOut', e.target.value as TransitionType)}
+                  className="w-full bg-[#18181D] border border-[#2E2E36] rounded-lg px-2.5 py-2 text-white font-mono focus:border-[#D4AF37] focus:outline-none"
+                >
+                  <option value="cut">Cięcie (Cut)</option>
+                  <option value="fade">Zanikanie (Fade)</option>
+                  <option value="dissolve">Przenikanie (Cross Dissolve)</option>
+                  <option value="dip_black">Do czerni (Dip to Black)</option>
+                  <option value="dip_white">Do bieli (Dip to White)</option>
+                  <option value="zoom">Zoom Out</option>
+                  <option value="slide">Przesunięcie (Slide)</option>
+                  <option value="wipe">Wipe (Odsłonięcie)</option>
+                  <option value="blur">Kinowy Blur</option>
+                  <option value="light_leak">✨ Błysk Światła (Light Leak)</option>
+                  <option value="film_burn">🔥 Spalenizna Taśmy (Film Burn)</option>
+                </select>
+              </div>
+
+              <div className="space-y-1 pt-1">
+                <div className="flex justify-between text-[10px] font-mono text-[#888892]">
+                  <label>CZAS TRWANIA PRZEJŚCIA</label>
+                  <span className="text-[#D4AF37] font-bold">{(item.transitionDuration || 0.5).toFixed(1)}s</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="0.2" 
+                  max="2.0" 
+                  step="0.1"
+                  value={item.transitionDuration || 0.5}
+                  onChange={(e) => handleUpdate('transitionDuration', parseFloat(e.target.value))}
+                  className="w-full h-1.5 bg-[#24242C] rounded-lg appearance-none cursor-pointer accent-[#D4AF37]"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 5: TITLE CARDS */}
+        {activeTab === 'TITLE' && (
+          <div className="space-y-4">
+            <span className="font-bold text-[#D4AF37] uppercase font-mono text-[11px] flex items-center gap-1.5">
+              <Type className="w-3.5 h-3.5" /> Plansza Tekstowa Przed Klipem
+            </span>
+
+            <div className="p-3 bg-[#17171C] rounded-xl border border-[#26262E] space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-white font-medium">Włącz planszę</span>
+                <button 
+                  onClick={() => {
+                    const currentCard = item.titleCard || {
+                      enabled: false,
+                      text: media.name.replace(/\.[^/.]+$/, ''),
+                      duration: 3,
+                      style: 'cinematic',
+                      backgroundColor: '#0A0A0A'
+                    };
+                    handleUpdate('titleCard', {
+                      ...currentCard,
+                      enabled: !currentCard.enabled
+                    });
+                  }}
+                  className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${item.titleCard?.enabled ? 'bg-[#D4AF37]' : 'bg-[#2E2E36]'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${item.titleCard?.enabled ? 'left-6' : 'left-1'}`} />
+                </button>
+              </div>
+
+              {item.titleCard?.enabled && (
+                <div className="space-y-3 pt-2 border-t border-[#222228]">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-[#888892] uppercase font-mono">Napis Główny</label>
+                    <input 
+                      type="text"
+                      value={item.titleCard.text}
+                      onChange={(e) => handleUpdate('titleCard', { ...item.titleCard, text: e.target.value })}
+                      className="w-full bg-[#121215] border border-[#2E2E36] rounded-lg px-2.5 py-1.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-[#888892] uppercase font-mono">Podtytuł</label>
+                    <input 
+                      type="text"
+                      value={item.titleCard.subtitle || ''}
+                      placeholder="Opcjonalny podtytuł..."
+                      onChange={(e) => handleUpdate('titleCard', { ...item.titleCard, subtitle: e.target.value })}
+                      className="w-full bg-[#121215] border border-[#2E2E36] rounded-lg px-2.5 py-1.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-[#888892] uppercase font-mono">Styl</label>
+                      <select
+                        value={item.titleCard.style}
+                        onChange={(e) => handleUpdate('titleCard', { ...item.titleCard, style: e.target.value as any })}
+                        className="w-full bg-[#121215] border border-[#2E2E36] rounded-lg px-2 py-1.5 text-white text-xs focus:border-[#D4AF37] focus:outline-none"
+                      >
+                        <option value="cinematic">Kinowy Złoty</option>
+                        <option value="elegant">Elegancki Serif</option>
+                        <option value="classic">Klasyczny</option>
+                        <option value="minimalist">Minimalistyczny</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-[#888892] uppercase font-mono">Czas trwania (s)</label>
+                      <input 
+                        type="number"
+                        min="1"
+                        max="10"
+                        step="0.5"
+                        value={item.titleCard.duration}
+                        onChange={(e) => handleUpdate('titleCard', { ...item.titleCard, duration: parseFloat(e.target.value) || 3 })}
+                        className="w-full bg-[#121215] border border-[#2E2E36] rounded-lg px-2 py-1.5 text-white text-xs focus:border-[#D4AF37] focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
       </div>
     </div>

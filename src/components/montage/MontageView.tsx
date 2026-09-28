@@ -29,6 +29,7 @@ import {
 import type { ProjectState, TimelineItem, MediaClip, FitMode } from '../../types/project';
 import { urlRegistry } from '../../core/media/urlRegistry';
 import { thumbnailCache } from '../../core/media/thumbnailCache';
+import { resolveClipMediaUrl, resolveAudioTrackUrl } from '../../core/media/mediaResolver';
 import { useStudioToast } from '../common/ToastContext';
 
 interface MontageViewProps {
@@ -89,6 +90,9 @@ export function MontageView({
   const timelineTrackRef = useRef<HTMLDivElement>(null);
   const animationFrameRef = useRef<number | null>(null);
   const lastTickTimeRef = useRef<number>(0);
+  const audioPoolRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const offscreenAudioHostRef = useRef<HTMLDivElement>(null);
+  const lastActiveClipIdRef = useRef<string | null>(null);
 
   // Target FPS
   const targetFps = project.settings?.targetFps || 30;
@@ -113,6 +117,54 @@ export function MontageView({
 
   const activeClip = activeTimelineItem ? clipMap.get(activeTimelineItem.clipId) : null;
 
+  // Asynchronously resolve active clip URL if missing or dead
+  const [resolvedClipUrls, setResolvedClipUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!activeClip) return;
+    if (activeClip.objectUrl && (activeClip.objectUrl.startsWith('http') || activeClip.objectUrl.startsWith('data:') || urlRegistry.isAlive(activeClip.objectUrl))) {
+      return;
+    }
+    let isCancelled = false;
+    resolveClipMediaUrl(activeClip).then(fresh => {
+      if (!isCancelled && fresh) {
+        setResolvedClipUrls(prev => ({ ...prev, [activeClip.id]: fresh }));
+      }
+    });
+    return () => { isCancelled = true; };
+  }, [activeClip]);
+
+  const activeMediaSourceUrl = useMemo(() => {
+    if (!activeClip) return '';
+    if (activeClip.objectUrl && (activeClip.objectUrl.startsWith('http') || activeClip.objectUrl.startsWith('data:') || urlRegistry.isAlive(activeClip.objectUrl))) {
+      return activeClip.objectUrl;
+    }
+    if (activeClip.file) {
+      try {
+        const u = urlRegistry.create(activeClip.file);
+        activeClip.objectUrl = u;
+        return u;
+      } catch (e) {}
+    }
+    if (resolvedClipUrls[activeClip.id]) {
+      return resolvedClipUrls[activeClip.id];
+    }
+    if (activeClip.type === 'image') {
+      return activeClip.thumbnailUrl || '';
+    }
+    return '';
+  }, [activeClip, resolvedClipUrls]);
+
+  const activeTitleCard = useMemo(() => {
+    if (!activeTimelineItem?.titleCard?.enabled) return null;
+    const itemOffset = currentTime - activeTimelineItem.timelineStart;
+    const cardDuration = Math.min(Math.max(0.8, activeTimelineItem.duration * 0.35), activeTimelineItem.titleCard.duration || 2.5);
+    if (itemOffset < cardDuration) {
+      return activeTimelineItem.titleCard;
+    }
+    return null;
+  }, [currentTime, activeTimelineItem]);
+
   // Format exact seconds to MM:SS.mmm
   const formatTimePrecise = (sec: number) => {
     const mins = Math.floor(sec / 60);
@@ -132,6 +184,7 @@ export function MontageView({
     if (!isPlaying) {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       if (videoRef.current && !videoRef.current.paused) videoRef.current.pause();
+      audioPoolRef.current.forEach(a => { try { a.pause(); } catch(e) {} });
       return;
     }
 
@@ -141,14 +194,29 @@ export function MontageView({
       const delta = (now - lastTickTimeRef.current) / 1000;
       lastTickTimeRef.current = now;
 
-      setCurrentTime(prev => {
-        const next = prev + delta;
-        if (next >= totalDuration) {
+      const vid = videoRef.current;
+      if (vid && !vid.paused && vid.readyState >= 2 && activeTimelineItem && activeClip?.type === 'video') {
+        const speed = activeTimelineItem.speed || 1;
+        const vidElapsed = Math.max(0, (vid.currentTime - activeTimelineItem.sourceStart) / speed);
+        const syncCurrent = activeTimelineItem.timelineStart + vidElapsed;
+        if (syncCurrent >= totalDuration) {
           setIsPlaying(false);
-          return 0;
+          setCurrentTime(0);
+          lastActiveClipIdRef.current = null;
+          return;
         }
-        return next;
-      });
+        setCurrentTime(syncCurrent);
+      } else {
+        setCurrentTime(prev => {
+          const next = prev + delta;
+          if (next >= totalDuration) {
+            setIsPlaying(false);
+            lastActiveClipIdRef.current = null;
+            return 0;
+          }
+          return next;
+        });
+      }
 
       animationFrameRef.current = requestAnimationFrame(loop);
     };
@@ -157,36 +225,102 @@ export function MontageView({
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlaying, totalDuration]);
+  }, [isPlaying, totalDuration, activeTimelineItem, activeClip]);
 
   // Sync HTML5 video element with active item and currentTime
   useEffect(() => {
     const vid = videoRef.current;
-    if (!vid || !activeTimelineItem || !activeClip) return;
+    if (!vid || !activeTimelineItem || !activeClip || activeClip.type === 'image') {
+      lastActiveClipIdRef.current = null;
+      return;
+    }
 
-    const targetSrc = activeClip.objectUrl || (activeClip.file ? urlRegistry.create(activeClip.file) : '');
-    if (vid.src !== targetSrc && targetSrc) {
-      vid.src = targetSrc;
+    if (activeMediaSourceUrl && vid.src !== activeMediaSourceUrl) {
+      vid.src = activeMediaSourceUrl;
     }
 
     const timeInItem = Math.max(0, currentTime - activeTimelineItem.timelineStart);
-    const targetSourceTime = activeTimelineItem.sourceStart + timeInItem;
+    const speed = activeTimelineItem.speed || 1;
+    const targetSourceTime = activeTimelineItem.sourceStart + (timeInItem * speed);
 
-    if (Math.abs(vid.currentTime - targetSourceTime) > 0.25) {
-      vid.currentTime = targetSourceTime;
+    const isNewClip = lastActiveClipIdRef.current !== activeClip.id;
+    if (isNewClip) {
+      lastActiveClipIdRef.current = activeClip.id;
+      if (Number.isFinite(targetSourceTime)) {
+        try { vid.currentTime = targetSourceTime; } catch (e) {}
+      }
+    } else if (!isPlaying || Math.abs(vid.currentTime - targetSourceTime) > 0.8) {
+      if (Number.isFinite(targetSourceTime)) {
+        try { vid.currentTime = targetSourceTime; } catch (e) {}
+      }
     }
 
-    const finalMuted = isMuted || activeTimelineItem.muted;
-    const finalVolume = finalMuted ? 0 : Math.min(1, Math.max(0, volume * (activeTimelineItem.volume || 1)));
-    vid.muted = finalMuted;
+    const finalMuted = isMuted || Boolean(activeTimelineItem.muted);
+    const finalVolume = finalMuted ? 0 : Math.min(1, Math.max(0, volume * (activeTimelineItem.volume ?? 1)));
+    if (vid.muted !== finalMuted) {
+      vid.muted = finalMuted;
+    }
     vid.volume = finalVolume;
+    vid.playbackRate = speed;
 
     if (isPlaying && vid.paused) {
       vid.play().catch(() => {});
     } else if (!isPlaying && !vid.paused) {
       vid.pause();
     }
-  }, [currentTime, activeTimelineItem, activeClip, isPlaying, volume, isMuted]);
+  }, [currentTime, activeTimelineItem, activeClip, isPlaying, volume, isMuted, activeMediaSourceUrl]);
+
+  // Sync background audio tracks in MontageView
+  useEffect(() => {
+    const audioPool = audioPoolRef.current;
+    (project.audioTracks || []).forEach(track => {
+      let audio = audioPool.get(track.id);
+      if (!audio) {
+        audio = document.createElement('audio');
+        audio.preload = 'auto';
+        if (track.file) {
+          try {
+            audio.src = urlRegistry.create(track.file);
+          } catch (e) {
+            if (track.objectUrl) audio.src = track.objectUrl;
+          }
+        } else if (track.objectUrl) {
+          audio.src = track.objectUrl;
+        } else {
+          resolveAudioTrackUrl(track).then(fresh => {
+            if (fresh && audio) audio.src = fresh;
+          });
+        }
+        if (offscreenAudioHostRef.current && !audio.parentNode) {
+          offscreenAudioHostRef.current.appendChild(audio);
+        }
+        audioPool.set(track.id, audio);
+      }
+
+      const isActive = currentTime >= track.timelineStart && currentTime < track.timelineStart + track.duration;
+      if (isActive && isPlaying && !isMuted && !track.muted) {
+        const trackOffset = currentTime - track.timelineStart;
+        const trackLocalTime = track.sourceStart + trackOffset;
+
+        if (Math.abs(audio.currentTime - trackLocalTime) > 0.4) {
+          if (audio.readyState >= 1) {
+            audio.currentTime = trackLocalTime;
+          }
+        }
+
+        let vol = (track.volume ?? 1) * volume * (project.settings?.audioBalance?.musicVolume ?? 0.8);
+        audio.volume = Math.max(0, Math.min(1, vol));
+
+        if (audio.paused) {
+          audio.play().catch(() => {});
+        }
+      } else {
+        if (!audio.paused) {
+          try { audio.pause(); } catch (e) {}
+        }
+      }
+    });
+  }, [currentTime, isPlaying, isMuted, volume, project.audioTracks, project.settings?.audioBalance]);
 
   // Render lightweight blurred background if 'blur' style is enabled
   useEffect(() => {
@@ -207,10 +341,27 @@ export function MontageView({
 
   const handlePlayToggle = () => {
     if (totalDuration === 0) return;
+    const next = !isPlaying;
     if (currentTime >= totalDuration) {
       setCurrentTime(0);
+      lastActiveClipIdRef.current = null;
     }
-    setIsPlaying(!isPlaying);
+    setIsPlaying(next);
+    if (next) {
+      if (videoRef.current && activeClip?.type === 'video') {
+        videoRef.current.muted = isMuted || Boolean(activeTimelineItem?.muted);
+        videoRef.current.play().catch(() => {});
+      }
+      (project.audioTracks || []).forEach(track => {
+        const audio = audioPoolRef.current.get(track.id);
+        if (audio && !track.muted && !isMuted) {
+          audio.play().catch(() => {});
+        }
+      });
+    } else {
+      if (videoRef.current && !videoRef.current.paused) videoRef.current.pause();
+      audioPoolRef.current.forEach(a => { try { a.pause(); } catch (e) {} });
+    }
   };
 
   const handleStop = () => {
@@ -373,13 +524,51 @@ export function MontageView({
                 />
               )}
 
-              <video
-                ref={videoRef}
-                playsInline
-                className={`relative z-10 w-full h-full pointer-events-none ${
-                  fitStyle === 'fill' ? 'object-cover' : 'object-contain'
-                }`}
+              {activeClip?.type === 'image' ? (
+                <img
+                  src={activeMediaSourceUrl || activeClip.thumbnailUrl || ''}
+                  alt={activeClip.name}
+                  className={`relative z-10 w-full h-full pointer-events-none ${
+                    fitStyle === 'fill' ? 'object-cover' : 'object-contain'
+                  }`}
+                />
+              ) : (
+                <video
+                  ref={videoRef}
+                  playsInline
+                  className={`relative z-10 w-full h-full pointer-events-none ${
+                    fitStyle === 'fill' ? 'object-cover' : 'object-contain'
+                  }`}
+                />
+              )}
+
+              {/* Offscreen Audio Pool Host */}
+              <div
+                ref={offscreenAudioHostRef}
+                style={{ position: 'fixed', bottom: 0, right: 0, width: 16, height: 16, opacity: 0.001, pointerEvents: 'none', zIndex: -9999 }}
+                aria-hidden="true"
               />
+
+              {/* Title Card Overlay Preview */}
+              {activeTitleCard && (
+                <div 
+                  className="absolute inset-0 z-30 flex flex-col items-center justify-center p-8 transition-opacity duration-300 pointer-events-none"
+                  style={{
+                    background: activeTitleCard.backgroundColor === 'gradient'
+                      ? 'linear-gradient(135deg, #111827 0%, #030712 100%)'
+                      : activeTitleCard.backgroundColor || 'rgba(0, 0, 0, 0.85)'
+                  }}
+                >
+                  <h3 className="text-xl sm:text-2xl font-bold font-serif-luxury text-[#F2EFE8] tracking-widest uppercase text-center mb-2">
+                    {activeTitleCard.text}
+                  </h3>
+                  {activeTitleCard.subtitle && (
+                    <p className="text-xs sm:text-sm font-sans tracking-wide text-[#D4AF37] text-center">
+                      {activeTitleCard.subtitle}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Active Clip Badge */}
               {activeClip && (

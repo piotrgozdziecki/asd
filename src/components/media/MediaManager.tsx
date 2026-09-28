@@ -53,6 +53,7 @@ interface MediaManagerProps {
   onEditClip?: (clip: MediaClip) => void;
   onMoveClipOrder?: (fromIndex: number, toIndex: number) => void;
   onOpenChronologicalModal?: () => void;
+  onNavigateToExport?: () => void;
   externalFilterTab?: string;
   onFilterTabChange?: (tab: any) => void;
 }
@@ -73,6 +74,7 @@ export function MediaManager({
   onEditClip,
   onMoveClipOrder,
   onOpenChronologicalModal,
+  onNavigateToExport,
   externalFilterTab,
   onFilterTabChange
 }: MediaManagerProps) {
@@ -82,6 +84,34 @@ export function MediaManager({
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
   const [isVerifyingDurations, setIsVerifyingDurations] = useState(false);
+
+  const handleBatchMergeAndExport = () => {
+    if (clips.length === 0) {
+      toast.showWarning('Dodaj filmy do biblioteki przed scalaniem.');
+      return;
+    }
+    const targetClips = selectedIds.size > 0 
+      ? clips.filter(c => selectedIds.has(c.id)) 
+      : (filteredClips.length > 0 ? filteredClips : clips);
+
+    // Sort chronologically by recording or creation timestamp
+    const sorted = [...targetClips].sort((a, b) => {
+      const timeA = new Date(a.capturedAt || a.createdAt || 0).getTime();
+      const timeB = new Date(b.capturedAt || b.createdAt || 0).getTime();
+      return timeA - timeB;
+    });
+
+    if (onBatchAddToTimeline) {
+      onBatchAddToTimeline(sorted);
+    } else {
+      sorted.forEach(clip => onAddToTimeline(clip));
+    }
+
+    toast.showSuccess(`🎬 Ułożono chronologicznie ${sorted.length} filmów na osi czasu. Przechodzę do eksportu...`);
+    if (onNavigateToExport) {
+      onNavigateToExport();
+    }
+  };
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [verifyMessage, setVerifyMessage] = useState<string | null>(null);
 
@@ -989,6 +1019,17 @@ export function MediaManager({
 
           {/* Action buttons (Scrollable horizontally on mobile/small screens!) */}
           <div className="flex items-center gap-2 shrink-0">
+            {clips.length > 0 && (
+              <button
+                onClick={handleBatchMergeAndExport}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-[#D4AF37] to-[#FDE047] hover:brightness-110 text-black font-extrabold text-xs shadow-md cursor-pointer transition-transform hover:scale-105 active:scale-95 whitespace-nowrap shrink-0"
+                title="Układa ujęcia chronologicznie i przechodzi bezpośrednio do finalizacji i eksportu filmu"
+              >
+                <Play className="w-3.5 h-3.5 fill-black" />
+                <span>Scal i Eksportuj Film</span>
+              </button>
+            )}
+
             {onOpenChronologicalModal && clips.length > 0 && (
               <button
                 onClick={onOpenChronologicalModal}
@@ -1133,12 +1174,21 @@ export function MediaManager({
             )}
 
             <button
-              onClick={handleBatchAddToTimeline}
+              onClick={handleBatchMergeAndExport}
               className="bg-gradient-to-r from-[#D4AF37] to-[#FDE047] hover:brightness-110 text-black font-extrabold text-xs px-3.5 py-2 rounded-lg flex items-center gap-2 shadow-lg cursor-pointer transition-transform hover:scale-105 active:scale-95"
+              title="Scal zaznaczone ujęcia i przejdź bezpośrednio do okna eksportu filmu"
+            >
+              <Play className="w-4 h-4 fill-black" />
+              <span>SCAL I EKSPORTUJ ({selectedIds.size})</span>
+            </button>
+
+            <button
+              onClick={handleBatchAddToTimeline}
+              className="bg-[#24211A] hover:bg-[#342D21] border border-[#D4AF37]/50 text-[#FDE047] font-bold text-xs px-3.5 py-2 rounded-lg flex items-center gap-2 shadow-md cursor-pointer transition-transform hover:scale-105 active:scale-95"
               title="Dodaj wszystkie zaznaczone ujęcia w ustalonej kolejności do montażu"
             >
               <Plus className="w-4 h-4 stroke-[3]" />
-              <span>DODAJ WSZYSTKIE DO MONTAŻU ({selectedIds.size})</span>
+              <span>DODAJ DO MONTAŻU ({selectedIds.size})</span>
             </button>
 
             <select

@@ -141,9 +141,17 @@ export async function probeVideoMetadata(fileOrBlobOrUrl: Blob | File | string, 
       const aspectRatio = calculateAspectRatioString(width, height);
 
       // Web Audio / HTML5 audio check
-      const hasAudio = (video as any).mozHasAudio !== undefined 
-        ? (video as any).mozHasAudio 
-        : Boolean((video as any).audioTracks?.length || (video as any).webkitAudioDecodedByteCount !== 0);
+      let hasAudio = true;
+      if ((video as any).mozHasAudio !== undefined) {
+        hasAudio = Boolean((video as any).mozHasAudio);
+      } else if ((video as any).audioTracks && (video as any).audioTracks.length > 0) {
+        hasAudio = true;
+      } else if ((video as any).webkitAudioDecodedByteCount !== undefined && (video as any).webkitAudioDecodedByteCount > 0) {
+        hasAudio = true;
+      } else {
+        // Standard video recordings from smartphones and cameras contain audio tracks. Default to true so audio is preserved.
+        hasAudio = true;
+      }
 
       // Capture high-quality non-black thumbnail via intelligent cache
       try {

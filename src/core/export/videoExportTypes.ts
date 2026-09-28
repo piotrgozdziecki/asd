@@ -1,6 +1,23 @@
 /**
  * Core types for the unified VideoExportService and Export Pipeline
  */
+import { 
+  ClipColorAdjustments, 
+  LookPreset, 
+  FitMode, 
+  TransitionType, 
+  TextLayer, 
+  TitleCard 
+} from '../../types/project';
+
+export type { 
+  ClipColorAdjustments, 
+  LookPreset, 
+  FitMode, 
+  TransitionType, 
+  TextLayer, 
+  TitleCard 
+};
 
 export type ExportErrorCode =
   | 'DECODER_ERROR'
@@ -34,8 +51,6 @@ export type ExportStage =
   | 'FAILED'
   | 'CANCELLED';
 
-export type FitMode = 'fit' | 'fill' | 'original';
-
 export interface StageDetail {
   stage: ExportStage;
   name: string;
@@ -52,6 +67,8 @@ export interface MediaSource {
   id: string;
   uri: string;
   file?: File;
+  blob?: Blob;
+  type?: 'video' | 'image' | 'audio';
   name: string;
   size: number;
   duration: number;
@@ -78,12 +95,16 @@ export interface TimelineClip {
   duration: number;
   volume: number;
   muted: boolean;
+  pan?: number;
+  speed?: number;
   rotation: number;
   crop?: { x: number; y: number; width: number; height: number };
   fitMode: FitMode;
-  titleCard?: any;
-  transitionIn?: string;
-  transitionOut?: string;
+  smartCropFocus?: 'center' | 'top' | 'face_safe' | 'manual';
+  colorAdjustments?: ClipColorAdjustments;
+  titleCard?: TitleCard;
+  transitionIn?: TransitionType;
+  transitionOut?: TransitionType;
   transitionDuration?: number;
 }
 
@@ -98,13 +119,21 @@ export interface ExportPreset {
   quality: 'standard' | 'high' | 'maximum';
   fitMode: FitMode;
   colorGrade?: string;
+  colorAdjustments?: ClipColorAdjustments;
   letterbox?: string;
+  watermark?: {
+    enabled: boolean;
+    text: string;
+    position: 'bottom_right' | 'top_right' | 'bottom_left' | 'top_left';
+    opacity: number;
+  };
 }
 
 export interface DiagnosticLogEntry {
   timestamp: number;
   category: 
     | 'EXPORT_START'
+    | 'MEDIA_ANALYSIS'
     | 'SOURCE_OPEN'
     | 'SOURCE_PROBED'
     | 'DECODER_CONFIGURED'
@@ -182,6 +211,7 @@ export interface ExportPlan {
   sources: Map<string, MediaSource>;
   clips: TimelineClip[];
   audioTracks?: any[];
+  textLayers?: TextLayer[];
   totalDuration: number;
   totalFrames: number;
   hasAudio: boolean;
@@ -200,6 +230,36 @@ export interface ExportJob {
   finishedAt?: number;
   output?: ExportOutput;
   error?: ExportError;
+}
+
+export type ExportTaskStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
+
+export interface ExportTaskConfig {
+  presetMode: 'FAST' | 'BALANCED' | 'QUALITY' | 'MAX_QUALITY';
+  resolution: '720p' | '1080p' | '4k';
+  fps: number;
+  fitMode: FitMode;
+  colorGrade: 'none' | 'golden_hour' | 'vivid_master' | 'pastel_boho' | 'vintage_35mm' | 'cinematic_noir';
+  letterbox: 'none' | 'cinemascope';
+  title?: string;
+  clipCount?: number;
+  durationSec?: number;
+}
+
+export interface SerialExportTask {
+  id: string;
+  title: string;
+  projectName: string;
+  config: ExportTaskConfig;
+  plan: ExportPlan;
+  status: ExportTaskStatus;
+  progress: ExportProgress | null;
+  output: ExportOutput | null;
+  error: ExportError | null;
+  logs: DiagnosticLogEntry[];
+  createdAt: number;
+  startedAt?: number;
+  completedAt?: number;
 }
 
 export interface DiagnosticsCapabilities {

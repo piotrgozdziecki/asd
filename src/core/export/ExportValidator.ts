@@ -174,14 +174,11 @@ export class ExportValidator {
           try {
             const playPromise = testVideo.play();
             if (playPromise !== undefined) {
-              await playPromise;
+              await playPromise.catch(() => {});
               testVideo.pause();
             }
           } catch (playErr: any) {
-            // Ignore NotAllowedError in headless/uninteracted iframes
-            if (playErr.name !== 'NotAllowedError') {
-              console.warn('[ExportValidator] Ostrzeżenie próbkowania odtwarzania:', playErr);
-            }
+            // Programmatic play without user gesture in sandboxed iframes can reject; metadata & seek already verified
           }
 
           cleanup();
