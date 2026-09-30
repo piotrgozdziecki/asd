@@ -394,6 +394,15 @@ class SoundscapeGenerator {
   }
 
   /**
+   * Generates a WAV Blob from a preset or presetId
+   */
+  public async generateSoundscapeWav(presetOrId: SoundscapePreset | string, durationSeconds: number): Promise<Blob> {
+    const id = typeof presetOrId === 'string' ? presetOrId : presetOrId.id;
+    const buffer = await this.renderPresetToBuffer(id, durationSeconds);
+    return this.bufferToWaveBlob(buffer);
+  }
+
+  /**
    * Generates a ready-to-use WAV File and Blob for timeline integration
    */
   public async generateTrackFile(presetId: string, durationSeconds?: number): Promise<{ file: File; blob: Blob; duration: number }> {

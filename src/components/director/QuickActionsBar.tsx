@@ -10,7 +10,8 @@ import {
   X,
   Check,
   ShieldCheck,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Music
 } from 'lucide-react';
 import { ProjectState, MediaClip } from '../../types/project';
 import { analyzeWholeLibrary } from '../../core/director/videoAnalysisEngine';
@@ -25,6 +26,7 @@ interface QuickActionsBarProps {
   onSelectRatingFilter?: (rating: string) => void;
   onOpenChronologicalModal?: () => void;
   onOpenWeddingNarrativeModal?: () => void;
+  onOpenSoundscapes?: () => void;
 }
 
 export function QuickActionsBar({
@@ -34,7 +36,8 @@ export function QuickActionsBar({
   onNavigateToExport,
   onSelectRatingFilter,
   onOpenChronologicalModal,
-  onOpenWeddingNarrativeModal
+  onOpenWeddingNarrativeModal,
+  onOpenSoundscapes
 }: QuickActionsBarProps) {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [activeActionName, setActiveActionName] = useState<string>('');
@@ -233,6 +236,19 @@ export function QuickActionsBar({
           >
             <SlidersHorizontal className="w-3.5 h-3.5 text-[#F472B6]" />
             <span>Narracja Ślubna (Joanna & Piotr)</span>
+          </button>
+        )}
+
+        {/* 0c. AI Soundscapes & Wedding Music */}
+        {onOpenSoundscapes && (
+          <button
+            onClick={onOpenSoundscapes}
+            disabled={isRunning}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#1A2535] to-[#111A24] hover:from-[#25354D] hover:to-[#172535] border border-sky-500/50 text-sky-300 hover:text-sky-200 cursor-pointer transition-all font-bold disabled:opacity-50 shadow-[0_0_15px_rgba(56,189,248,0.15)] shrink-0 whitespace-nowrap"
+            title="Generator profesjonalnej ścieżki dźwiękowej AI (organy, wiedeński walc, romantyczny fortepian, uroczyste dzwonki)"
+          >
+            <Music className="w-3.5 h-3.5 text-sky-400" />
+            <span>Ścieżka Dźwiękowa AI</span>
           </button>
         )}
 

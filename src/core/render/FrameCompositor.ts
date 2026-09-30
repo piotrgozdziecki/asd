@@ -7,8 +7,10 @@ import {
   TitleCard 
 } from '../../types/project';
 
+export type AnyCanvasContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
 export interface LayerRenderContext {
-  ctx: CanvasRenderingContext2D;
+  ctx: AnyCanvasContext;
   width: number;
   height: number;
   timeSec: number;
@@ -17,6 +19,19 @@ export interface LayerRenderContext {
 }
 
 export class FrameCompositor {
+  /**
+   * Creates an OffscreenCanvas or fallback HTMLCanvasElement for high-throughput headless frame drawing
+   */
+  static createOffscreenCanvas(width: number, height: number): OffscreenCanvas | HTMLCanvasElement {
+    if (typeof OffscreenCanvas !== 'undefined') {
+      return new OffscreenCanvas(width, height);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    return canvas;
+  }
+
   /**
    * Generates composite CSS filter string for granular color grading + LUT look
    */
@@ -107,7 +122,7 @@ export class FrameCompositor {
    * Draw media frame with high precision transform, crop, aspect ratio, and backdrop
    */
   static drawMedia(
-    ctx: CanvasRenderingContext2D,
+    ctx: AnyCanvasContext,
     media: CanvasImageSource,
     srcWidth: number,
     srcHeight: number,
@@ -139,22 +154,28 @@ export class FrameCompositor {
     const targetAspect = targetWidth / targetHeight;
     const aspectDiff = Math.abs(sourceAspect - targetAspect);
 
-    // 1. Ambient Background Blur if significant aspect ratio mismatch and fitMode === 'fit'
-    if (fitMode === 'fit' && aspectDiff > 0.15) {
+    // 1. IV.1 Smart Ambient Background Blur: Eliminates black bars on vertical/horizontal mixed clips
+    const needsSmartBackground = (fitMode === 'fit' || fitMode === 'original') && (aspectDiff > 0.02);
+    if (needsSmartBackground) {
       ctx.save();
-      ctx.filter = 'blur(30px) brightness(0.4) contrast(1.1)';
+      ctx.filter = 'blur(35px) brightness(0.42) contrast(1.15)';
       let bgW = targetWidth;
       let bgH = targetHeight;
       if (sourceAspect > targetAspect) {
         bgH = targetHeight;
-        bgW = targetHeight * sourceAspect;
+        bgW = targetHeight * sourceAspect * 1.05;
       } else {
         bgW = targetWidth;
-        bgH = targetWidth / sourceAspect;
+        bgH = (targetWidth / sourceAspect) * 1.05;
       }
       const bgX = (targetWidth - bgW) / 2;
       const bgY = (targetHeight - bgH) / 2;
       ctx.drawImage(media, bgX, bgY, bgW, bgH);
+      
+      // Semi-transparent dark wash for high contrast against sharp foreground
+      ctx.filter = 'none';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+      ctx.fillRect(0, 0, targetWidth, targetHeight);
       ctx.restore();
     }
 
@@ -231,12 +252,12 @@ export class FrameCompositor {
       ctx.scale(effectiveScale, effectiveScale);
     }
 
-    // Shadow for fitted foreground on ambient background
-    if (fitMode === 'fit' && aspectDiff > 0.15) {
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
-      ctx.shadowBlur = 24;
+    // Drop shadow for fitted foreground on ambient background to create depth
+    if (needsSmartBackground) {
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.75)';
+      ctx.shadowBlur = 28;
       ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 4;
+      ctx.shadowOffsetY = 6;
     }
 
     ctx.drawImage(media, sX, sY, sW, sH, -renderW / 2, -renderH / 2, renderW, renderH);
@@ -251,7 +272,7 @@ export class FrameCompositor {
   /**
    * Applies vignette gradient
    */
-  static applyVignette(ctx: CanvasRenderingContext2D, width: number, height: number, intensity: number): void {
+  static applyVignette(ctx: AnyCanvasContext, width: number, height: number, intensity: number): void {
     if (intensity <= 0) return;
     ctx.save();
     const radius = Math.max(width, height) * 0.75;
@@ -271,7 +292,7 @@ export class FrameCompositor {
    * Renders advanced transition effects (Transitions 2.0)
    */
   static applyTransition(
-    ctx: CanvasRenderingContext2D,
+    ctx: AnyCanvasContext,
     width: number,
     height: number,
     progress: number, // 0.0 (start) to 1.0 (fully active / peak)
@@ -353,7 +374,7 @@ export class FrameCompositor {
    * Renders animated Text / Subtitle / Lower Third Layer with subframe deterministic precision
    */
   static drawTextLayer(
-    ctx: CanvasRenderingContext2D,
+    ctx: AnyCanvasContext,
     width: number,
     height: number,
     layer: TextLayer,
@@ -523,7 +544,7 @@ export class FrameCompositor {
   /**
    * Applies CinemaScope (2.39:1) Hollywood black bars
    */
-  static applyLetterbox(ctx: CanvasRenderingContext2D, width: number, height: number, mode?: string): void {
+  static applyLetterbox(ctx: AnyCanvasContext, width: number, height: number, mode?: string): void {
     if (mode === 'cinemascope') {
       const activeHeight = Math.round(width / 2.39);
       const barHeight = Math.max(0, Math.round((height - activeHeight) / 2));
@@ -539,7 +560,7 @@ export class FrameCompositor {
    * Renders optional watermark branding
    */
   static applyWatermark(
-    ctx: CanvasRenderingContext2D,
+    ctx: AnyCanvasContext,
     width: number,
     height: number,
     watermark?: { enabled: boolean; text: string; position: string; opacity: number }
@@ -579,24 +600,129 @@ export class FrameCompositor {
   }
 
   /**
-   * Renders high-end Title Cards before clips
+   * Renders high-end Title Cards before clips (including Liturgical Church Theme and Outro Gratitude)
    */
-  static drawTitleCard(ctx: CanvasRenderingContext2D, width: number, height: number, card: TitleCard): void {
-    if (card.backgroundColor === 'gradient') {
-      const grad = ctx.createLinearGradient(0, 0, width, height);
-      grad.addColorStop(0, '#111827');
-      grad.addColorStop(1, '#030712');
-      ctx.fillStyle = grad;
-    } else {
-      ctx.fillStyle = card.backgroundColor || '#0A0A0A';
-    }
-    ctx.fillRect(0, 0, width, height);
+  static drawTitleCard(ctx: AnyCanvasContext, width: number, height: number, card: TitleCard): void {
+    ctx.save();
 
-    if (card.style === 'cinematic' || card.style === 'elegant') {
-      ctx.strokeStyle = 'rgba(212, 175, 55, 0.3)';
-      ctx.lineWidth = 1.5;
-      const padding = 40;
+    const fontScale = height / 1080;
+    const isLiturgical = card.style === 'liturgical' || (card.text && card.text.toLowerCase().includes('ślub'));
+    const isOutro = card.cardType === 'outro' || (card.text && (card.text.toLowerCase().includes('dziękujemy') || card.text.toLowerCase().includes('finał')));
+
+    if (isLiturgical) {
+      // Warm deep cathedral background with candlelight amber aura
+      const grad = ctx.createRadialGradient(
+        width / 2, height * 0.45, Math.round(width * 0.1),
+        width / 2, height / 2, Math.round(width * 0.75)
+      );
+      grad.addColorStop(0, '#261C12'); // Warm amber-candlelit cathedral interior
+      grad.addColorStop(0.35, '#17110B');
+      grad.addColorStop(0.7, '#0E0A06');
+      grad.addColorStop(1, '#050403');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, width, height);
+
+      // Gothic / Romanesque Cathedral Arch Framing in burnished gold
+      const archWidth = Math.round(width * 0.78);
+      const archLeft = (width - archWidth) / 2;
+      const archRight = archLeft + archWidth;
+      const archRadius = archWidth / 2;
+      const archTop = Math.round(50 * fontScale);
+      const archBottom = height - Math.round(50 * fontScale);
+      const archCenterY = archTop + archRadius;
+
+      ctx.save();
+      ctx.strokeStyle = 'rgba(212, 175, 55, 0.65)';
+      ctx.lineWidth = Math.max(2, Math.round(2.5 * fontScale));
+
+      // Outer Arch
+      ctx.beginPath();
+      ctx.moveTo(archLeft, archBottom);
+      ctx.lineTo(archLeft, archCenterY);
+      ctx.arc(width / 2, archCenterY, archRadius, Math.PI, 0, false);
+      ctx.lineTo(archRight, archBottom);
+      ctx.stroke();
+
+      // Inner Delicate Hairline
+      ctx.strokeStyle = 'rgba(212, 175, 55, 0.25)';
+      ctx.lineWidth = 1;
+      const innerGap = Math.round(12 * fontScale);
+      ctx.beginPath();
+      ctx.moveTo(archLeft + innerGap, archBottom - innerGap);
+      ctx.lineTo(archLeft + innerGap, archCenterY);
+      ctx.arc(width / 2, archCenterY, Math.max(10, archRadius - innerGap), Math.PI, 0, false);
+      ctx.lineTo(archRight - innerGap, archBottom - innerGap);
+      ctx.stroke();
+      ctx.restore();
+
+      // Sacred Monogram / Golden Liturgical Cross Ornament at the arch apex
+      ctx.save();
+      const crossSize = Math.max(22, Math.round(36 * fontScale));
+      ctx.font = `${crossSize}px serif`;
+      ctx.fillStyle = '#D4AF37';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.shadowColor = 'rgba(212, 175, 55, 0.6)';
+      ctx.shadowBlur = Math.round(16 * fontScale);
+      ctx.fillText('✝', width / 2, archTop + Math.round(24 * fontScale));
+      ctx.restore();
+
+    } else if (isOutro) {
+      // Warm romantic dark royal velvet with golden starlight vignette
+      const grad = ctx.createRadialGradient(
+        width / 2, height / 2, Math.round(width * 0.15),
+        width / 2, height / 2, Math.round(width * 0.8)
+      );
+      grad.addColorStop(0, '#221815');
+      grad.addColorStop(0.45, '#150E0C');
+      grad.addColorStop(1, '#060404');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, width, height);
+
+      // Elegant double frame with corner accents
+      const pad = Math.round(54 * fontScale);
+      ctx.strokeStyle = 'rgba(212, 175, 55, 0.55)';
+      ctx.lineWidth = Math.max(1.5, Math.round(2 * fontScale));
+      ctx.strokeRect(pad, pad, width - pad * 2, height - pad * 2);
+
+      ctx.strokeStyle = 'rgba(212, 175, 55, 0.2)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(pad + 10, pad + 10, width - (pad + 10) * 2, height - (pad + 10) * 2);
+
+      // Heart / Rings Monogram Emblem
+      ctx.save();
+      ctx.font = `${Math.round(34 * fontScale)}px serif`;
+      ctx.fillStyle = '#D4AF37';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.shadowColor = 'rgba(212, 175, 55, 0.8)';
+      ctx.shadowBlur = Math.round(18 * fontScale);
+      ctx.fillText('❦', width / 2, (height / 2) - Math.round(110 * fontScale));
+      ctx.restore();
+
+    } else {
+      // Cinematic / Modern Gradient or solid
+      if (card.backgroundColor === 'gradient') {
+        const grad = ctx.createLinearGradient(0, 0, width, height);
+        grad.addColorStop(0, '#0F172A');
+        grad.addColorStop(0.5, '#0A0E17');
+        grad.addColorStop(1, '#020617');
+        ctx.fillStyle = grad;
+      } else {
+        ctx.fillStyle = card.backgroundColor || '#0A0A0A';
+      }
+      ctx.fillRect(0, 0, width, height);
+
+      // Gold Frame
+      ctx.strokeStyle = 'rgba(212, 175, 55, 0.45)';
+      ctx.lineWidth = Math.max(1.5, Math.round(2 * fontScale));
+      const padding = Math.round(48 * fontScale);
       ctx.strokeRect(padding, padding, width - padding * 2, height - padding * 2);
+
+      ctx.strokeStyle = 'rgba(212, 175, 55, 0.18)';
+      ctx.lineWidth = 1;
+      const innerPadding = padding + Math.round(10 * fontScale);
+      ctx.strokeRect(innerPadding, innerPadding, width - innerPadding * 2, height - innerPadding * 2);
     }
 
     ctx.textAlign = 'center';
@@ -605,43 +731,118 @@ export class FrameCompositor {
     const text = card.text || 'Wprowadzenie';
     const subtitle = card.subtitle || '';
 
-    if (card.style === 'classic') {
-      ctx.font = 'bold 36px Georgia, serif';
-      ctx.fillStyle = '#EADFC9';
+    if (isLiturgical) {
+      // Regal liturgical typography
+      const titleSize = Math.max(28, Math.round(62 * fontScale));
+      const subSize = Math.max(16, Math.round(26 * fontScale));
+
+      ctx.font = `bold ${titleSize}px "Cinzel", "Playfair Display", "Times New Roman", serif`;
+      ctx.fillStyle = '#FFF8EB';
+      ctx.shadowColor = 'rgba(212, 175, 55, 0.75)';
+      ctx.shadowBlur = Math.round(18 * fontScale);
+
+      const titleY = subtitle ? (height / 2) - Math.round(20 * fontScale) : (height / 2);
+      ctx.fillText(text.toUpperCase(), width / 2, titleY);
+
       if (subtitle) {
-        ctx.fillText(text, width / 2, height / 2 - 25);
-        ctx.font = 'italic 20px Georgia, serif';
-        ctx.fillStyle = '#A89E8D';
-        ctx.fillText(subtitle, width / 2, height / 2 + 30);
+        ctx.font = `italic 500 ${subSize}px "Playfair Display", Georgia, serif`;
+        ctx.fillStyle = '#E5C158';
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
+        ctx.shadowBlur = Math.round(10 * fontScale);
+        ctx.fillText(`♦  ${subtitle}  ♦`, width / 2, (height / 2) + Math.round(52 * fontScale));
+      }
+    } else if (isOutro) {
+      // Outro gratitude typography with intelligent word wrap
+      const titleSize = Math.max(28, Math.round(56 * fontScale));
+      const subSize = Math.max(16, Math.round(24 * fontScale));
+
+      ctx.font = `bold ${titleSize}px "Cinzel", "Playfair Display", serif`;
+      ctx.fillStyle = '#FAF5EB';
+      ctx.shadowColor = 'rgba(212, 175, 55, 0.8)';
+      ctx.shadowBlur = Math.round(16 * fontScale);
+      ctx.fillText(text.toUpperCase(), width / 2, (height / 2) - Math.round(40 * fontScale));
+
+      if (subtitle) {
+        ctx.font = `400 ${subSize}px "Playfair Display", Georgia, serif`;
+        ctx.fillStyle = '#E8DFD1';
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.95)';
+        ctx.shadowBlur = Math.round(8 * fontScale);
+
+        // Multi-line wrap for heartwarming thank you note
+        const maxWidth = width * 0.74;
+        const words = subtitle.split(' ');
+        let line = '';
+        let lineY = (height / 2) + Math.round(22 * fontScale);
+        const lineHeight = Math.round(34 * fontScale);
+
+        for (let n = 0; n < words.length; n++) {
+          const testLine = line + words[n] + ' ';
+          const metrics = ctx.measureText(testLine);
+          if (metrics.width > maxWidth && n > 0) {
+            ctx.fillText(line.trim(), width / 2, lineY);
+            line = words[n] + ' ';
+            lineY += lineHeight;
+          } else {
+            line = testLine;
+          }
+        }
+        ctx.fillText(line.trim(), width / 2, lineY);
+      }
+    } else if (card.style === 'classic') {
+      const titleSize = Math.max(22, Math.round(44 * fontScale));
+      const subSize = Math.max(14, Math.round(22 * fontScale));
+      
+      ctx.font = `bold ${titleSize}px "Cinzel", "Playfair Display", Georgia, serif`;
+      ctx.fillStyle = '#F5EBD7';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+      ctx.shadowBlur = Math.round(8 * fontScale);
+
+      if (subtitle) {
+        ctx.fillText(text, width / 2, (height / 2) - Math.round(30 * fontScale));
+        ctx.font = `italic ${subSize}px "Cinzel", Georgia, serif`;
+        ctx.fillStyle = '#D4AF37';
+        ctx.fillText(subtitle, width / 2, (height / 2) + Math.round(35 * fontScale));
       } else {
         ctx.fillText(text, width / 2, height / 2);
       }
     } else if (card.style === 'elegant') {
-      ctx.font = '300 42px "Times New Roman", serif';
+      const titleSize = Math.max(24, Math.round(50 * fontScale));
+      const subSize = Math.max(14, Math.round(20 * fontScale));
+
+      ctx.font = `300 ${titleSize}px "Cinzel", "Playfair Display", "Times New Roman", serif`;
       ctx.fillStyle = '#D4AF37';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
+      ctx.shadowBlur = Math.round(12 * fontScale);
+
       if (subtitle) {
-        ctx.fillText(text.toUpperCase(), width / 2, height / 2 - 30);
-        ctx.font = '300 18px "Times New Roman", serif';
-        ctx.fillStyle = '#EADFC9';
-        ctx.fillText(subtitle, width / 2, height / 2 + 35);
+        ctx.fillText(text.toUpperCase(), width / 2, (height / 2) - Math.round(32 * fontScale));
+        ctx.font = `300 ${subSize}px "Playfair Display", serif`;
+        ctx.fillStyle = '#E8E1D5';
+        ctx.fillText(subtitle, width / 2, (height / 2) + Math.round(40 * fontScale));
       } else {
         ctx.fillText(text.toUpperCase(), width / 2, height / 2);
       }
     } else {
-      ctx.font = 'bold 38px Impact, sans-serif';
-      ctx.fillStyle = '#FFFFFF';
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
-      ctx.shadowBlur = 10;
+      // Cinematic / Modern Luxury
+      const titleSize = Math.max(24, Math.round(52 * fontScale));
+      const subSize = Math.max(14, Math.round(22 * fontScale));
+
+      ctx.font = `bold ${titleSize}px "Cinzel", "Playfair Display", serif`;
+      ctx.fillStyle = '#FDFDFD';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.95)';
+      ctx.shadowBlur = Math.round(14 * fontScale);
+
       if (subtitle) {
-        ctx.fillText(text.toUpperCase(), width / 2, height / 2 - 25);
-        ctx.font = 'italic 18px Georgia, serif';
+        ctx.fillText(text.toUpperCase(), width / 2, (height / 2) - Math.round(30 * fontScale));
+        ctx.font = `italic 500 ${subSize}px "Playfair Display", serif`;
         ctx.fillStyle = '#D4AF37';
-        ctx.shadowBlur = 0;
-        ctx.fillText(subtitle, width / 2, height / 2 + 35);
+        ctx.shadowBlur = Math.round(8 * fontScale);
+        ctx.fillText(subtitle, width / 2, (height / 2) + Math.round(40 * fontScale));
       } else {
         ctx.fillText(text.toUpperCase(), width / 2, height / 2);
       }
-      ctx.shadowBlur = 0;
     }
+
+    ctx.restore();
   }
 }

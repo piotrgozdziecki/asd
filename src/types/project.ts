@@ -126,9 +126,10 @@ export interface TitleCard {
   enabled: boolean;
   text: string;
   duration: number; // default 3 seconds
-  style: 'classic' | 'elegant' | 'minimalist' | 'cinematic';
+  style: 'classic' | 'elegant' | 'minimalist' | 'cinematic' | 'liturgical';
   backgroundColor: string; // hex code or 'gradient'
   subtitle?: string;
+  cardType?: 'intro' | 'scene' | 'outro';
 }
 
 export interface TimelineItem {
@@ -171,6 +172,9 @@ export interface TimelineItem {
 
   // Text Title Card before the clip
   titleCard?: TitleCard;
+
+  // Text Outro Card after the clip (e.g. at the conclusion of the film)
+  outroCard?: TitleCard;
 }
 
 export interface TimelineTrack {
@@ -267,6 +271,7 @@ export interface ProjectSettings {
   colorGrade?: ColorGradingPreset;
   colorAdjustments?: ClipColorAdjustments;
   letterbox?: 'none' | 'cinemascope' | 'standard';
+  outroCard?: TitleCard;
   audioDucking?: boolean;
   duckingIntensity?: number; // 0 to 100%
   masterVolume?: number; // 0.0 to 1.5 (default 1.0)
@@ -274,6 +279,8 @@ export interface ProjectSettings {
     musicVolume: number; // 0 to 1
     clipVolume: number; // 0 to 1
     voiceoverVolume?: number;
+    duckingEnabled?: boolean;
+    duckingAmount?: number;
   };
   performanceMode?: 'quality' | 'balanced' | 'performance';
   useProxyMode?: boolean; // When enabled, uses 540p proxy for timeline & preview (final export always uses originals)
@@ -321,6 +328,13 @@ export interface ProjectState {
   
   versions: ProjectVersion[];
   exportHistory?: ExportHistoryRecord[];
+  audioSettings?: {
+    duckingEnabled?: boolean;
+    duckingAmount?: number;
+    musicVolume?: number;
+    voiceVolume?: number;
+    originalAudioVolume?: number;
+  };
 }
 
 export type AppErrorCode = 

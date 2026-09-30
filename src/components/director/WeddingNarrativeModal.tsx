@@ -232,9 +232,40 @@ export function WeddingNarrativeModal({
       const isActStart = idx % Math.max(1, Math.floor(project.timelineItems.length / totalMoments)) === 0;
       const correspondingMoment = moments[Math.floor((idx / project.timelineItems.length) * totalMoments)] || moments[0];
 
+      if (idx === 0) {
+        return {
+          ...item,
+          transitionIn: 'dip_black',
+          titleCard: {
+            enabled: true,
+            text: `Ślub ${brideName} & ${groomName}`,
+            subtitle: `${weddingDate} • ${locationName}`,
+            duration: 3.5,
+            style: 'liturgical',
+            backgroundColor: '#0F0E0C',
+            cardType: 'intro'
+          }
+        };
+      }
+
+      if (idx === project.timelineItems.length - 1 && project.timelineItems.length > 1) {
+        return {
+          ...item,
+          outroCard: {
+            enabled: true,
+            text: 'Dziękujemy za Wspólne Chwile',
+            subtitle: `${brideName} & ${groomName} • ${weddingDate}`,
+            duration: 4.0,
+            style: 'elegant',
+            backgroundColor: '#0A0805',
+            cardType: 'outro'
+          }
+        };
+      }
+
       return {
         ...item,
-        transitionIn: isActStart ? (idx === 0 ? 'dip_black' : 'dissolve') : item.transitionIn || 'cut',
+        transitionIn: isActStart ? 'dissolve' : item.transitionIn || 'cut',
         titleCard: isActStart ? {
           enabled: false,
           text: correspondingMoment.title,

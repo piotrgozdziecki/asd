@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { 
   Play, 
   Pause, 
@@ -24,9 +24,13 @@ import {
   ArrowRight,
   Monitor,
   Smartphone,
-  Eye
+  Eye,
+  ImageIcon,
+  Gauge,
+  Wand2,
+  Type
 } from 'lucide-react';
-import type { ProjectState, TimelineItem, MediaClip, FitMode } from '../../types/project';
+import type { ProjectState, TimelineItem, MediaClip, FitMode, TransitionType, TitleCard } from '../../types/project';
 import { urlRegistry } from '../../core/media/urlRegistry';
 import { thumbnailCache } from '../../core/media/thumbnailCache';
 import { resolveClipMediaUrl, resolveAudioTrackUrl } from '../../core/media/mediaResolver';
@@ -41,6 +45,227 @@ interface MontageViewProps {
 }
 
 type AspectRatioMode = '16:9' | '9:16' | '4:3' | '1:1';
+
+const formatTimeSimple = (sec: number) => {
+  const mins = Math.floor(sec / 60);
+  const s = (sec % 60).toFixed(1);
+  return `${mins.toString().padStart(2, '0')}:${parseFloat(s) < 10 ? '0' : ''}${s}`;
+};
+
+const formatTimePrecise = (sec: number) => {
+  const mins = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  const ms = Math.floor((sec % 1) * 1000);
+  return `${mins.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+};
+
+/**
+ * Highly optimized, memoized TimelineItemCard
+ * Features:
+ * - Asynchronous, lazy thumbnail and filmstrip loading via IntersectionObserver
+ * - Cached thumbnail reuse from memory-bounded ThumbnailCache
+ * - Isolated from 60fps playhead ticks: does not re-render on currentTime updates
+ * - Multi-frame filmstrip tiles when zoomed in or on longer items
+ */
+interface TimelineItemCardProps {
+  item: TimelineItem;
+  clip: MediaClip | undefined;
+  idx: number;
+  isSelected: boolean;
+  isDraggingThis: boolean;
+  isTargetingThis: boolean;
+  widthPct: number;
+  timelineZoom: number;
+  onSelect: (id: string, start: number) => void;
+  onDragStart: (idx: number, e: React.DragEvent) => void;
+  onDragOver: (idx: number, e: React.DragEvent) => void;
+  onDragLeave: () => void;
+  onDrop: (idx: number, e: React.DragEvent) => void;
+  onResolveClipUrl: (clip: MediaClip) => Promise<string | null>;
+}
+
+const TimelineItemCard = memo(function TimelineItemCard({
+  item,
+  clip,
+  idx,
+  isSelected,
+  isDraggingThis,
+  isTargetingThis,
+  widthPct,
+  timelineZoom,
+  onSelect,
+  onDragStart,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+  onResolveClipUrl
+}: TimelineItemCardProps) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [cachedThumbnails, setCachedThumbnails] = useState<string[]>(() => {
+    if (!clip) return [];
+    const directKey = thumbnailCache.getCachedThumbnail(clip.id, item.sourceStart);
+    if (directKey) return [directKey];
+    if (clip.thumbnailUrl) return [clip.thumbnailUrl];
+    return [];
+  });
+  const [isVisible, setIsVisible] = useState(false);
+
+  // Lazy-load thumbnails only when card enters the viewport or buffer
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setIsVisible(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            setIsVisible(true);
+            observer.disconnect();
+          }
+        });
+      },
+      { rootMargin: '250px' }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Fetch or generate thumbnails when visible
+  useEffect(() => {
+    if (!isVisible || !clip) return;
+
+    let isCancelled = false;
+
+    const loadThumbnails = async () => {
+      // If image, use thumbnail or image source directly
+      if (clip.type === 'image') {
+        const url = clip.thumbnailUrl || clip.objectUrl;
+        if (url && !isCancelled) {
+          setCachedThumbnails([url]);
+        }
+        return;
+      }
+
+      const getUrl = async () => onResolveClipUrl(clip);
+
+      // Determine strip frame count based on zoom and duration
+      const effectivePixelWidth = (widthPct / 100) * 1200 * (timelineZoom / 100);
+      const targetFrames = effectivePixelWidth > 220 && item.duration > 3 ? 3 : (effectivePixelWidth > 110 ? 2 : 1);
+
+      if (targetFrames > 1) {
+        try {
+          const strip = await thumbnailCache.getOrRequestTimelineStrip(
+            clip.id,
+            item.sourceStart,
+            item.duration,
+            getUrl,
+            targetFrames
+          );
+          if (!isCancelled && strip.length > 0) {
+            setCachedThumbnails(strip);
+            return;
+          }
+        } catch (e) {
+          // fallback to single thumbnail
+        }
+      }
+
+      // Single frame at sourceStart
+      try {
+        const thumb = await thumbnailCache.getOrRequestThumbnail(
+          clip.id,
+          item.sourceStart,
+          getUrl,
+          { width: 140, height: 80, quality: 0.65 }
+        );
+        if (!isCancelled && thumb) {
+          setCachedThumbnails([thumb]);
+        } else if (!isCancelled && clip.thumbnailUrl) {
+          setCachedThumbnails([clip.thumbnailUrl]);
+        }
+      } catch (e) {
+        if (!isCancelled && clip.thumbnailUrl) {
+          setCachedThumbnails([clip.thumbnailUrl]);
+        }
+      }
+    };
+
+    loadThumbnails();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [isVisible, clip, item.sourceStart, item.duration, widthPct, timelineZoom, onResolveClipUrl]);
+
+  return (
+    <div
+      ref={cardRef}
+      draggable
+      onDragStart={(e) => onDragStart(idx, e)}
+      onDragOver={(e) => onDragOver(idx, e)}
+      onDragLeave={onDragLeave}
+      onDrop={(e) => onDrop(idx, e)}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect(item.id, item.timelineStart);
+      }}
+      style={{ width: `${widthPct}%` }}
+      className={`h-full border-r border-[#121215] p-2 flex flex-col justify-between overflow-hidden transition-all relative cursor-grab active:cursor-grabbing select-none ${
+        isDraggingThis ? 'opacity-40 scale-95 shadow-inner' : ''
+      } ${
+        isTargetingThis ? 'border-l-4 border-l-[#D4AF37]' : ''
+      } ${
+        isSelected 
+          ? 'bg-[#2E2818] border-t-2 border-t-[#D4AF37] shadow-lg z-10' 
+          : 'bg-[#18181C] hover:bg-[#222228]'
+      }`}
+    >
+      {/* Background Filmstrip / Cached Thumbnail Preview with smooth gradient overlay */}
+      {cachedThumbnails.length > 0 ? (
+        <div className="absolute inset-0 flex pointer-events-none overflow-hidden opacity-30">
+          {cachedThumbnails.map((tUrl, tIdx) => (
+            <div 
+              key={tIdx}
+              className="flex-1 h-full bg-cover bg-center border-r border-black/40 last:border-r-0 transition-opacity duration-300"
+              style={{ backgroundImage: `url(${tUrl})` }}
+            />
+          ))}
+          {/* Subtle gradient vignette for text readability */}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-black/70" />
+        </div>
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-10">
+          <Film className="w-8 h-8 text-white" />
+        </div>
+      )}
+
+      {/* Header in Clip */}
+      <div className="relative z-10 flex items-center justify-between text-[11px] font-mono drop-shadow-sm">
+        <span className="font-bold text-white px-1 py-0.5 rounded bg-black/60 backdrop-blur-sm">
+          #{idx + 1}
+        </span>
+        <span className="text-[10px] text-[#E5C158] font-bold px-1 py-0.5 rounded bg-black/60 backdrop-blur-sm">
+          {item.duration.toFixed(1)}s
+        </span>
+      </div>
+
+      {/* Clip Name */}
+      <div className="relative z-10 text-[11px] text-[#EEE] truncate font-medium drop-shadow-sm px-0.5">
+        {clip?.name || 'Ujęcie'}
+      </div>
+
+      {/* Timeline In/Out boundaries */}
+      <div className="relative z-10 text-[9px] text-[#A5A5B0] font-mono flex justify-between drop-shadow-sm px-0.5">
+        <span className="bg-black/40 px-1 rounded">{formatTimeSimple(item.timelineStart)}</span>
+        <span className="bg-black/40 px-1 rounded">{formatTimeSimple(item.timelineStart + item.duration)}</span>
+      </div>
+    </div>
+  );
+});
 
 export function MontageView({
   project,
@@ -83,6 +308,9 @@ export function MontageView({
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
+  // Hover Scrub Tooltip
+  const [hoverPosition, setHoverPosition] = useState<{ xPct: number; timeSec: number } | null>(null);
+
   // DOM Refs
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -108,6 +336,9 @@ export function MontageView({
   const selectedItem = sortedItems.find(i => i.id === selectedItemId);
   const selectedClip = selectedItem ? clipMap.get(selectedItem.clipId) : null;
 
+  // Selected Clip thumbnail state for Inspector
+  const [inspectorThumbnail, setInspectorThumbnail] = useState<string | null>(null);
+
   // Find active item at currentTime
   const activeTimelineItem = useMemo(() => {
     return sortedItems.find(item => 
@@ -120,19 +351,68 @@ export function MontageView({
   // Asynchronously resolve active clip URL if missing or dead
   const [resolvedClipUrls, setResolvedClipUrls] = useState<Record<string, string>>({});
 
+  const resolveClipUrl = useCallback(async (clip: MediaClip): Promise<string | null> => {
+    if (!clip) return null;
+    if (clip.objectUrl && (clip.objectUrl.startsWith('http') || clip.objectUrl.startsWith('data:') || urlRegistry.isAlive(clip.objectUrl))) {
+      return clip.objectUrl;
+    }
+    if (clip.file) {
+      try {
+        const u = urlRegistry.create(clip.file);
+        clip.objectUrl = u;
+        return u;
+      } catch (e) {}
+    }
+    const fresh = await resolveClipMediaUrl(clip);
+    if (fresh) {
+      setResolvedClipUrls(prev => ({ ...prev, [clip.id]: fresh }));
+      return fresh;
+    }
+    return null;
+  }, []);
+
   useEffect(() => {
     if (!activeClip) return;
     if (activeClip.objectUrl && (activeClip.objectUrl.startsWith('http') || activeClip.objectUrl.startsWith('data:') || urlRegistry.isAlive(activeClip.objectUrl))) {
       return;
     }
     let isCancelled = false;
-    resolveClipMediaUrl(activeClip).then(fresh => {
+    resolveClipUrl(activeClip).then(fresh => {
       if (!isCancelled && fresh) {
         setResolvedClipUrls(prev => ({ ...prev, [activeClip.id]: fresh }));
       }
     });
     return () => { isCancelled = true; };
-  }, [activeClip]);
+  }, [activeClip, resolveClipUrl]);
+
+  // Update Inspector thumbnail when selected item or trim changes
+  useEffect(() => {
+    if (!selectedClip || !selectedItem) {
+      setInspectorThumbnail(null);
+      return;
+    }
+    let isCancelled = false;
+    const direct = thumbnailCache.getCachedThumbnail(selectedClip.id, selectedItem.sourceStart);
+    if (direct) {
+      setInspectorThumbnail(direct);
+      return;
+    }
+    if (selectedClip.thumbnailUrl) {
+      setInspectorThumbnail(selectedClip.thumbnailUrl);
+    }
+    thumbnailCache.getOrRequestThumbnail(
+      selectedClip.id,
+      selectedItem.sourceStart,
+      () => resolveClipUrl(selectedClip),
+      { width: 240, height: 135, quality: 0.72 }
+    ).then((thumb) => {
+      if (!isCancelled && thumb) {
+        setInspectorThumbnail(thumb);
+      }
+    });
+
+    return () => { isCancelled = true; };
+  }, [selectedClip, selectedItem?.sourceStart, resolveClipUrl]);
 
   const activeMediaSourceUrl = useMemo(() => {
     if (!activeClip) return '';
@@ -164,20 +444,6 @@ export function MontageView({
     }
     return null;
   }, [currentTime, activeTimelineItem]);
-
-  // Format exact seconds to MM:SS.mmm
-  const formatTimePrecise = (sec: number) => {
-    const mins = Math.floor(sec / 60);
-    const s = Math.floor(sec % 60);
-    const ms = Math.floor((sec % 1) * 1000);
-    return `${mins.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
-  };
-
-  const formatTimeSimple = (sec: number) => {
-    const mins = Math.floor(sec / 60);
-    const s = (sec % 60).toFixed(1);
-    return `${mins.toString().padStart(2, '0')}:${parseFloat(s) < 10 ? '0' : ''}${s}`;
-  };
 
   // Playback Loop via rAF
   useEffect(() => {
@@ -442,7 +708,7 @@ export function MontageView({
     }
   };
 
-  // Keyboard Shortcuts (Space for Play/Pause, J/K/L, Left/Right)
+  // Keyboard Shortcuts (Space for Play/Pause, Left/Right)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -462,6 +728,62 @@ export function MontageView({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [isPlaying, totalDuration, currentTime]);
+
+  // Handle timeline track click
+  const handleTrackClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const pct = Math.max(0, Math.min(1, clickX / rect.width));
+    handleSeek(pct * totalDuration);
+  }, [totalDuration]);
+
+  // Handle hover scrub move
+  const handleTrackMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const xPct = Math.max(0, Math.min(100, (x / rect.width) * 100));
+    const timeSec = (xPct / 100) * totalDuration;
+    setHoverPosition({ xPct, timeSec });
+  }, [totalDuration]);
+
+  const handleTrackMouseLeave = useCallback(() => {
+    setHoverPosition(null);
+  }, []);
+
+  // Drag handlers
+  const handleCardDragStart = useCallback((idx: number, e: React.DragEvent) => {
+    e.stopPropagation();
+    setDraggedIdx(idx);
+    e.dataTransfer.setData('text/plain', String(idx));
+    e.dataTransfer.effectAllowed = 'move';
+  }, []);
+
+  const handleCardDragOver = useCallback((idx: number, e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverIdx !== idx) setDragOverIdx(idx);
+  }, [dragOverIdx]);
+
+  const handleCardDragLeave = useCallback(() => {
+    setDragOverIdx(null);
+  }, []);
+
+  const handleCardDrop = useCallback((idx: number, e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const fromIdx = Number(e.dataTransfer.getData('text/plain'));
+    setDraggedIdx(null);
+    setDragOverIdx(null);
+    if (!isNaN(fromIdx) && fromIdx !== idx) {
+      onMoveTimelineItemOrder(fromIdx, idx);
+      toast.showSuccess(`Przestawiono ujęcie na pozycję #${idx + 1}`);
+    }
+  }, [onMoveTimelineItemOrder, toast]);
+
+  const handleCardSelect = useCallback((id: string, start: number) => {
+    setSelectedItemId(id);
+    handleSeek(start);
+  }, []);
 
   return (
     <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-4 sm:py-6 flex flex-col gap-5 sm:gap-6">
@@ -711,12 +1033,12 @@ export function MontageView({
             </div>
           </div>
 
-          {/* Timeline 2.0 Sequence Section */}
+          {/* Timeline 2.0 Sequence Section with Thumbnail Caching */}
           <div className="bg-[#121215] border border-[#26262B] rounded-2xl p-4 sm:p-5 shadow-xl space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-mono text-[#888892]">
               <span className="uppercase flex items-center gap-2 text-white font-semibold">
                 <Layers className="w-4 h-4 text-[#D4AF37]" />
-                Oś Czasu 2.0 • Kolejność ({sortedItems.length} ujęć)
+                Oś Czasu 2.0 • Kolejność i Buforowane Klatki ({sortedItems.length} ujęć)
               </span>
 
               {/* Timeline Zoom Controls */}
@@ -748,18 +1070,24 @@ export function MontageView({
             {/* Scrollable Track Container */}
             <div 
               ref={timelineTrackRef}
+              onWheel={(e) => {
+                if (timelineTrackRef.current && (e.shiftKey || Math.abs(e.deltaX) > 0 || Math.abs(e.deltaY) > 0)) {
+                  // Allow smooth horizontal scrolling with mouse wheel
+                  if (!e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+                    timelineTrackRef.current.scrollLeft += e.deltaY;
+                  }
+                }
+              }}
               className="w-full overflow-x-auto overflow-y-hidden custom-scrollbar pb-1 select-none"
             >
               <div 
                 style={{ width: `${timelineZoom}%`, minWidth: '100%' }}
-                onClick={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const clickX = e.clientX - rect.left;
-                  const pct = Math.max(0, Math.min(1, clickX / rect.width));
-                  handleSeek(pct * totalDuration);
-                }}
-                className="relative h-20 bg-[#161619] rounded-xl border border-[#28282E] overflow-hidden flex cursor-pointer transition-[width] duration-150"
+                onClick={handleTrackClick}
+                onMouseMove={handleTrackMouseMove}
+                onMouseLeave={handleTrackMouseLeave}
+                className="relative h-20 bg-[#141417] rounded-xl border border-[#28282E] overflow-hidden flex cursor-pointer transition-[width] duration-150 shadow-inner"
               >
+                {/* Render Memoized Timeline Item Blocks */}
                 {sortedItems.map((item, idx) => {
                   const clip = clipMap.get(item.clipId);
                   const widthPct = Math.max(3, (item.duration / Math.max(0.1, totalDuration)) * 100);
@@ -768,82 +1096,42 @@ export function MontageView({
                   const isTargetingThis = dragOverIdx === idx;
 
                   return (
-                    <div
+                    <TimelineItemCard
                       key={item.id}
-                      draggable
-                      onDragStart={(e) => {
-                        e.stopPropagation();
-                        setDraggedIdx(idx);
-                        e.dataTransfer.setData('text/plain', String(idx));
-                        e.dataTransfer.effectAllowed = 'move';
-                      }}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = 'move';
-                        if (dragOverIdx !== idx) setDragOverIdx(idx);
-                      }}
-                      onDragLeave={() => {
-                        if (dragOverIdx === idx) setDragOverIdx(null);
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const fromIdx = Number(e.dataTransfer.getData('text/plain'));
-                        setDraggedIdx(null);
-                        setDragOverIdx(null);
-                        if (!isNaN(fromIdx) && fromIdx !== idx) {
-                          onMoveTimelineItemOrder(fromIdx, idx);
-                          toast.showSuccess(`Przestawiono ujęcie na pozycję #${idx + 1}`);
-                        }
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedItemId(item.id);
-                        handleSeek(item.timelineStart);
-                      }}
-                      style={{ width: `${widthPct}%` }}
-                      className={`h-full border-r border-[#121215] p-2 flex flex-col justify-between overflow-hidden transition-all relative cursor-grab active:cursor-grabbing ${
-                        isDraggingThis ? 'opacity-40 scale-95 shadow-inner' : ''
-                      } ${
-                        isTargetingThis ? 'border-l-4 border-l-[#D4AF37]' : ''
-                      } ${
-                        isSelected 
-                          ? 'bg-[#2E2818] border-t-2 border-t-[#D4AF37] shadow-md z-10' 
-                          : 'bg-[#1C1C20] hover:bg-[#24242A]'
-                      }`}
-                    >
-                      {/* Background Mini-strip preview */}
-                      {clip?.thumbnailUrl && (
-                        <div 
-                          className="absolute inset-0 opacity-15 pointer-events-none bg-cover bg-center"
-                          style={{ backgroundImage: `url(${clip.thumbnailUrl})` }}
-                        />
-                      )}
-
-                      {/* Header in Clip */}
-                      <div className="relative z-10 flex items-center justify-between text-[11px] font-mono">
-                        <span className="font-bold text-white">#{idx + 1}</span>
-                        <span className="text-[10px] text-[#E5C158] font-bold">{item.duration.toFixed(1)}s</span>
-                      </div>
-
-                      {/* Clip Name */}
-                      <div className="relative z-10 text-[11px] text-[#DDD] truncate font-medium">
-                        {clip?.name || 'Ujęcie'}
-                      </div>
-
-                      {/* Timeline In/Out boundaries */}
-                      <div className="relative z-10 text-[9px] text-[#888892] font-mono flex justify-between">
-                        <span>{formatTimeSimple(item.timelineStart)}</span>
-                        <span>{formatTimeSimple(item.timelineStart + item.duration)}</span>
-                      </div>
-                    </div>
+                      item={item}
+                      clip={clip}
+                      idx={idx}
+                      isSelected={isSelected}
+                      isDraggingThis={isDraggingThis}
+                      isTargetingThis={isTargetingThis}
+                      widthPct={widthPct}
+                      timelineZoom={timelineZoom}
+                      onSelect={handleCardSelect}
+                      onDragStart={handleCardDragStart}
+                      onDragOver={handleCardDragOver}
+                      onDragLeave={handleCardDragLeave}
+                      onDrop={handleCardDrop}
+                      onResolveClipUrl={resolveClipUrl}
+                    />
                   );
                 })}
 
-                {/* Smooth Playhead Marker */}
+                {/* Hover Scrubbing Playhead & Time Preview */}
+                {hoverPosition && (
+                  <div
+                    className="absolute top-0 bottom-0 w-px bg-white/50 pointer-events-none z-15 flex flex-col items-center"
+                    style={{ left: `${hoverPosition.xPct}%` }}
+                  >
+                    <div className="absolute -top-1 bg-black/90 text-white font-mono text-[9px] px-1.5 py-0.5 rounded border border-white/20 whitespace-nowrap shadow-md">
+                      {formatTimeSimple(hoverPosition.timeSec)}
+                    </div>
+                  </div>
+                )}
+
+                {/* Smooth Real-Time Playhead Marker */}
                 {totalDuration > 0 && (
                   <div 
-                    className="absolute top-0 bottom-0 w-0.5 bg-[#FDE047] pointer-events-none z-20 shadow-[0_0_10px_rgba(253,224,71,0.9)]"
+                    className="absolute top-0 bottom-0 w-0.5 bg-[#FDE047] pointer-events-none z-20 shadow-[0_0_10px_rgba(253,224,71,0.9)] transition-[left] duration-75"
                     style={{ left: `${(currentTime / totalDuration) * 100}%` }}
                   >
                     <div className="w-3 h-3 -ml-1.5 -top-1.5 bg-[#FDE047] rotate-45 rounded-sm shadow-md" />
@@ -859,12 +1147,15 @@ export function MontageView({
               {/* Top Row: Clip Meta & Actions */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#222226] pb-4">
                 <div className="flex items-center gap-3">
-                  <div className="w-14 h-10 rounded-xl bg-black overflow-hidden border border-[#303038] shrink-0">
-                    {selectedClip.thumbnailUrl ? (
-                      <img src={selectedClip.thumbnailUrl} alt={selectedClip.name} className="w-full h-full object-cover" />
+                  <div className="w-16 h-12 rounded-xl bg-black overflow-hidden border border-[#303038] shrink-0 relative flex items-center justify-center">
+                    {inspectorThumbnail ? (
+                      <img src={inspectorThumbnail} alt={selectedClip.name} className="w-full h-full object-cover" />
                     ) : (
-                      <Film className="w-5 h-5 m-auto text-[#666]" />
+                      <Film className="w-5 h-5 text-[#666]" />
                     )}
+                    <span className="absolute bottom-1 right-1 bg-black/70 text-[9px] font-mono text-white px-1 rounded">
+                      {selectedClip.type === 'image' ? 'IMG' : 'VID'}
+                    </span>
                   </div>
                   <div>
                     <h3 className="text-sm sm:text-base font-bold text-white truncate max-w-sm sm:max-w-md">
@@ -904,7 +1195,7 @@ export function MontageView({
                 </div>
               </div>
 
-              {/* Exact Trim 2.0 Numeric Readout (Req 7: START 00:13.240, END 00:41.820, DURATION 00:28.580) */}
+              {/* Exact Trim 2.0 Numeric Readout (START, END, DURATION) */}
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="text-xs font-bold text-[#D4AF37] uppercase font-mono flex items-center gap-2">
@@ -1055,6 +1346,158 @@ export function MontageView({
                     className="w-full accent-[#D4AF37] disabled:opacity-30 cursor-pointer"
                   />
                 </div>
+              </div>
+
+              {/* Row 2: Speed (Slow Motion) & Transitions */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-[#222226]">
+                {/* Speed Controls */}
+                <div>
+                  <div className="flex justify-between items-center mb-1.5">
+                    <label className="text-[11px] font-mono text-[#888892] uppercase font-medium flex items-center gap-1.5">
+                      <Gauge className="w-3.5 h-3.5 text-[#D4AF37]" />
+                      Prędkość Ujęcia (Slow-Motion)
+                    </label>
+                    <span className="text-xs font-mono font-bold text-[#D4AF37]">
+                      {selectedItem.speed || 1.0}x
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-6 gap-1 bg-[#18181C] p-1 rounded-xl border border-[#28282E]">
+                    {[
+                      { val: 0.5, label: '0.5x' },
+                      { val: 0.75, label: '0.75x' },
+                      { val: 1.0, label: '1.0x' },
+                      { val: 1.25, label: '1.25x' },
+                      { val: 1.5, label: '1.5x' },
+                      { val: 2.0, label: '2.0x' }
+                    ].map(spd => (
+                      <button
+                        key={spd.val}
+                        onClick={() => {
+                          const newSpeed = spd.val;
+                          const newDuration = (selectedItem.sourceEnd - selectedItem.sourceStart) / newSpeed;
+                          onUpdateTimelineItem(selectedItem.id, { speed: newSpeed, duration: newDuration });
+                        }}
+                        className={`py-1.5 text-xs font-mono font-bold rounded-lg cursor-pointer transition-all ${
+                          (selectedItem.speed || 1.0) === spd.val
+                            ? 'bg-[#D4AF37] text-black shadow-md'
+                            : 'text-[#888892] hover:text-white'
+                        }`}
+                      >
+                        {spd.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Transitions */}
+                <div>
+                  <label className="text-[11px] font-mono text-[#888892] uppercase block mb-1.5 font-medium flex items-center gap-1.5">
+                    <Wand2 className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    Przejście Wejściowe (Transition)
+                  </label>
+                  <div className="grid grid-cols-5 gap-1 bg-[#18181C] p-1 rounded-xl border border-[#28282E]">
+                    {[
+                      { id: 'cut', label: 'Cięcie' },
+                      { id: 'dissolve', label: 'Przenik.' },
+                      { id: 'dip_black', label: 'Czerń' },
+                      { id: 'dip_white', label: 'Biel' },
+                      { id: 'light_leak', label: 'Błysk' }
+                    ].map(tr => (
+                      <button
+                        key={tr.id}
+                        onClick={() => onUpdateTimelineItem(selectedItem.id, { transitionIn: tr.id as TransitionType })}
+                        className={`py-1.5 text-[11px] font-bold rounded-lg uppercase cursor-pointer transition-all ${
+                          (selectedItem.transitionIn || 'cut') === tr.id
+                            ? 'bg-[#D4AF37] text-black shadow-md'
+                            : 'text-[#888892] hover:text-white'
+                        }`}
+                      >
+                        {tr.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Row 3: Title Card Overlay on Clip */}
+              <div className="pt-3 border-t border-[#222226] bg-[#151518] p-4 rounded-xl border border-[#24242A]">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Type className="w-4 h-4 text-[#D4AF37]" />
+                    <span className="text-xs font-bold text-white uppercase font-mono">
+                      Plansza Tytułowa / Podpis Sceny przed Klipem
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const enabled = !selectedItem.titleCard?.enabled;
+                      onUpdateTimelineItem(selectedItem.id, {
+                        titleCard: {
+                          enabled,
+                          text: selectedItem.titleCard?.text || selectedClip.name.replace(/\.[^/.]+$/, ""),
+                          subtitle: selectedItem.titleCard?.subtitle || 'Joanna & Piotr',
+                          duration: selectedItem.titleCard?.duration || 3.0,
+                          style: selectedItem.titleCard?.style || 'liturgical',
+                          backgroundColor: selectedItem.titleCard?.backgroundColor || '#0F0E0C'
+                        }
+                      });
+                    }}
+                    className={`px-3 py-1 text-xs rounded-lg font-mono font-bold transition-all cursor-pointer ${
+                      selectedItem.titleCard?.enabled
+                        ? 'bg-[#D4AF37] text-black'
+                        : 'bg-[#202026] text-[#888] hover:text-white'
+                    }`}
+                  >
+                    {selectedItem.titleCard?.enabled ? 'WŁĄCZONA' : 'WYŁĄCZONA'}
+                  </button>
+                </div>
+
+                {selectedItem.titleCard?.enabled && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+                    <div>
+                      <label className="text-[10px] font-mono text-[#888] uppercase block mb-1">Tytuł Główny</label>
+                      <input
+                        type="text"
+                        value={selectedItem.titleCard.text}
+                        onChange={(e) => onUpdateTimelineItem(selectedItem.id, {
+                          titleCard: { ...selectedItem.titleCard!, text: e.target.value }
+                        })}
+                        placeholder="np. Ślub Joanny i Piotra"
+                        className="w-full bg-[#0E0E10] border border-[#2E2E36] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-[#D4AF37]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-mono text-[#888] uppercase block mb-1">Podtytuł / Data</label>
+                      <input
+                        type="text"
+                        value={selectedItem.titleCard.subtitle || ''}
+                        onChange={(e) => onUpdateTimelineItem(selectedItem.id, {
+                          titleCard: { ...selectedItem.titleCard!, subtitle: e.target.value }
+                        })}
+                        placeholder="np. 15 Sierpnia 2026 • Kościół Św. Anny"
+                        className="w-full bg-[#0E0E10] border border-[#2E2E36] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-[#D4AF37]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-mono text-[#888] uppercase block mb-1">Styl Planszy</label>
+                      <select
+                        value={selectedItem.titleCard.style}
+                        onChange={(e) => onUpdateTimelineItem(selectedItem.id, {
+                          titleCard: { ...selectedItem.titleCard!, style: e.target.value as any }
+                        })}
+                        className="w-full bg-[#0E0E10] border border-[#2E2E36] rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-[#D4AF37]"
+                      >
+                        <option value="liturgical">✝ Sakralny / Kościelny (Złoty Łuk)</option>
+                        <option value="elegant">❦ Elegancki Szeryfowy</option>
+                        <option value="cinematic">✦ Kinowy (Cinematic)</option>
+                        <option value="classic">Klasyczny</option>
+                        <option value="minimalist">Minimalistyczny</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

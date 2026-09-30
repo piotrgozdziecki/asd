@@ -664,12 +664,52 @@ export function PreviewPlayer({
               }}
             >
               {/* Subtle cinematic borders */}
-              {(activeTitleCard.style === 'cinematic' || activeTitleCard.style === 'elegant') && (
+              {(activeTitleCard.style === 'cinematic' || activeTitleCard.style === 'elegant') && activeTitleCard.cardType !== 'outro' && (
                 <div className="absolute inset-6 border border-amber-400/20 pointer-events-none" />
               )}
+
+              {/* Liturgical Church Cathedral Framing */}
+              {(activeTitleCard.style === 'liturgical' || (activeTitleCard.text && activeTitleCard.text.toLowerCase().includes('ślub'))) && (
+                <div className="absolute inset-4 sm:inset-8 border-2 border-[#D4AF37]/50 rounded-t-[120px] pointer-events-none shadow-[inset_0_0_40px_rgba(212,175,55,0.15)] flex flex-col items-center">
+                  <div className="absolute -top-4 px-3 bg-[#17110B] text-[#D4AF37] text-lg font-serif">✝</div>
+                </div>
+              )}
+
+              {/* Outro Double Golden Frame */}
+              {(activeTitleCard.cardType === 'outro' || (activeTitleCard.text && (activeTitleCard.text.toLowerCase().includes('podziękowania') || activeTitleCard.text.toLowerCase().includes('dziękujemy')))) && (
+                <div className="absolute inset-4 sm:inset-8 border border-[#D4AF37]/60 pointer-events-none p-1">
+                  <div className="w-full h-full border border-[#D4AF37]/25" />
+                </div>
+              )}
               
-              <div className="text-center space-y-4 max-w-xl">
-                {activeTitleCard.style === 'classic' && (
+              <div className="text-center space-y-4 max-w-2xl px-6 relative z-10">
+                {(activeTitleCard.style === 'liturgical' || (activeTitleCard.text && activeTitleCard.text.toLowerCase().includes('ślub'))) ? (
+                  <>
+                    <div className="text-xs uppercase tracking-[0.4em] text-[#D4AF37]/80 font-serif">
+                      Sakrament Małżeństwa
+                    </div>
+                    <h2 className="text-2xl sm:text-4xl md:text-5xl font-extrabold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-[#FFF5C0] via-[#FDE047] to-[#D4AF37] font-serif drop-shadow-[0_4px_16px_rgba(212,175,55,0.5)]">
+                      {activeTitleCard.text}
+                    </h2>
+                    {activeTitleCard.subtitle && (
+                      <p className="text-xs sm:text-sm md:text-base font-serif text-[#EADFC9] tracking-wider mt-3">
+                        ✝ {activeTitleCard.subtitle} ✝
+                      </p>
+                    )}
+                  </>
+                ) : (activeTitleCard.cardType === 'outro' || (activeTitleCard.text && (activeTitleCard.text.toLowerCase().includes('podziękowania') || activeTitleCard.text.toLowerCase().includes('dziękujemy')))) ? (
+                  <>
+                    <div className="text-lg text-[#D4AF37] mb-1">❦</div>
+                    <h2 className="text-2xl sm:text-3xl md:text-4xl font-extrabold uppercase tracking-widest text-[#FDE047] font-serif drop-shadow-[0_2px_12px_rgba(212,175,55,0.4)]">
+                      {activeTitleCard.text}
+                    </h2>
+                    {activeTitleCard.subtitle && (
+                      <p className="text-xs sm:text-sm text-[#F5F2EA] leading-relaxed max-w-xl mx-auto font-serif italic mt-3 opacity-95">
+                        {activeTitleCard.subtitle}
+                      </p>
+                    )}
+                  </>
+                ) : activeTitleCard.style === 'classic' ? (
                   <>
                     <h2 className="text-2xl sm:text-3xl font-bold font-serif text-[#EADFC9] tracking-normal">
                       {activeTitleCard.text}
@@ -680,8 +720,7 @@ export function PreviewPlayer({
                       </p>
                     )}
                   </>
-                )}
-                {activeTitleCard.style === 'elegant' && (
+                ) : activeTitleCard.style === 'elegant' ? (
                   <>
                     <h2 className="text-2xl sm:text-4xl font-light font-serif text-[#D4AF37] uppercase tracking-widest leading-relaxed">
                       {activeTitleCard.text}
@@ -692,8 +731,7 @@ export function PreviewPlayer({
                       </p>
                     )}
                   </>
-                )}
-                {activeTitleCard.style === 'minimalist' && (
+                ) : activeTitleCard.style === 'minimalist' ? (
                   <>
                     <h2 className="text-xl sm:text-2xl font-light text-white tracking-widest">
                       {activeTitleCard.text}
@@ -704,8 +742,7 @@ export function PreviewPlayer({
                       </p>
                     )}
                   </>
-                )}
-                {activeTitleCard.style === 'cinematic' && (
+                ) : (
                   <>
                     <h2 className="text-3xl sm:text-5xl font-extrabold uppercase tracking-tight text-white drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)] font-sans">
                       {activeTitleCard.text}

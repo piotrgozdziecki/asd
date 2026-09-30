@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, Square, Play, Pause, RotateCcw, Check, X, Volume2, AlertCircle, Sparkles } from 'lucide-react';
+import { Mic, Square, Play, Pause, RotateCcw, Check, X, Volume2, AlertCircle, Sparkles, Bot, Loader2, RefreshCw } from 'lucide-react';
+import { useStudioToast } from './common/ToastContext';
 
 interface VoiceRecorderModalProps {
   isOpen: boolean;
@@ -14,6 +15,7 @@ export function VoiceRecorderModal({
   onSaveVoiceover,
   defaultText,
 }: VoiceRecorderModalProps) {
+  const [activeTab, setActiveTab] = useState<'mic' | 'ai_tts'>('mic');
   const [isRecording, setIsRecording] = useState(false);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
@@ -22,6 +24,12 @@ export function VoiceRecorderModal({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
 
+  // AI TTS state
+  const [ttsText, setTtsText] = useState(defaultText || '');
+  const [ttsVoice, setTtsVoice] = useState<'Kore' | 'Puck' | 'Zephyr' | 'Fenrir'>('Kore');
+  const [isGeneratingTts, setIsGeneratingTts] = useState(false);
+  const toast = useStudioToast();
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -29,6 +37,12 @@ export function VoiceRecorderModal({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (defaultText && !ttsText) {
+      setTtsText(defaultText);
+    }
+  }, [defaultText]);
 
   useEffect(() => {
     return () => {
@@ -40,6 +54,60 @@ export function VoiceRecorderModal({
   }, [recordedUrl]);
 
   if (!isOpen) return null;
+
+  const handleGenerateAiVoiceover = async () => {
+    setIsGeneratingTts(true);
+    setErrorMessage(null);
+    try {
+      const res = await fetch('/api/generate-voiceover-tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: ttsText,
+          style: 'poetic_romantic',
+          voiceName: ttsVoice
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error('Błąd generowania głosu AI przez serwer');
+      }
+
+      const data = await res.json();
+      if (data.scriptText) {
+        setTtsText(data.scriptText);
+      }
+
+      if (data.audioBase64) {
+        const byteCharacters = atob(data.audioBase64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const wavBlob = new Blob([byteArray], { type: 'audio/wav' });
+        const url = URL.createObjectURL(wavBlob);
+
+        // Calculate approximate duration from audio size or audio element
+        const tempAudio = new Audio(url);
+        tempAudio.onloadedmetadata = () => {
+          const dur = Math.round(tempAudio.duration) || 12;
+          setRecordDuration(dur);
+        };
+
+        setRecordedBlob(wavBlob);
+        setRecordedUrl(url);
+        toast.showSuccess('Wygenerowano lektora AI z sukcesem!');
+      } else {
+        toast.showInfo('Wygenerowano tekst lektora. Możesz go również przeczytać osobiście.');
+      }
+    } catch (err: any) {
+      console.error('AI Voiceover error:', err);
+      setErrorMessage(err?.message || 'Nie udało się wygenerować lektora AI.');
+    } finally {
+      setIsGeneratingTts(false);
+    }
+  };
 
   const startRecording = async () => {
     setErrorMessage(null);
@@ -171,21 +239,88 @@ export function VoiceRecorderModal({
           <X className="w-4 h-4" />
         </button>
 
-        <div className="flex items-center gap-3.5 mb-5">
+        <div className="flex items-center gap-3.5 mb-4">
           <div className="w-11 h-11 rounded-2xl bg-[#D4AF37]/20 border border-[#D4AF37]/40 flex items-center justify-center text-[#D4AF37]">
-            <Mic className="w-5 h-5" />
+            {activeTab === 'mic' ? <Mic className="w-5 h-5" /> : <Bot className="w-5 h-5" />}
           </div>
           <div>
             <h3 className="text-base font-bold text-white font-serif-luxury tracking-wide">
-              Nagranie Własnego Głosu / Przysięgi
+              {activeTab === 'mic' ? 'Nagranie Własnego Głosu / Przysięgi' : 'Lektor AI & Scenariusz Poetycki'}
             </h3>
             <p className="text-xs font-sans-modern opacity-75 mt-0.5">
-              Nagraj osobiste słowa, które wpleciemy w film ślubny
+              {activeTab === 'mic' ? 'Nagraj osobiste słowa, które wpleciemy w film' : 'Generuj pełen emocji głos lektora z syntezą Gemini TTS'}
             </p>
           </div>
         </div>
 
-        {defaultText && (
+        {/* Tab Selector */}
+        <div className="flex rounded-2xl bg-black/40 p-1 border border-white/10 mb-4">
+          <button
+            onClick={() => setActiveTab('mic')}
+            className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              activeTab === 'mic' ? 'bg-[#D4AF37] text-black shadow-md' : 'text-white/70 hover:text-white'
+            }`}
+          >
+            <Mic className="w-3.5 h-3.5" />
+            <span>Mikrofon</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('ai_tts')}
+            className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+              activeTab === 'ai_tts' ? 'bg-[#D4AF37] text-black shadow-md' : 'text-white/70 hover:text-white'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Lektor AI Gemini</span>
+          </button>
+        </div>
+
+        {activeTab === 'ai_tts' && (
+          <div className="space-y-3 mb-4">
+            <div className="p-3 rounded-2xl glass-card border border-[#D4AF37]/30">
+              <label className="block text-[0.6875rem] font-bold text-[#FDE047] font-mono-label uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                <span>Tekst Scenariusza Lektora:</span>
+                <span className="text-white/50 text-[10px] lowercase">poetycki / emocjonalny</span>
+              </label>
+              <textarea
+                value={ttsText}
+                onChange={(e) => setTtsText(e.target.value)}
+                placeholder="Wpisz tekst lub zostaw puste, aby AI wygenerowało autorski wiersz ślubny..."
+                rows={3}
+                className="w-full text-xs bg-black/40 border border-white/10 rounded-xl p-2.5 text-white placeholder:text-white/40 focus:outline-none focus:border-[#D4AF37]"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="flex-1">
+                <label className="block text-[10px] font-bold text-white/70 font-mono-label uppercase mb-1">
+                  Barwa Głosu:
+                </label>
+                <select
+                  value={ttsVoice}
+                  onChange={(e) => setTtsVoice(e.target.value as any)}
+                  className="w-full text-xs bg-black/60 border border-white/15 rounded-xl p-2 text-white font-mono-label focus:outline-none focus:border-[#D4AF37]"
+                >
+                  <option value="Kore">Kore – Ciepły, wzruszający głos żeński</option>
+                  <option value="Puck">Puck – Jasny, ciepły głos męski</option>
+                  <option value="Zephyr">Zephyr – Elegancki, kinowy narrator</option>
+                  <option value="Fenrir">Fenrir – Głęboki, aksamitny baryton</option>
+                </select>
+              </div>
+
+              <button
+                onClick={handleGenerateAiVoiceover}
+                disabled={isGeneratingTts}
+                className="mt-4 px-3.5 py-2 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#FDE047] text-black font-bold text-xs flex items-center gap-1.5 hover:brightness-110 active:scale-95 disabled:opacity-50 transition"
+              >
+                {isGeneratingTts ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                <span>Generuj Lektora</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'mic' && defaultText && (
           <div className="mb-4 p-4 rounded-2xl glass-card text-xs text-white/90 italic border border-[#D4AF37]/30">
             <div className="text-[0.6875rem] font-bold text-[#FDE047] font-mono-label uppercase tracking-wider mb-1.5 not-italic flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5" /> Proponowany tekst lektora:

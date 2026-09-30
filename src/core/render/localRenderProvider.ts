@@ -4,6 +4,8 @@ import { urlRegistry } from '../media/urlRegistry';
 import { resolveClipMediaUrl, resolveAudioTrackUrl, getMediaArrayBuffer } from '../media/mediaResolver';
 import { localIndexedDB } from '../storage/indexedDBProvider';
 import { FrameCompositor } from './FrameCompositor';
+import { AudioResampler, STANDARD_RENDER_SAMPLE_RATE, STANDARD_RENDER_CHANNELS } from '../audio/audioResampler';
+import { SafeAudioDecoder } from '../audio/audioDecoder';
 
 export class LocalBrowserRenderProvider implements IRenderProvider {
   id = 'local_canvas_recorder';
@@ -168,17 +170,33 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
       diagnostics: { stageDetails: 'STAGE 2: Pre-render miksu audio' }
     });
 
-    const sampleRate = 48000;
+    const sampleRate = STANDARD_RENDER_SAMPLE_RATE;
     const totalSamples = Math.max(1, Math.ceil(totalDuration * sampleRate));
     const OfflineCtxClass = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
     let masterAudioBuffer: AudioBuffer | null = null;
 
     if (OfflineCtxClass) {
       try {
-        const offlineCtx = new OfflineCtxClass(2, totalSamples, sampleRate);
+        const offlineCtx = new OfflineCtxClass(STANDARD_RENDER_CHANNELS, totalSamples, sampleRate);
         const audioBufferCache = new Map<string, AudioBuffer | null>();
+        let attachedSourcesCount = 0;
 
-        // Attach clip audio
+        // Detect voiceover intervals for ducking
+        const rawAudioTracks = project.audioTracks || [];
+        const activeAudioTracks = rawAudioTracks.filter(t => !t.muted);
+        const voiceoverIntervals: { start: number; end: number; duckingRatio: number }[] = [];
+        const isDuckingActive = project.settings?.audioDucking !== false && project.settings?.audioBalance?.duckingEnabled !== false;
+        const duckAmount = project.settings?.duckingIntensity !== undefined ? project.settings.duckingIntensity / 100 : (project.settings?.audioBalance?.duckingAmount ?? 0.6);
+
+        for (const track of activeAudioTracks) {
+          if (track.trackType === 'voiceover') {
+            const start = Math.max(0, track.timelineStart || 0);
+            const end = start + (track.duration || 1);
+            voiceoverIntervals.push({ start, end, duckingRatio: Math.max(0.1, 1 - duckAmount) });
+          }
+        }
+
+        // Attach clip audio (Explicitly resampled to 48kHz Stereo)
         const videoItems = sortedItems.filter(item => {
           if (item.muted || item.volume === 0) return false;
           const clip = clipMap.get(item.clipId);
@@ -213,8 +231,7 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
 
             if (arrayBuf && arrayBuf.byteLength > 0) {
               try {
-                const copy = arrayBuf.slice(0);
-                decoded = await offlineCtx.decodeAudioData(copy);
+                decoded = await SafeAudioDecoder.decodeTo48kStereo(offlineCtx, arrayBuf);
                 audioBufferCache.set(clip.id, decoded);
               } catch {
                 audioBufferCache.set(clip.id, null);
@@ -253,13 +270,13 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
               const safeOffset = Math.max(0, Math.min(item.sourceStart || 0, maxOffset));
               const safeDuration = Math.max(0.05, Math.min(item.duration, decoded.duration - safeOffset));
               source.start(startTime, safeOffset, safeDuration);
+              attachedSourcesCount++;
             } catch {}
           }
         }
 
-        // Attach background audio tracks
-        const audioTracks = (project.audioTracks || []).filter(t => !t.muted);
-        for (const track of audioTracks) {
+        // Attach background audio tracks & voiceover (Explicitly resampled to 48kHz Stereo)
+        for (const track of activeAudioTracks) {
           try {
             let arrayBuf: ArrayBuffer | null = null;
             if (track.file) {
@@ -271,20 +288,61 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
 
             if (arrayBuf && arrayBuf.byteLength > 0) {
               const copy = arrayBuf.slice(0);
-              const decoded = await offlineCtx.decodeAudioData(copy);
+              const rawDecoded = await offlineCtx.decodeAudioData(copy);
+              const decoded = AudioResampler.resampleTo48kStereo(offlineCtx, rawDecoded, sampleRate);
               if (decoded && decoded.duration > 0) {
                 const source = offlineCtx.createBufferSource();
                 source.buffer = decoded;
                 const gain = offlineCtx.createGain();
-                gain.gain.value = (track.volume ?? 1) * (project.settings?.audioBalance?.musicVolume ?? 0.8);
+
+                const isVoiceover = track.trackType === 'voiceover';
+                let baseVol = track.volume ?? 1;
+                if (isVoiceover) {
+                  baseVol *= (project.settings?.audioBalance?.voiceoverVolume ?? 1.0);
+                } else if (track.trackType === 'music' || !track.trackType) {
+                  baseVol *= (project.settings?.audioBalance?.musicVolume ?? 0.8);
+                }
+
+                gain.gain.setValueAtTime(baseVol, 0);
+
+                if (!isVoiceover && voiceoverIntervals.length > 0 && isDuckingActive) {
+                  for (const vInt of voiceoverIntervals) {
+                    const duckedVol = baseVol * vInt.duckingRatio;
+                    gain.gain.setValueAtTime(baseVol, Math.max(0, vInt.start - 0.3));
+                    gain.gain.linearRampToValueAtTime(duckedVol, vInt.start);
+                    gain.gain.setValueAtTime(duckedVol, vInt.end);
+                    gain.gain.linearRampToValueAtTime(baseVol, vInt.end + 0.5);
+                  }
+                }
+
                 source.connect(gain);
                 gain.connect(offlineCtx.destination);
 
                 const trackOffset = Math.max(0, Math.min(track.sourceStart || 0, decoded.duration - 0.05));
                 const trackDur = Math.max(0.05, Math.min(track.duration || decoded.duration, decoded.duration - trackOffset));
                 source.start(track.timelineStart || 0, trackOffset, trackDur);
+                attachedSourcesCount++;
               }
             }
+          } catch {}
+        }
+
+        // Sound is FOUNDATIONAL: If no audio tracks or clip audio connected, synthesize a rich wedding soundscape!
+        if (attachedSourcesCount === 0) {
+          try {
+            const fallbackSoundtrack = await SafeAudioDecoder.createFoundationalWeddingSoundtrack(
+              offlineCtx,
+              totalDuration,
+              'altar_procession'
+            );
+            const fbSource = offlineCtx.createBufferSource();
+            fbSource.buffer = fallbackSoundtrack;
+            const fbGain = offlineCtx.createGain();
+            fbGain.gain.setValueAtTime(0.75, 0);
+            fbSource.connect(fbGain);
+            fbGain.connect(offlineCtx.destination);
+            fbSource.start(0, 0, totalDuration);
+            attachedSourcesCount++;
           } catch {}
         }
 
@@ -397,14 +455,33 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
       }
     }
 
-    // 5. Deterministic Frame by Frame rendering loop
+    // 5. Deterministic Frame by Frame rendering loop with CPU Overload Frame Skipping
     const frameIntervalSec = 1 / fps;
     const startTime = Date.now();
+    let skippedFramesCount = 0;
 
     try {
-      for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
+      let frameIndex = 0;
+      while (frameIndex < totalFrames) {
         if (signal?.aborted) {
           throw new Error('Eksport został przerwany przez użytkownika.');
+        }
+
+        // Frame Skipping Mechanism for CPU Overload Protection (Locks Audio-Video Sync)
+        const wallClockElapsedSec = (Date.now() - startTime) / 1000;
+        const currentFrameTimelineSec = frameIndex * frameIntervalSec;
+        const driftLatencySec = wallClockElapsedSec - currentFrameTimelineSec;
+
+        // If CPU lag exceeds 1.5 frame interval, skip frames to current real-time audio timestamp
+        if (driftLatencySec > (frameIntervalSec * 1.5) && frameIndex < totalFrames - 1) {
+          const synchronizedTargetFrame = Math.min(
+            totalFrames - 1,
+            Math.floor(wallClockElapsedSec / frameIntervalSec)
+          );
+          if (synchronizedTargetFrame > frameIndex) {
+            skippedFramesCount += (synchronizedTargetFrame - frameIndex);
+            frameIndex = synchronizedTargetFrame;
+          }
         }
 
         const currentTime = frameIndex * frameIntervalSec;
@@ -464,9 +541,17 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
             }
           );
 
+          // Apply Title Card if enabled for this item
+          if (activeItem.titleCard && activeItem.titleCard.enabled) {
+            const cardDuration = Math.min(Math.max(0.8, activeItem.duration * 0.4), activeItem.titleCard.duration || 3);
+            if (timeInItem < cardDuration) {
+              FrameCompositor.drawTitleCard(ctx, width, height, activeItem.titleCard);
+            }
+          }
+
           // Apply transitions
           const transInType = activeItem.transitionIn || (activeItem.fadeIn ? 'fade' : 'cut');
-          const transInDuration = activeItem.transitionDuration || activeItem.fadeIn || 0;
+          const transInDuration = activeItem.transitionDuration || activeItem.fadeIn || (transInType !== 'cut' ? 0.8 : 0);
           if (transInDuration > 0 && timeInItem < transInDuration) {
             const transProgress = 1 - Math.max(0, Math.min(1, timeInItem / transInDuration));
             FrameCompositor.applyTransition(ctx, width, height, transProgress, transInType);
@@ -474,7 +559,7 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
 
           const timeLeft = activeItem.duration - timeInItem;
           const transOutType = activeItem.transitionOut || (activeItem.fadeOut ? 'fade' : 'cut');
-          const transOutDuration = activeItem.transitionDuration || activeItem.fadeOut || 0;
+          const transOutDuration = activeItem.transitionDuration || activeItem.fadeOut || (transOutType !== 'cut' ? 0.8 : 0);
           if (transOutDuration > 0 && timeLeft < transOutDuration) {
             const transProgress = 1 - Math.max(0, Math.min(1, timeLeft / transOutDuration));
             FrameCompositor.applyTransition(ctx, width, height, transProgress, transOutType);
@@ -508,9 +593,11 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
             etaSeconds,
             elapsedSeconds: Math.round(elapsed),
             speedMultiplier: Number(((currentFps / fps) || 1).toFixed(1)),
-            statusMessage: `Renderowanie MediaRecorder: ${frameIndex + 1}/${totalFrames} (${percent}%)`
+            statusMessage: `Renderowanie MediaRecorder: ${frameIndex + 1}/${totalFrames} (${percent}%) ${skippedFramesCount > 0 ? `[Skip: ${skippedFramesCount}]` : ''}`
           });
         }
+
+        frameIndex++;
       }
 
       onProgress({

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   X, 
   Play, 
@@ -11,7 +11,9 @@ import {
   Radio, 
   Sliders, 
   Check, 
-  Loader2 
+  Loader2,
+  Search,
+  Timer
 } from 'lucide-react';
 import { SOUNDSCAPE_PRESETS, SoundscapePreset, soundscapeGenerator } from '../../core/audio/soundscapeGenerator';
 import { urlRegistry } from '../../core/media/urlRegistry';
@@ -37,6 +39,8 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeCategory, setActiveCategory] = useState<'all' | 'romantic' | 'ceremony' | 'waltz' | 'celebration'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedDurations, setSelectedDurations] = useState<Record<string, number>>({});
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number | null>(null);
   const toast = useStudioToast();
@@ -109,13 +113,28 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
     }
   };
 
+  const filteredPresets = useMemo(() => {
+    return SOUNDSCAPE_PRESETS.filter(p => {
+      const matchesCategory = activeCategory === 'all' || p.category === activeCategory;
+      const q = searchQuery.toLowerCase().trim();
+      const matchesSearch = !q || 
+        p.title.toLowerCase().includes(q) || 
+        p.subtitle.toLowerCase().includes(q) || 
+        p.description.toLowerCase().includes(q) ||
+        p.key.toLowerCase().includes(q);
+      return matchesCategory && matchesSearch;
+    });
+  }, [activeCategory, searchQuery]);
+
   const handleApplyToProject = async (preset: SoundscapePreset) => {
     setIsGenerating(true);
     soundscapeGenerator.stopPreview();
     setPlayingId(null);
 
+    const chosenDuration = selectedDurations[preset.id] || preset.durationSeconds;
+
     try {
-      const { file, duration } = await soundscapeGenerator.generateTrackFile(preset.id);
+      const { file, duration } = await soundscapeGenerator.generateTrackFile(preset.id, chosenDuration);
       const trackId = `track_soundscape_${Date.now()}`;
       try {
         await localIndexedDB.saveMediaBlob(trackId, file);
@@ -124,7 +143,7 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
 
       const trackItem: AudioTrackItem = {
         id: trackId,
-        name: `♫ ${preset.title} (${preset.key})`,
+        name: `♫ ${preset.title} (${chosenDuration}s)`,
         file,
         objectUrl,
         duration,
@@ -137,7 +156,7 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
       };
 
       onAddAudioTrack(trackItem);
-      toast.showSuccess(`Dodano ścieżkę dźwiękową "${preset.title}" do osi czasu!`);
+      toast.showSuccess(`Dodano ścieżkę dźwiękową "${preset.title}" (${chosenDuration}s) do osi czasu!`);
       onClose();
     } catch (e: any) {
       toast.showError(`Błąd generowania ścieżki: ${e.message || 'Nieznany błąd'}`);
@@ -145,10 +164,6 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
       setIsGenerating(false);
     }
   };
-
-  const filteredPresets = activeCategory === 'all'
-    ? SOUNDSCAPE_PRESETS
-    : SOUNDSCAPE_PRESETS.filter(p => p.category === activeCategory);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
@@ -227,33 +242,47 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
           </div>
         )}
 
-        {/* Category Filter Tabs */}
-        <div className="px-6 py-3 bg-[#0E0D0A] border-b border-[#1E1B15] flex items-center gap-2 overflow-x-auto no-scrollbar">
-          {[
-            { id: 'all', label: 'Wszystkie podkłady' },
-            { id: 'romantic', label: 'Romantyczne & Przysięga' },
-            { id: 'ceremony', label: 'Kościół & Ceremonia' },
-            { id: 'waltz', label: 'Pierwszy Taniec' },
-            { id: 'celebration', label: 'Przyjęcie & Toast' }
-          ].map(cat => (
-            <button
-              key={cat.id}
-              onClick={() => setActiveCategory(cat.id as any)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors cursor-pointer ${
-                activeCategory === cat.id
-                  ? 'bg-[#2E2716] text-[#EADFC9] border border-[#D4AF37]/40 shadow-sm'
-                  : 'text-[#7A7260] hover:text-[#C5BBA6] hover:bg-[#16140F]'
-              }`}
-            >
-              {cat.label}
-            </button>
-          ))}
+        {/* Search & Category Filter Tabs */}
+        <div className="px-6 py-3 bg-[#0E0D0A] border-b border-[#1E1B15] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+            {[
+              { id: 'all', label: 'Wszystkie' },
+              { id: 'romantic', label: 'Romantyczne' },
+              { id: 'ceremony', label: 'Kościół & Ceremonia' },
+              { id: 'waltz', label: 'Pierwszy Taniec' },
+              { id: 'celebration', label: 'Przyjęcie' }
+            ].map(cat => (
+              <button
+                key={cat.id}
+                onClick={() => setActiveCategory(cat.id as any)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                  activeCategory === cat.id
+                    ? 'bg-[#2E2716] text-[#EADFC9] border border-[#D4AF37]/40 shadow-sm'
+                    : 'text-[#7A7260] hover:text-[#C5BBA6] hover:bg-[#16140F]'
+                }`}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="relative shrink-0 w-full sm:w-56">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#7A7260]" />
+            <input
+              type="text"
+              placeholder="Szukaj utworu / nastroju..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-[#14130F] border border-[#2A261D] rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-[#5A5243] focus:outline-none focus:border-[#D4AF37]/50"
+            />
+          </div>
         </div>
 
         {/* Presets Grid */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
           {filteredPresets.map(preset => {
             const isPlaying = playingId === preset.id;
+            const chosenDur = selectedDurations[preset.id] || preset.durationSeconds;
             return (
               <div
                 key={preset.id}
@@ -264,7 +293,7 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
                 }`}
               >
                 {/* Left Info */}
-                <div className="flex items-start gap-4">
+                <div className="flex items-start gap-4 flex-1 min-w-0">
                   <button
                     onClick={() => handleTogglePreview(preset.id)}
                     className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 transition-transform cursor-pointer shadow-md ${
@@ -281,10 +310,10 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
                     )}
                   </button>
 
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
+                  <div className="space-y-1.5 flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-base">{preset.icon}</span>
-                      <h3 className="text-sm sm:text-base font-serif font-bold text-white tracking-wide">
+                      <h3 className="text-sm sm:text-base font-serif font-bold text-white tracking-wide truncate">
                         {preset.title}
                       </h3>
                       <span className="text-[10px] font-mono text-[#D4AF37] bg-[#221C11] px-1.5 py-0.5 rounded border border-[#D4AF37]/20">
@@ -299,20 +328,31 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
                     <p className="text-[11px] text-[#7A7260] leading-relaxed max-w-lg">
                       {preset.description}
                     </p>
+
+                    {/* Quick Duration Selector Chips */}
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <span className="text-[10px] text-[#7A7260] font-mono uppercase mr-1 flex items-center gap-1">
+                        <Timer className="w-3 h-3 text-[#D4AF37]" /> Czas:
+                      </span>
+                      {[preset.durationSeconds, 30, 60, 120, 180].map(dur => (
+                        <button
+                          key={dur}
+                          onClick={() => setSelectedDurations(prev => ({ ...prev, [preset.id]: dur }))}
+                          className={`px-2 py-0.5 text-[10px] font-mono rounded transition-colors cursor-pointer ${
+                            chosenDur === dur
+                              ? 'bg-[#D4AF37] text-black font-bold'
+                              : 'bg-[#181611] text-[#A69A82] hover:text-white border border-[#2A2417]'
+                          }`}
+                        >
+                          {dur}s
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
                 {/* Right Actions */}
                 <div className="flex items-center gap-3 shrink-0 self-end sm:self-center">
-                  <div className="text-right hidden sm:block">
-                    <span className="text-[10px] font-mono text-[#7A7260] block uppercase tracking-wider">
-                      Długość
-                    </span>
-                    <span className="text-xs font-mono font-bold text-[#C5BBA6]">
-                      {preset.durationSeconds}s
-                    </span>
-                  </div>
-
                   <button
                     onClick={() => handleApplyToProject(preset)}
                     disabled={isGenerating}
@@ -323,7 +363,7 @@ export const SoundscapeStudioModal: React.FC<SoundscapeStudioModalProps> = ({
                     ) : (
                       <Plus className="w-4 h-4" />
                     )}
-                    <span>WSTAW DO PROJEKTU</span>
+                    <span>WSTAW ({chosenDur}s)</span>
                   </button>
                 </div>
               </div>

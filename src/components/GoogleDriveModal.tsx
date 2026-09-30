@@ -60,6 +60,24 @@ export function GoogleDriveModal({ isOpen, onClose, onImportClips, existingClips
     setLoading(true);
     setError(null);
     try {
+      const q = "trashed = false and (mimeType contains 'video/' or mimeType contains 'image/' or mimeType = 'application/json')";
+      
+      // Try direct Google Drive client API first for fastest response without backend latency
+      try {
+        const driveUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size,thumbnailLink,createdTime,webViewLink,videoMediaMetadata,imageMediaMetadata)&orderBy=modifiedTime desc&pageSize=100`;
+        const directRes = await fetch(driveUrl, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (directRes.ok) {
+          const data = await directRes.json();
+          setFiles(data.files || []);
+          return;
+        }
+      } catch (directErr) {
+        console.warn('[GoogleDriveModal] Direct API fetch failed, trying proxy endpoint...', directErr);
+      }
+
+      // Proxy fallback
       const res = await fetch(`/api/drive/list?accessToken=${encodeURIComponent(token)}`);
       if (!res.ok) {
         if (res.status === 401) {
@@ -124,6 +142,9 @@ export function GoogleDriveModal({ isOpen, onClose, onImportClips, existingClips
     if (selected.length === 0) return;
 
     const token = accessToken || '';
+    if (token && typeof window !== 'undefined') {
+      sessionStorage.setItem('gdrive_access_token', token);
+    }
     const newClips: MediaClip[] = selected.map(file => {
       const isVideo = file.mimeType.startsWith('video/');
       const streamUrl = `/api/drive/stream/${file.id}?accessToken=${encodeURIComponent(token)}`;

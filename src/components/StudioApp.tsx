@@ -7,8 +7,9 @@ import { ExportView } from './export/ExportView';
 import { SettingsDiagnosticsView } from './settings/SettingsDiagnosticsView';
 import { AiAssistantModal } from './ai/AiAssistantModal';
 import { VoiceRecorderModal } from './VoiceRecorderModal';
+import { SoundscapeStudioModal } from './audio/SoundscapeStudioModal';
 import { AiWeddingDirectorModal } from './director/AiWeddingDirectorModal';
-import { AiChronologicalMergeModal } from './director/AiChronologicalMergeModal';
+import { AiChronologicalMergeModal, DirectorMergeOptions } from './director/AiChronologicalMergeModal';
 import { WeddingNarrativeModal } from './director/WeddingNarrativeModal';
 import { ProjectHealthPanel } from './director/ProjectHealthPanel';
 import { QuickActionsBar } from './director/QuickActionsBar';
@@ -20,6 +21,7 @@ import { useStudioToast } from './common/ToastContext';
 import { probeVideoMetadata } from '../core/media/metadataProber';
 import { urlRegistry } from '../core/media/urlRegistry';
 import { localIndexedDB } from '../core/storage/indexedDBProvider';
+import { soundscapeGenerator } from '../core/audio/soundscapeGenerator';
 import type { MediaClip, TimelineItem, AudioTrackItem, TextLayer, WeddingChapter, ClipCategory } from '../types/project';
 
 export function StudioApp() {
@@ -27,9 +29,11 @@ export function StudioApp() {
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [isDirectorModalOpen, setIsDirectorModalOpen] = useState(false);
   const [isChronologicalModalOpen, setIsChronologicalModalOpen] = useState(false);
+  const [chronologicalClips, setChronologicalClips] = useState<MediaClip[]>([]);
   const [isWeddingNarrativeModalOpen, setIsWeddingNarrativeModalOpen] = useState(false);
   const [isHealthPanelOpen, setIsHealthPanelOpen] = useState(false);
   const [isVoiceRecorderOpen, setIsVoiceRecorderOpen] = useState(false);
+  const [isSoundscapeModalOpen, setIsSoundscapeModalOpen] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   
@@ -351,59 +355,137 @@ export function StudioApp() {
     removeMediaClips(ids);
   }, [removeMediaClips]);
 
-  const handleApplyChronologicalMerge = useCallback((items: { clip: MediaClip; smartTitle: string; subtitleCaption: string; category: ClipCategory; transition: string; trimStart: number; trimEnd: number }[]) => {
+  const handleApplyChronologicalMerge = useCallback(async (
+    items: { clip: MediaClip; smartTitle: string; subtitleCaption: string; category: ClipCategory; transition: string; trimStart: number; trimEnd: number }[],
+    options?: DirectorMergeOptions
+  ) => {
     if (!items || items.length === 0) return;
 
     let start = 0;
     const newTimelineItems: TimelineItem[] = [];
     const newTextLayers: TextLayer[] = [];
     const updatedMediaMap = new Map<string, Partial<MediaClip>>();
+    const newChapters: WeddingChapter[] = [];
+
+    const applyTransitions = options ? options.applyTransitions : true;
+    const includeSubtitles = options ? options.includeSubtitles : true;
+    const includeIntro = options ? options.includeIntroTitleCard : true;
+    const includeScenes = options ? options.includeSceneTitles : true;
+    const includeOutro = options ? options.includeOutroTitleCard : true;
+
+    let lastCategory: string | null = null;
 
     items.forEach((item, idx) => {
-      const clipDuration = Math.max(0.5, item.trimEnd - item.trimStart);
-      const transitionType = (item.transition as any) || (idx === 0 ? 'dip_black' : 'dissolve');
+      // I.1 SMART TRIM: strictly bound every trimmed segment to max 10-12s
+      const rawDuration = (item.trimEnd > item.trimStart) ? (item.trimEnd - item.trimStart) : 10;
+      const clipDuration = Math.min(12.0, Math.max(3.0, rawDuration));
+      const effectiveTrimEnd = item.trimStart + clipDuration;
+
+      const isFirstItem = idx === 0;
+      const isLastItem = idx === items.length - 1;
+      const isNewCategory = lastCategory !== item.category;
+      lastCategory = item.category;
+
+      const transitionType = applyTransitions
+        ? ((item.transition as any) || (isFirstItem ? 'dip_black' : 'dissolve'))
+        : 'cut';
       
+      // I.2 GENEROWANIE KART I PODPISÓW: Przed KAŻDYM klipem umieszczana jest spersonalizowana karta
+      let itemTitleCard = undefined;
+      let hasActiveTitleCard = false;
+
+      if (isFirstItem && includeIntro) {
+        // Karta Główna Projektu
+        hasActiveTitleCard = true;
+        itemTitleCard = {
+          enabled: true,
+          text: options?.introTitle || 'ŚLUB JOANNY I PIOTRA',
+          subtitle: options?.introSubtitle || '14.09.2024 • Sakrament Małżeństwa',
+          duration: options?.introDuration || 3.5,
+          style: (options?.introStyle as any) || 'liturgical',
+          backgroundColor: 'gradient',
+          cardType: 'intro' as const
+        };
+      } else if (includeScenes) {
+        // Karta Sceny przed każdym klipem bez technicznych nazw plików
+        hasActiveTitleCard = true;
+        itemTitleCard = {
+          enabled: true,
+          text: item.smartTitle,
+          subtitle: item.subtitleCaption,
+          duration: 2.5,
+          style: 'cinematic' as const,
+          backgroundColor: 'gradient',
+          cardType: 'scene' as const
+        };
+      }
+
+      // Determine Outro Card on the final item
+      let itemOutroCard = undefined;
+      if (isLastItem && includeOutro) {
+        itemOutroCard = {
+          enabled: true,
+          text: options?.outroTitle || 'PODZIĘKOWANIA',
+          subtitle: options?.outroSubtitle || 'Z całego serca dziękujemy Rodzicom za dar życia i miłość, Świadkom za pomoc i wsparcie, oraz wszystkim wspaniałym Gościom za modlitwę, radość i wspólne świętowanie. Joanna & Piotr • 14.09.2024',
+          duration: options?.outroDuration || 4.0,
+          style: 'elegant' as const,
+          backgroundColor: 'gradient',
+          cardType: 'outro' as const
+        };
+      }
+
       const tItem: TimelineItem = {
         id: `ti_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
         clipId: item.clip.id,
         trackId: 'v1',
         sourceStart: item.trimStart,
-        sourceEnd: item.trimEnd,
+        sourceEnd: effectiveTrimEnd,
         timelineStart: start,
         duration: clipDuration,
         speed: 1,
         volume: 1,
-        fadeIn: idx === 0 ? 0.8 : 0,
-        fadeOut: idx === items.length - 1 ? 1.0 : 0,
+        fadeIn: 0.5, // II.2 Płynne przenikanie audio/wideo 0.5s
+        fadeOut: 0.5,
         muted: false,
         scale: 1,
         rotation: 0,
         fitMode: 'fit',
         transitionIn: transitionType,
-        titleCard: {
-          enabled: false,
-          text: item.smartTitle,
-          subtitle: item.subtitleCaption,
-          duration: 3,
-          style: 'cinematic',
-          backgroundColor: '#000000'
-        }
+        transitionDuration: applyTransitions ? 0.5 : 0,
+        titleCard: itemTitleCard,
+        outroCard: itemOutroCard
       };
       newTimelineItems.push(tItem);
 
-      // Add subtitle text layer for prominent scenes
-      if (item.subtitleCaption && item.subtitleCaption.trim()) {
+      // Add subtitle text layer for prominent scenes if enabled
+      if (includeSubtitles && item.subtitleCaption && item.subtitleCaption.trim()) {
+        const subtitleOffset = hasActiveTitleCard ? (itemTitleCard?.duration || 2.5) : 0.4;
+        const subDuration = Math.max(1.5, Math.min(4.5, clipDuration - subtitleOffset));
         newTextLayers.push({
           id: `tl_${Date.now()}_${idx}`,
           text: item.subtitleCaption,
           type: 'caption',
           style: 'cinematic',
-          timelineStart: start + 0.5,
-          duration: Math.min(4.5, clipDuration - 0.5),
+          timelineStart: Number((start + subtitleOffset).toFixed(2)),
+          duration: Number(subDuration.toFixed(2)),
           position: { x: 0.5, y: 0.86 },
-          fontSize: 18,
+          fontSize: 20,
           color: '#FFFFFF',
-          backgroundColor: 'rgba(0,0,0,0.6)'
+          backgroundColor: 'rgba(0,0,0,0.65)',
+          animation: 'fade',
+          fontWeight: '600'
+        });
+      }
+
+      // Collect chapter marker if category changed
+      if (options?.generateChapters && isNewCategory && item.category !== 'unassigned') {
+        newChapters.push({
+          id: `chap_${Date.now()}_${idx}`,
+          chapterKey: item.category as any,
+          name: item.smartTitle,
+          startTime: start,
+          endTime: start + clipDuration,
+          description: item.subtitleCaption
         });
       }
 
@@ -425,16 +507,127 @@ export function StudioApp() {
       return clip;
     });
 
+    // Sound as foundation: auto-generate high-quality wedding soundtrack if none exists
+    let updatedAudioTracks = [...(project.audioTracks || [])];
+    if (options?.includeSoundtrack && updatedAudioTracks.length === 0) {
+      try {
+        const presetId = options.soundtrackPresetId || 'altar_procession';
+        const { file, duration } = await soundscapeGenerator.generateTrackFile(presetId);
+        const trackId = `track_soundscape_${Date.now()}`;
+        try {
+          await localIndexedDB.saveMediaBlob(trackId, file);
+        } catch {}
+        const objectUrl = urlRegistry.create(file);
+        updatedAudioTracks.push({
+          id: trackId,
+          name: presetId === 'altar_procession' ? '♫ Droga do Ołtarza (Dzwony & Chóry)' : '♫ Złoty Zmierzch (Fortepian & Smyczki)',
+          file,
+          objectUrl,
+          duration,
+          sourceStart: 0,
+          sourceEnd: duration,
+          timelineStart: 0,
+          volume: 0.85,
+          fadeIn: 2.0,
+          fadeOut: 2.5
+        });
+      } catch (audioErr) {
+        console.warn('[StudioApp] Auto soundtrack generation failed:', audioErr);
+      }
+    }
+
+    const updatedSettings = {
+      ...(project.settings || {}),
+      colorGrade: (options?.colorGrade && options.colorGrade !== 'none') 
+        ? options.colorGrade 
+        : (project.settings?.colorGrade || 'golden_hour'),
+      outroCard: includeOutro ? {
+        enabled: true,
+        text: options?.outroTitle || 'PODZIĘKOWANIA',
+        subtitle: options?.outroSubtitle || 'Z całego serca dziękujemy Rodzicom za dar życia i miłość, Świadkom za pomoc i wsparcie, oraz wszystkim wspaniałym Gościom za modlitwę, radość i wspólne świętowanie. Joanna & Piotr • 14.09.2024',
+        duration: options?.outroDuration || 4.0,
+        style: 'elegant' as const,
+        backgroundColor: 'gradient',
+        cardType: 'outro' as const
+      } : project.settings?.outroCard,
+      audioDucking: true,
+      duckingIntensity: 65,
+      audioBalance: {
+        musicVolume: 0.85,
+        clipVolume: 1.0,
+        duckingEnabled: true,
+        duckingAmount: 0.65
+      }
+    };
+
     pushState({
       ...project,
       mediaLibrary: updatedLibrary,
       timelineItems: newTimelineItems,
+      audioTracks: updatedAudioTracks,
       textLayers: newTextLayers,
+      chapters: newChapters.length > 0 ? newChapters : project.chapters,
+      settings: updatedSettings as any,
       updatedAt: new Date().toISOString()
     });
 
-    setActiveTab('montage');
+    const destinationTab = options?.targetTab || 'montage';
+    setActiveTab(destinationTab);
   }, [project, pushState]);
+
+  const handleOneClickDirectorCut = useCallback(async (selectedClips?: MediaClip[]) => {
+    const clipsToUse = (selectedClips && selectedClips.length > 0) ? selectedClips : project.mediaLibrary;
+    if (!clipsToUse || clipsToUse.length === 0) {
+      toast.showWarning('Dodaj filmy do projektu, aby reżyser AI mógł je scalić.');
+      return;
+    }
+
+    // Sort chronologically by capturedAt or createdAt
+    const sorted = [...clipsToUse].sort((a, b) => {
+      const tA = new Date(a.capturedAt || a.createdAt || 0).getTime();
+      const tB = new Date(b.capturedAt || b.createdAt || 0).getTime();
+      if (tA !== tB) return tA - tB;
+      return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' });
+    });
+
+    const categoriesList: ClipCategory[] = ['preparations', 'ceremony', 'congratulations', 'first_dance', 'toast', 'party', 'cake', 'ending'];
+    const items = sorted.map((c, idx) => {
+      const catIdx = Math.min(categoriesList.length - 1, Math.floor((idx / sorted.length) * categoriesList.length));
+      return {
+        clip: c,
+        smartTitle: c.name || `Scena ${idx + 1}`,
+        subtitleCaption: `Ujęcie ślubne – ${c.name}`,
+        category: c.category && c.category !== 'unassigned' ? c.category : categoriesList[catIdx],
+        transition: idx === 0 ? 'dip_black' : 'dissolve',
+        trimStart: 0,
+        trimEnd: c.duration
+      };
+    });
+
+    const defaultOptions: DirectorMergeOptions = {
+      includeIntroTitleCard: true,
+      introTitle: 'ŚLUB JOANNY I PIOTRA',
+      introSubtitle: '14.09.2024 • Sakrament Małżeństwa',
+      introDuration: 3.5,
+      introStyle: 'liturgical',
+      includeOutroTitleCard: true,
+      outroTitle: 'PODZIĘKOWANIA',
+      outroSubtitle: 'Z całego serca dziękujemy Rodzicom za dar życia i miłość, Świadkom za pomoc i wsparcie, oraz wszystkim wspaniałym Gościom za modlitwę, radość i wspólne świętowanie. Joanna & Piotr • 14.09.2024',
+      outroDuration: 4.0,
+      includeSceneTitles: true,
+      includeSubtitles: true,
+      applyTransitions: true,
+      applySmartTrim: true,
+      colorGrade: 'golden_hour',
+      generateChapters: true,
+      includeSoundtrack: true,
+      soundtrackPresetId: 'altar_procession',
+      targetTab: 'montage'
+    };
+
+    await handleApplyChronologicalMerge(items, defaultOptions);
+    toast.showSuccess('✨ Reżyser AI w 1 kliknięciu połączył wszystkie ujęcia z kartą liturgiczną, scenami i podziękowaniami!');
+  }, [project.mediaLibrary, handleApplyChronologicalMerge, toast]);
 
   const handleApplyCaptionsToLibrary = useCallback((updates: { id: string; name: string; category: ClipCategory; comment: string; tags: string[] }[]) => {
     const updateMap = new Map<string, { name: string; category: ClipCategory; comment: string; tags: string[] }>();
@@ -482,6 +675,13 @@ export function StudioApp() {
     setActiveTab('montage');
   };
 
+  const handleSoundscapeAdd = useCallback((track: AudioTrackItem) => {
+    addAudioTrack(track);
+    toast.showSuccess(`Ścieżka muzyczna "${track.name}" została pomyślnie wygenerowana i dodana do osi czasu!`);
+    setIsSoundscapeModalOpen(false);
+    setActiveTab('montage');
+  }, [addAudioTrack, toast]);
+
   const handleProjectNameChange = (name: string) => {
     pushState({
       ...project,
@@ -518,6 +718,7 @@ export function StudioApp() {
         onToggleHealthPanel={() => setIsHealthPanelOpen(!isHealthPanelOpen)}
         isHealthPanelOpen={isHealthPanelOpen}
         onOpenVoiceRecorder={() => setIsVoiceRecorderOpen(true)}
+        onOpenSoundscapes={() => setIsSoundscapeModalOpen(true)}
         isDbConnected={isDbConnected}
       >
         <div className="flex-1 w-full min-h-0 overflow-y-auto overflow-x-hidden relative custom-scrollbar flex flex-col gap-3 p-2 sm:p-4 md:p-6 max-w-full">
@@ -531,6 +732,7 @@ export function StudioApp() {
               onNavigateToExport={() => setActiveTab('export')}
               onOpenChronologicalModal={() => setIsChronologicalModalOpen(true)}
               onOpenWeddingNarrativeModal={() => setIsWeddingNarrativeModalOpen(true)}
+              onOpenSoundscapes={() => setIsSoundscapeModalOpen(true)}
             />
           </div>
 
@@ -584,7 +786,11 @@ export function StudioApp() {
                 onClearFavorites={clearFavorites}
                 onClearAllMedia={handleResetProject}
                 onResetProject={handleResetProject}
-                onOpenChronologicalModal={() => setIsChronologicalModalOpen(true)}
+                onOpenChronologicalModal={(selected) => {
+                  setChronologicalClips(selected && selected.length > 0 ? selected : project.mediaLibrary);
+                  setIsChronologicalModalOpen(true);
+                }}
+                onQuickApplyDirectorCut={handleOneClickDirectorCut}
                 onNavigateToExport={() => setActiveTab('export')}
               />
             </div>
@@ -658,7 +864,7 @@ export function StudioApp() {
       <AiChronologicalMergeModal
         isOpen={isChronologicalModalOpen}
         onClose={() => setIsChronologicalModalOpen(false)}
-        clips={project.mediaLibrary}
+        clips={chronologicalClips.length > 0 ? chronologicalClips : project.mediaLibrary}
         onApplyToTimeline={handleApplyChronologicalMerge}
         onApplyCaptionsToLibrary={handleApplyCaptionsToLibrary}
         onOpenQuickMerge={() => setActiveTab('export')}
@@ -681,6 +887,27 @@ export function StudioApp() {
         onClose={() => setIsVoiceRecorderOpen(false)}
         onSaveVoiceover={handleVoiceoverSave}
         defaultText="Głos lektora i narracja do filmu..."
+      />
+
+      {/* AI Soundscape & Music Studio Modal */}
+      <SoundscapeStudioModal
+        isOpen={isSoundscapeModalOpen}
+        onClose={() => setIsSoundscapeModalOpen(false)}
+        onAddAudioTrack={handleSoundscapeAdd}
+        audioDuckingEnabled={project.audioSettings?.duckingEnabled ?? true}
+        onToggleAudioDucking={(enabled) => {
+          pushState({
+            ...project,
+            audioSettings: {
+              ...project.audioSettings,
+              duckingEnabled: enabled,
+              duckingAmount: project.audioSettings?.duckingAmount ?? 0.35,
+              musicVolume: project.audioSettings?.musicVolume ?? 0.85,
+              voiceVolume: project.audioSettings?.voiceVolume ?? 1.2,
+              originalAudioVolume: project.audioSettings?.originalAudioVolume ?? 1.0
+            }
+          });
+        }}
       />
     </>
   );

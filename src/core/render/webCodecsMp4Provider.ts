@@ -5,6 +5,112 @@ import { urlRegistry } from '../media/urlRegistry';
 import { resolveClipMediaUrl, resolveAudioTrackUrl, getMediaArrayBuffer } from '../media/mediaResolver';
 import { localIndexedDB } from '../storage/indexedDBProvider';
 import { FrameCompositor } from './FrameCompositor';
+import { AudioResampler, STANDARD_RENDER_SAMPLE_RATE, STANDARD_RENDER_CHANNELS } from '../audio/audioResampler';
+import { SafeAudioDecoder } from '../audio/audioDecoder';
+
+/**
+ * AudioEncoderQueueController
+ * Manages the backpressure queue and guarantees race-condition-free draining & flushing
+ * for WebCodecs AudioEncoder when writing AAC audio data to MP4 muxer.
+ */
+class AudioEncoderQueueController {
+  private encoder: AudioEncoder;
+  private maxQueueSize: number;
+  private isFlushing = false;
+  private flushPromise: Promise<void> | null = null;
+  private dequeueResolvers: Array<() => void> = [];
+  private onHeartbeat?: () => void;
+  public error: Error | null = null;
+
+  constructor(
+    encoder: AudioEncoder,
+    maxQueueSize = 8,
+    onHeartbeat?: () => void
+  ) {
+    this.encoder = encoder;
+    this.maxQueueSize = maxQueueSize;
+    this.onHeartbeat = onHeartbeat;
+
+    this.encoder.ondequeue = () => {
+      this.onHeartbeat?.();
+      const resolvers = [...this.dequeueResolvers];
+      this.dequeueResolvers = [];
+      for (const res of resolvers) {
+        res();
+      }
+    };
+  }
+
+  private waitForDequeue(timeoutMs = 60): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const resolver = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this.dequeueResolvers.push(resolver);
+      timer = setTimeout(() => {
+        const idx = this.dequeueResolvers.indexOf(resolver);
+        if (idx !== -1) this.dequeueResolvers.splice(idx, 1);
+        resolve();
+      }, timeoutMs);
+    });
+  }
+
+  async enqueue(audioData: AudioData, signal?: AbortSignal): Promise<void> {
+    if (this.error) throw this.error;
+    if (signal?.aborted) {
+      try { audioData.close(); } catch {}
+      return;
+    }
+
+    // Apply backpressure if encoder queue exceeds threshold
+    while (this.encoder.encodeQueueSize >= this.maxQueueSize) {
+      if (signal?.aborted || this.error) {
+        try { audioData.close(); } catch {}
+        if (this.error) throw this.error;
+        return;
+      }
+      await this.waitForDequeue();
+    }
+
+    try {
+      if (this.encoder.state === 'configured') {
+        this.encoder.encode(audioData);
+      }
+    } finally {
+      try {
+        audioData.close();
+      } catch {}
+    }
+  }
+
+  async flush(signal?: AbortSignal): Promise<void> {
+    if (this.flushPromise) return this.flushPromise;
+    if (this.isFlushing) return;
+    this.isFlushing = true;
+
+    this.flushPromise = (async () => {
+      // 1. Drain pending encoder queue
+      while (this.encoder.encodeQueueSize > 0) {
+        if (signal?.aborted || this.encoder.state === 'closed') break;
+        this.onHeartbeat?.();
+        await this.waitForDequeue(40);
+      }
+
+      // 2. Perform flush once safely if configured
+      if (!signal?.aborted && this.encoder.state === 'configured') {
+        try {
+          await this.encoder.flush();
+        } catch {
+          // Swallow if already flushed or closed
+        }
+      }
+    })();
+
+    return this.flushPromise;
+  }
+}
 
 /**
  * WebCodecsMp4RenderProvider
@@ -175,11 +281,9 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
         statusMessage: 'Inicjalizacja kodera WebCodecs i kontenera MP4...'
       });
 
-      // 2. Audio Configuration
+      // 2. Audio Configuration - Sound is FOUNDATIONAL: Always generate and encode a valid AAC audio track
       const hasAudioEncoderSupport = typeof window !== 'undefined' && typeof (window as unknown as { AudioEncoder: unknown }).AudioEncoder === 'function';
-      const hasProjectAudio = (project.audioTracks && project.audioTracks.length > 0) ||
-        sortedItems.some(i => !i.muted);
-      const enableAudio = hasAudioEncoderSupport && hasProjectAudio;
+      const enableAudio = hasAudioEncoderSupport;
 
       // 3. Setup MP4 Muxer
       failureStage = 'muxing';
@@ -670,9 +774,27 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
             }
           );
 
+          // Apply Title Card if enabled for this item
+          if (activeItem.titleCard && activeItem.titleCard.enabled) {
+            const cardDuration = Math.min(Math.max(0.8, activeItem.duration * 0.4), activeItem.titleCard.duration || 3);
+            if (timeInItem < cardDuration) {
+              FrameCompositor.drawTitleCard(ctx, width, height, activeItem.titleCard);
+            }
+          }
+
+          // Apply Outro Card if enabled (e.g. final gratitude card at the end of the film)
+          const activeOutro = activeItem.outroCard || (activeItem === sortedItems[sortedItems.length - 1] ? project.settings?.outroCard : undefined);
+          if (activeOutro && activeOutro.enabled) {
+            const outroDuration = Math.min(Math.max(1.0, activeItem.duration * 0.5), activeOutro.duration || 4);
+            const outroStart = Math.max(0, activeItem.duration - outroDuration);
+            if (timeInItem >= outroStart) {
+              FrameCompositor.drawTitleCard(ctx, width, height, activeOutro);
+            }
+          }
+
           // Apply transitions
           const transInType = activeItem.transitionIn || (activeItem.fadeIn ? 'fade' : 'cut');
-          const transInDuration = activeItem.transitionDuration || activeItem.fadeIn || 0;
+          const transInDuration = activeItem.transitionDuration || activeItem.fadeIn || (transInType !== 'cut' ? 0.8 : 0);
           if (transInDuration > 0 && timeInItem < transInDuration) {
             const transProgress = 1 - Math.max(0, Math.min(1, timeInItem / transInDuration));
             FrameCompositor.applyTransition(ctx, width, height, transProgress, transInType);
@@ -680,7 +802,7 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
 
           const timeLeft = activeItem.duration - timeInItem;
           const transOutType = activeItem.transitionOut || (activeItem.fadeOut ? 'fade' : 'cut');
-          const transOutDuration = activeItem.transitionDuration || activeItem.fadeOut || 0;
+          const transOutDuration = activeItem.transitionDuration || activeItem.fadeOut || (transOutType !== 'cut' ? 0.8 : 0);
           if (transOutDuration > 0 && timeLeft < transOutDuration) {
             const transProgress = 1 - Math.max(0, Math.min(1, timeLeft / transOutDuration));
             FrameCompositor.applyTransition(ctx, width, height, transProgress, transOutType);
@@ -802,12 +924,20 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
       });
 
       await videoEncoder.flush();
-      if (audioEncoder) await audioEncoder.flush();
+      if (audioEncoder && (audioEncoder.state as string) === 'configured') {
+        try {
+          await audioEncoder.flush();
+        } catch {}
+      }
 
       muxer.finalize();
       
       videoEncoder.close();
-      if (audioEncoder) audioEncoder.close();
+      if (audioEncoder && (audioEncoder.state as string) !== 'closed') {
+        try {
+          audioEncoder.close();
+        } catch {}
+      }
 
       const { buffer } = muxer.target;
       const finalBlob = new Blob([buffer], { type: 'video/mp4' });
@@ -893,7 +1023,7 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
   }
 
   /**
-   * Render audio mix to OfflineAudioContext and encode using AudioEncoder
+   * Render audio mix to single persistent OfflineAudioContext and encode using AudioEncoder & QueueController
    */
   private async renderAndEncodeAudio(
     project: ProjectState,
@@ -903,12 +1033,13 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
     onHeartbeat?: () => void,
     onProgressUpdate?: (msg: string, percent: number) => void
   ): Promise<void> {
-    const sampleRate = 48000;
+    const sampleRate = STANDARD_RENDER_SAMPLE_RATE;
     const totalSamples = Math.max(1, Math.ceil(totalDuration * sampleRate));
     const OfflineCtxClass = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
     if (!OfflineCtxClass) return;
 
-    const offlineCtx = new OfflineCtxClass(2, totalSamples, sampleRate);
+    // Single persistent master OfflineAudioContext for the entire mix (strictly 48kHz Stereo)
+    const offlineCtx = new OfflineCtxClass(STANDARD_RENDER_CHANNELS, totalSamples, sampleRate);
     const clipMap = new Map<string, MediaClip>();
     (project.mediaLibrary || []).forEach(c => clipMap.set(c.id, c));
     const audioBufferCache = new Map<string, AudioBuffer | null>();
@@ -926,7 +1057,24 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
       }
     };
 
-    // 1. Attach clip audio
+    // Detect voiceover / narration intervals for automatic Audio Ducking of background music
+    const rawAudioTracks = project.audioTracks || [];
+    const activeAudioTracks = rawAudioTracks.filter(t => !t.muted);
+    const voiceoverIntervals: { start: number; end: number; duckingRatio: number }[] = [];
+    const isDuckingActive = project.settings?.audioDucking !== false && project.settings?.audioBalance?.duckingEnabled !== false;
+    const duckAmount = project.settings?.duckingIntensity !== undefined ? project.settings.duckingIntensity / 100 : (project.settings?.audioBalance?.duckingAmount ?? 0.6);
+
+    for (const track of activeAudioTracks) {
+      if (track.trackType === 'voiceover') {
+        const start = Math.max(0, track.timelineStart || 0);
+        const end = start + (track.duration || 1);
+        voiceoverIntervals.push({ start, end, duckingRatio: Math.max(0.1, 1 - duckAmount) });
+      }
+    }
+
+    let attachedSourcesCount = 0;
+
+    // 1. Attach clip audio (Explicitly resampled to 48kHz Stereo)
     const timelineItems = project.timelineItems || [];
     const videoItems = timelineItems.filter(item => {
       if (item.muted || item.volume === 0) return false;
@@ -973,8 +1121,7 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
         if (arrayBuf && arrayBuf.byteLength > 0) {
           try {
             onHeartbeat?.();
-            const copy = arrayBuf.slice(0);
-            decoded = await offlineCtx.decodeAudioData(copy);
+            decoded = await SafeAudioDecoder.decodeTo48kStereo(offlineCtx, arrayBuf);
             audioBufferCache.set(clip.id, decoded);
           } catch {
             audioBufferCache.set(clip.id, null);
@@ -1014,20 +1161,23 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
           const safeOffset = Math.max(0, Math.min(item.sourceStart || 0, maxOffset));
           const safeDuration = Math.max(0.05, Math.min(item.duration, decoded.duration - safeOffset));
           source.start(startTime, safeOffset, safeDuration);
+          attachedSourcesCount++;
         } catch {}
       }
     }
 
-    // 2. Attach background audio tracks
-    const audioTracks = (project.audioTracks || []).filter(t => !t.muted);
-    for (let j = 0; j < audioTracks.length; j++) {
+    // 2. Attach background audio tracks & voiceover (Explicitly resampled to 48kHz Stereo)
+    for (let j = 0; j < activeAudioTracks.length; j++) {
       if (signal?.aborted) return;
       onHeartbeat?.();
 
-      const track = audioTracks[j];
+      const track = activeAudioTracks[j];
+      const isVoiceover = track.trackType === 'voiceover';
+      const trackLabel = isVoiceover ? 'Lektor / Głos' : (track.name || 'Muzyka');
+
       onProgressUpdate?.(
-        `Wczytywanie ścieżki muzycznej (${j + 1}/${audioTracks.length}): ${track.name || 'Muzyka'}...`,
-        Math.round(10 + (j / Math.max(1, audioTracks.length)) * 3)
+        `Wczytywanie ścieżki (${j + 1}/${activeAudioTracks.length}): ${trackLabel}...`,
+        Math.round(10 + (j / Math.max(1, activeAudioTracks.length)) * 3)
       );
 
       try {
@@ -1041,24 +1191,66 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
 
         if (arrayBuf && arrayBuf.byteLength > 0) {
           onHeartbeat?.();
-          const copy = arrayBuf.slice(0);
-          const decoded = await offlineCtx.decodeAudioData(copy);
+          const decoded = await SafeAudioDecoder.decodeTo48kStereo(offlineCtx, arrayBuf);
+
           if (decoded && decoded.duration > 0) {
             const source = offlineCtx.createBufferSource();
             source.buffer = decoded;
             const gain = offlineCtx.createGain();
-            const trackBaseVol = (track.volume ?? 1) * (project.settings?.audioBalance?.musicVolume ?? 0.8);
-            gain.gain.value = trackBaseVol;
+
+            // Calculate base volume depending on track type (voiceover vs music vs sfx)
+            let baseVol = track.volume ?? 1;
+            if (isVoiceover) {
+              baseVol *= (project.settings?.audioBalance?.voiceoverVolume ?? 1.0);
+            } else if (track.trackType === 'music' || !track.trackType) {
+              baseVol *= (project.settings?.audioBalance?.musicVolume ?? 0.8);
+            }
+
+            gain.gain.setValueAtTime(baseVol, 0);
+
+            // Apply Voiceover Ducking Automation for background music tracks
+            if (!isVoiceover && voiceoverIntervals.length > 0 && isDuckingActive) {
+              for (const vInt of voiceoverIntervals) {
+                const duckedVol = baseVol * vInt.duckingRatio;
+                gain.gain.setValueAtTime(baseVol, Math.max(0, vInt.start - 0.3));
+                gain.gain.linearRampToValueAtTime(duckedVol, vInt.start);
+                gain.gain.setValueAtTime(duckedVol, vInt.end);
+                gain.gain.linearRampToValueAtTime(baseVol, vInt.end + 0.5);
+              }
+            }
+
             source.connect(gain);
             gain.connect(offlineCtx.destination);
 
             const trackOffset = Math.max(0, Math.min(track.sourceStart || 0, decoded.duration - 0.05));
             const trackDur = Math.max(0.05, Math.min(track.duration || decoded.duration, decoded.duration - trackOffset));
             source.start(track.timelineStart || 0, trackOffset, trackDur);
+            attachedSourcesCount++;
           }
         }
       } catch {}
       onHeartbeat?.();
+    }
+
+    // Sound is FOUNDATIONAL: If no audio tracks or clip audio connected, synthesize a rich wedding soundscape!
+    if (attachedSourcesCount === 0) {
+      try {
+        const fallbackSoundtrack = await SafeAudioDecoder.createFoundationalWeddingSoundtrack(
+          offlineCtx,
+          totalDuration,
+          'altar_procession'
+        );
+        const fbSource = offlineCtx.createBufferSource();
+        fbSource.buffer = fallbackSoundtrack;
+        const fbGain = offlineCtx.createGain();
+        fbGain.gain.setValueAtTime(0.75, 0);
+        fbSource.connect(fbGain);
+        fbGain.connect(offlineCtx.destination);
+        fbSource.start(0, 0, totalDuration);
+        attachedSourcesCount++;
+      } catch (fbErr) {
+        console.warn('[webCodecsMp4Provider] Fallback soundtrack error:', fbErr);
+      }
     }
 
     onProgressUpdate?.('Miksowanie wielościeżkowego audio (48kHz stereo)...', 13);
@@ -1066,16 +1258,26 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
     if (signal?.aborted) return;
     onHeartbeat?.();
 
-    // Stream audio buffer chunks to AudioEncoder
+    // Stream audio buffer chunks to AudioEncoder with robust queue management
     const channel0 = renderedAudioBuf.getChannelData(0);
     const channel1 = renderedAudioBuf.numberOfChannels > 1 ? renderedAudioBuf.getChannelData(1) : channel0;
 
-    const chunkSize = 1024; // AAC frame size
+    // Safety peak limiter
+    for (let s = 0; s < totalSamples; s++) {
+      if (channel0[s] > 0.98) channel0[s] = 0.98;
+      else if (channel0[s] < -0.98) channel0[s] = -0.98;
+      if (channel1[s] > 0.98) channel1[s] = 0.98;
+      else if (channel1[s] < -0.98) channel1[s] = -0.98;
+    }
+
+    const queueController = new AudioEncoderQueueController(audioEncoder, 8, onHeartbeat);
+    const chunkSize = 1024; // Standard AAC frame size
     let sampleOffset = 0;
 
     while (sampleOffset < totalSamples) {
       if (signal?.aborted) break;
       onHeartbeat?.();
+
       const currentChunkSize = Math.min(chunkSize, totalSamples - sampleOffset);
 
       const planarData = new Float32Array(currentChunkSize * 2);
@@ -1095,16 +1297,19 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
         data: planarData
       });
 
-      audioEncoder.encode(audioData);
-      audioData.close();
+      await queueController.enqueue(audioData, signal);
 
       sampleOffset += currentChunkSize;
 
-      if (sampleOffset % (chunkSize * 100) === 0 || sampleOffset >= totalSamples) {
+      if (sampleOffset % (chunkSize * 80) === 0 || sampleOffset >= totalSamples) {
         const aacPct = Math.round(14 + (sampleOffset / totalSamples) * 4);
         onProgressUpdate?.(`Kodowanie audio AAC (${Math.round((sampleOffset / totalSamples) * 100)}%)...`, aacPct);
       }
     }
+
+    // Robust Flush Phase: drain encoder queue and flush before completing
+    onProgressUpdate?.('Finalizacja i synchronizacja strumienia audio...', 18);
+    await queueController.flush(signal);
   }
 
   /**

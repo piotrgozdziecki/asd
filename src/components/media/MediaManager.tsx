@@ -27,6 +27,7 @@ import {
   Image as ImageIcon,
   Music,
   Play,
+  SlidersHorizontal,
   X
 } from 'lucide-react';
 import type { MediaClip, ClipCategory } from '../../types/project';
@@ -52,7 +53,8 @@ interface MediaManagerProps {
   onResetProject?: () => void;
   onEditClip?: (clip: MediaClip) => void;
   onMoveClipOrder?: (fromIndex: number, toIndex: number) => void;
-  onOpenChronologicalModal?: () => void;
+  onOpenChronologicalModal?: (selectedClips?: MediaClip[]) => void;
+  onQuickApplyDirectorCut?: (selectedClips?: MediaClip[]) => void;
   onNavigateToExport?: () => void;
   externalFilterTab?: string;
   onFilterTabChange?: (tab: any) => void;
@@ -74,6 +76,7 @@ export function MediaManager({
   onEditClip,
   onMoveClipOrder,
   onOpenChronologicalModal,
+  onQuickApplyDirectorCut,
   onNavigateToExport,
   externalFilterTab,
   onFilterTabChange
@@ -848,13 +851,24 @@ export function MediaManager({
               </div>
             </div>
 
-            <div className="flex items-center gap-2.5 shrink-0">
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              {onQuickApplyDirectorCut && (
+                <button
+                  onClick={() => onQuickApplyDirectorCut()}
+                  className="bg-gradient-to-r from-[#D4AF37] via-[#FDE047] to-[#E5C158] hover:brightness-110 text-black px-4 sm:px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-2 cursor-pointer shadow-[0_4px_25px_rgba(212,175,55,0.45)] transition-all hover:scale-105 active:scale-95 whitespace-nowrap"
+                  title="Wszystkie opcje reżyserskie w 1 kliknięciu: wstępna karta liturgiczna 14.09.2024, karty pomiędzy filmami, podziękowania dla rodziców i gości oraz muzyka"
+                >
+                  <Sparkles className="w-4 h-4 fill-black text-black" />
+                  <span>1-Kliknięcie: Scal & Podpisz AI</span>
+                </button>
+              )}
               <button
-                onClick={onOpenChronologicalModal}
-                className="luxury-btn-primary px-5 py-2.5 rounded-xl text-xs font-extrabold uppercase tracking-wider flex items-center gap-2 cursor-pointer shadow-[0_4px_25px_rgba(212,175,55,0.4)]"
+                onClick={() => onOpenChronologicalModal?.()}
+                className="px-3.5 py-2.5 rounded-xl text-xs font-bold text-[#FDE047] bg-[#221C11] border border-[#D4AF37]/50 hover:bg-[#2D2415] hover:border-[#D4AF37] flex items-center gap-1.5 cursor-pointer transition-all shadow-sm whitespace-nowrap"
+                title="Otwórz konsolę i dostosuj kolejność ujęć, tytuły, styl kart i czas trwania"
               >
-                <Sparkles className="w-4 h-4 text-black" />
-                <span>Uruchom Scalanie & Podpisy AI</span>
+                <SlidersHorizontal className="w-3.5 h-3.5 text-[#D4AF37]" />
+                <span>Dostosuj szczegóły...</span>
               </button>
             </div>
           </div>
@@ -1032,7 +1046,7 @@ export function MediaManager({
 
             {onOpenChronologicalModal && clips.length > 0 && (
               <button
-                onClick={onOpenChronologicalModal}
+                onClick={() => onOpenChronologicalModal?.()}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#D4AF37] bg-gradient-to-r from-[#3D2E12] to-[#251C0A] text-[#FDE047] hover:border-[#FDE047] hover:brightness-110 transition-all cursor-pointer text-xs font-bold shadow-[0_0_15px_rgba(212,175,55,0.25)] whitespace-nowrap shrink-0"
                 title="Automatyczne scalanie chronologiczne i podpisywanie scen przez AI"
               >
@@ -1164,12 +1178,15 @@ export function MediaManager({
           <div className="flex items-center gap-2 flex-wrap">
             {onOpenChronologicalModal && (
               <button
-                onClick={onOpenChronologicalModal}
-                className="bg-gradient-to-r from-[#3D2E12] to-[#251C0A] hover:border-[#FDE047] border border-[#D4AF37] text-[#FDE047] font-bold text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 shadow-md cursor-pointer transition-transform hover:scale-105 active:scale-95"
-                title="Otwórz inteligentne scalanie chronologiczne i podpisywanie dla zaznaczonych materiałów"
+                onClick={() => {
+                  const selected = clips.filter(c => selectedIds.has(c.id));
+                  onOpenChronologicalModal(selected.length > 0 ? selected : filteredClips);
+                }}
+                className="bg-gradient-to-r from-[#D4AF37] via-[#FDE047] to-[#E5C158] hover:brightness-110 text-black font-extrabold text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 shadow-lg cursor-pointer transition-transform hover:scale-105 active:scale-95"
+                title="Otwórz Reżysera AI dla zaznaczonych materiałów (scalanie, czołówka, napisy, przejścia)"
               >
-                <Sparkles className="w-3.5 h-3.5 text-[#FDE047]" />
-                <span>✨ Scal i Podpisz AI</span>
+                <Sparkles className="w-4 h-4 fill-black text-black" />
+                <span>✨ REŻYSER AI ({selectedIds.size})</span>
               </button>
             )}
 

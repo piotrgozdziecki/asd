@@ -1,9 +1,17 @@
+import type { ProjectState, TimelineItem, TitleCard, ClipCategory } from '../../types/project';
+
 export interface OutputVerificationResult {
   valid: boolean;
   duration: number;
   width: number;
   height: number;
   error?: string;
+}
+
+export interface PreFlightCheckResult {
+  passed: boolean;
+  fixedIssues: string[];
+  sanitizedProject: ProjectState;
 }
 
 export class ExportValidator {
@@ -208,5 +216,143 @@ export class ExportValidator {
 
       testVideo.src = testUrl;
     });
+  }
+
+  /**
+   * V. ZASADY PRE-FLIGHT CHECK (Automatyczna Walidacja AI przed Renderowaniem)
+   * 1. Sprawdza, czy żaden tytuł ani opis nie zawiera słów technicznych (SCENA, KLIP, .MP4, .MOV, I3200, DSC_, VID_, IMG_).
+   * 2. Sprawdza, czy każdy czas trwania ujęcia `duration` mieści się w przedziale 3–12 sekund.
+   * 3. Sprawdza, czy dla każdego klipu została wygenerowana odpowiadająca mu karta wstępna (karty == klipy + 1 intro + 1 outro).
+   * 4. Automatycznie koryguje i standaryzuje projekt przed przekazaniem do renderera.
+   */
+  static runAiPreFlightCheck(project: ProjectState): PreFlightCheckResult {
+    const fixedIssues: string[] = [];
+    const clipMap = new Map(project.mediaLibrary.map(c => [c.id, c]));
+    const totalClips = project.timelineItems.length;
+
+    const technicalPattern = /\.(mp4|mov|avi|mkv|jpg|jpeg|png)$|^(clip|video|dsc|img|vid|i\d{2,}|scena\s*\d*|ujęcie\s*\d*|ti_\d+)/i;
+
+    const categoryTitles: Record<string, string[]> = {
+      opening: ['Prolog – Początek Naszej Historii', 'Wspomnienia i Oczekiwanie', 'Magia Dnia Ślubu'],
+      preparations: ['Poranne Przygotowania i Detale', 'Błogosławieństwo w Domu Rodzinnym', 'Chwile Przed Przysięgą'],
+      ceremony: ['Przysięga Przed Ołtarzem', 'Wymiana Obrączek Ślubnych', 'Uroczyste Zaślubiny'],
+      congratulations: ['Wzruszające Życzenia od Bliskich', 'Uściski i Gratulacje Rodziców', 'Radość Najbliższych'],
+      first_dance: ['Pierwszy Taniec w Chmurach', 'Romantyczny Walc Nowożeńców', 'Magia Pierwszego Tańca'],
+      toast: ['Wzniesienie Pierwszego Toastu', 'Uroczyste Przemowy i Wiwaty', 'Toast za Nowożeńców'],
+      party: ['Zabawa na Parkiecie', 'Weselne Szaleństwo z Gośćmi', 'Najgorętsze Chwile Nocy'],
+      cake: ['Krojenie Tortu Weselnego', 'Słodka Chwila Wesela', 'Tradycyjny Tort Nowożeńców'],
+      outdoor: ['Romantyczny Spacer w Plenerze', 'Złote Promienie Miłości', 'Sesja w Ciepłym Słońcu'],
+      ending: ['Zimne Ognie i Nocny Finał', 'Finałowa Iskra Miłości', 'Niezapomniane Zakończenie Nocy'],
+      unassigned: ['Wyjątkowy Moment Uroczystości', 'Pamiątkowa Scena Weselna', 'Magiczne Chwile Razem']
+    };
+
+    const sanitizeTitle = (text: string | undefined, category: string, index: number): string => {
+      let t = (text || '').replace(/\.[a-zA-Z0-9]{2,5}$/i, '').trim();
+      if (!t || technicalPattern.test(t) || t.toLowerCase().includes('scena') || t.toLowerCase().includes('klip')) {
+        const pool = categoryTitles[category] || categoryTitles.unassigned;
+        return pool[index % pool.length];
+      }
+      return t;
+    };
+
+    let updatedStart = 0;
+    const sanitizedTimelineItems: TimelineItem[] = project.timelineItems.map((item, idx) => {
+      const clip = clipMap.get(item.clipId);
+      const category = (clip?.category || 'ceremony') as ClipCategory;
+      const isFirst = idx === 0;
+      const isLast = idx === totalClips - 1;
+
+      // 1. Duration check (3 - 12 seconds strict rule)
+      let duration = item.duration;
+      let sourceStart = item.sourceStart || 0;
+      let sourceEnd = item.sourceEnd || (sourceStart + duration);
+
+      if (duration > 12.0) {
+        fixedIssues.push(`Skrócono ujęcie #${idx + 1} z ${duration.toFixed(1)}s do 12.0s (zasada Smart Trim 3–12s).`);
+        duration = 12.0;
+        sourceEnd = sourceStart + 12.0;
+      } else if (duration < 3.0 && (clip?.duration || 0) >= 3.0) {
+        fixedIssues.push(`Wydłużono ujęcie #${idx + 1} z ${duration.toFixed(1)}s do 3.0s dla zachowania czytelności kadru.`);
+        duration = 3.0;
+        sourceEnd = sourceStart + 3.0;
+      }
+
+      // 2. Title Card Check & Sanitization
+      const rawTitle = item.titleCard?.text || clip?.name;
+      const cleanTitle = sanitizeTitle(rawTitle, category, idx);
+      const cleanSubtitle = (item.titleCard?.subtitle && !technicalPattern.test(item.titleCard.subtitle))
+        ? item.titleCard.subtitle
+        : (isFirst ? 'Sakrament Małżeństwa • Film Ślubny' : `Wyjątkowy moment uroczystości (${cleanTitle}).`);
+
+      if (rawTitle !== cleanTitle) {
+        fixedIssues.push(`Zamieniono nazwę techniczną "${rawTitle}" na elegancki tytuł sceny: "${cleanTitle}".`);
+      }
+
+      // Ensure titleCard is present and fully configured
+      const titleCard: TitleCard = {
+        enabled: true,
+        text: isFirst ? (item.titleCard?.text && !technicalPattern.test(item.titleCard.text) ? item.titleCard.text : 'Ślub Joanny & Piotra') : cleanTitle,
+        subtitle: cleanSubtitle,
+        duration: isFirst ? 3.5 : 2.5,
+        style: isFirst ? 'liturgical' : (item.titleCard?.style || 'elegant'),
+        backgroundColor: 'gradient',
+        cardType: isFirst ? 'intro' : 'scene'
+      };
+
+      // 3. Outro Card on Last Item
+      let outroCard: TitleCard | undefined = undefined;
+      if (isLast) {
+        outroCard = {
+          enabled: true,
+          text: 'Dziękujemy za Wspólne Chwile',
+          subtitle: 'Joanna & Piotr • Na Zawsze Razem',
+          duration: 4.0,
+          style: 'elegant',
+          backgroundColor: '#0A0805',
+          cardType: 'outro'
+        };
+      }
+
+      const currentStart = updatedStart;
+      updatedStart += duration;
+
+      return {
+        ...item,
+        sourceStart,
+        sourceEnd,
+        timelineStart: currentStart,
+        duration,
+        fadeIn: 0.5,
+        fadeOut: 0.5,
+        transitionIn: isFirst ? 'dip_black' : (item.transitionIn || 'dissolve'),
+        transitionDuration: 0.5,
+        titleCard,
+        outroCard
+      };
+    });
+
+    // 4. Ensure Audio Settings & Ducking are optimized (-18dB under speech)
+    const sanitizedAudioSettings = {
+      duckingEnabled: true,
+      duckingAmount: 0.18, // -18dB
+      musicVolume: 0.85,
+      voiceVolume: 1.2,
+      originalAudioVolume: 1.0,
+      ...project.audioSettings
+    };
+
+    const sanitizedProject: ProjectState = {
+      ...project,
+      timelineItems: sanitizedTimelineItems,
+      audioSettings: sanitizedAudioSettings,
+      updatedAt: new Date().toISOString()
+    };
+
+    const passed = fixedIssues.length === 0;
+    return {
+      passed,
+      fixedIssues,
+      sanitizedProject
+    };
   }
 }

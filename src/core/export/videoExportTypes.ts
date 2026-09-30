@@ -103,6 +103,7 @@ export interface TimelineClip {
   smartCropFocus?: 'center' | 'top' | 'face_safe' | 'manual';
   colorAdjustments?: ClipColorAdjustments;
   titleCard?: TitleCard;
+  outroCard?: TitleCard;
   transitionIn?: TransitionType;
   transitionOut?: TransitionType;
   transitionDuration?: number;
@@ -212,6 +213,7 @@ export interface ExportPlan {
   clips: TimelineClip[];
   audioTracks?: any[];
   textLayers?: TextLayer[];
+  outroCard?: TitleCard;
   totalDuration: number;
   totalFrames: number;
   hasAudio: boolean;

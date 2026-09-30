@@ -6,6 +6,36 @@ if ((globalThis as any).__filename === '.') {
   delete (globalThis as any).__filename;
 }
 
+import dns from 'node:dns';
+import { Agent, setGlobalDispatcher } from 'undici';
+
+// Prioritize IPv4 and configure global Undici dispatcher to prevent ConnectTimeoutError on Google API endpoints
+if (dns.setDefaultResultOrder) {
+  try {
+    dns.setDefaultResultOrder('ipv4first');
+  } catch {}
+}
+if ((dns as any).setDefaultAutoSelectFamily) {
+  try {
+    (dns as any).setDefaultAutoSelectFamily(true);
+  } catch {}
+}
+
+try {
+  const globalAgent = new Agent({
+    connect: {
+      timeout: 30000,
+      autoSelectFamily: true,
+      autoSelectFamilyAttemptTimeout: 1000
+    },
+    keepAliveTimeout: 5000,
+    keepAliveMaxTimeout: 45000
+  });
+  setGlobalDispatcher(globalAgent);
+} catch (agentErr) {
+  console.warn('[Server] Note on global Undici dispatcher setup:', agentErr);
+}
+
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -70,11 +100,16 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, retries = 2, delayMs = 
       errStr.includes('RESOURCE_EXHAUSTED') || 
       errStr.includes('UNAVAILABLE') ||
       errStr.includes('quota') ||
+      errStr.includes('limit reached') ||
       errStr.includes('high demand') ||
-      errStr.includes('temporarily unavailable');
+      errStr.includes('temporarily unavailable') ||
+      errStr.includes('ECONNRESET') ||
+      errStr.includes('ETIMEDOUT') ||
+      err?.name === 'FetchError';
       
     if (retries > 0 && isRetryable) {
-      console.log(`Dostosowanie limitu API (${err?.status || err?.error?.code || '429/503'}), ponowna próba za ${delayMs}ms... (pozostało prób: ${retries})`);
+      console.log(`[AI Retry] Retrying in ${delayMs}ms... (attempts left: ${retries}). Error: ${errStr.substring(0, 100)}`);
+      if (err?.cause) console.log(`[AI Retry] Cause: ${err.cause?.message || err.cause}`);
       await new Promise(resolve => setTimeout(resolve, delayMs));
       return retryWithBackoff(fn, retries - 1, Math.round(delayMs * 1.5));
     }
@@ -91,46 +126,46 @@ const moodDirectives: Record<string, {
   timelineGuidelines: string;
 }> = {
   high_quality: {
-    name: "Wysoka Jakość Kinowa (Master Quality)",
-    style: "Najwyższa jakość filmowa (Master Quality). Autentyczne, głębokie emocje, naturalne światło, doskonała plastyka obrazu, przemyślana kompozycja kadrów i elegancki, płynny montaż bez tanich efektów. Skupienie na prawdzie chwili, spojrzeniach Pary Młodej, wzruszeniach gości i szlachetnym klimacie ceremonii oraz wesela.",
-    musicStyle: "Szlachetna, emocjonalna kompozycja o najwyższej jakości studyjnej (akustyczny fortepian, subtelna orkiestracja smyczkowa, naturalny ciepły mastering).",
-    voiceoverStyle: "Ciepły, naturalny i głęboki tekst do osobistego odczytania lub nagrania własnego głosu przez Parę Młodą.",
-    timelineGuidelines: "Harmonijny, filmowy flow dopasowany do oryginalnych ujęć – naturalna kolejność wydarzeń, mistrzowski balans emocji i elegancji."
+    name: "Master Quality Kinowa",
+    style: "Szlachetny reportaż kinowy najwyższej próby. Autentyczne, głębokie emocje, naturalne światło, miękki bokeh f/1.4, kinowa proporcja 2.39:1 i elegancki, nienarzucający się montaż z naciskiem na mikro-ekspresje i spojrzenia.",
+    musicStyle: "Emocjonalna orkiestracja symfoniczna (akustyczny fortepian, sekcja smyczkowa, delikatna wiolonczela, studyjna przestrzeń).",
+    voiceoverStyle: "Głęboki, ciepły, pełen szacunku i poezji lektor snujący opowieść o przeznaczeniu i miłości.",
+    timelineGuidelines: "Mistrzowska dramaturgia – budowanie napięcia od spowolnionego poranka, przez kulminację przysięgi, aż po szalony wir wesela."
   },
   romantic: {
-    name: "Wysoka Jakość Kinowa (Master Quality)",
-    style: "Najwyższa jakość filmowa (Master Quality). Autentyczne, głębokie emocje, naturalne światło, doskonała plastyka obrazu, przemyślana kompozycja kadrów i elegancki, płynny montaż bez tanich efektów.",
-    musicStyle: "Szlachetna, emocjonalna kompozycja o najwyższej jakości studyjnej.",
-    voiceoverStyle: "Ciepły, naturalny i głęboki tekst do nagrania własnego głosu.",
-    timelineGuidelines: "Harmonijny, filmowy flow dopasowany do oryginalnych ujęć."
+    name: "Romantyczny Poematu Miłosny",
+    style: "Pastelowa, poetycka aura z miękkim flarowaniem światła. Skupienie na małych gestach: drżących dłoniach przy przysiędze, pocałunkach w locie, łzach szczęścia rodziców i romantycznym spacerze w koronie drzew.",
+    musicStyle: "Ciepły akustyczny duet fortepianu i gitary z aksamitnym wokalem lub delikatnym smyczkowym podkładem (60-75 BPM).",
+    voiceoverStyle: "Czuła, poetycka narracja z intymnymi osobistymi wyznaniami i ciepłym głosem lektora.",
+    timelineGuidelines: "Płynny, zmysłowy montaż oparty na ujęciach w zwolnionym tempie (slow-motion 60fps) i łagodnych przenikaniach (cross-dissolve)."
   },
   energetic: {
-    name: "Wysoka Jakość Kinowa (Master Quality)",
-    style: "Najwyższa jakość filmowa (Master Quality). Autentyczne, głębokie emocje, naturalne światło, doskonała plastyka obrazu.",
-    musicStyle: "Szlachetna, emocjonalna kompozycja studyjna.",
-    voiceoverStyle: "Naturalny i głęboki tekst do nagrania własnego głosu.",
-    timelineGuidelines: "Harmonijny flow ujęć."
+    name: "Eksplozywny Teledysk Weselny",
+    style: "Dynamiczny, rytmiczny i porywający montaż teledyskowy. Żywe kolory, konfetti, wybuchy szampana, śmiech, salwy braw i euforyczne tańce na parkiecie.",
+    musicStyle: "Upbeat pop/funk mashup lub nowoczesny dance-remix z wyrazistym basowym beatem i porywającą sekcją dętą (115-128 BPM).",
+    voiceoverStyle: "Energiczna, entuzjastyczna i zmysłowa narracja budująca weselny vibe i radość życia.",
+    timelineGuidelines: "Krótkie, szybkie cięcia cięte idealnie na stopę perkusji (beat-matching), efektowne rampy prędkości (speed ramps)."
   },
   cinematic: {
-    name: "Wysoka Jakość Kinowa (Master Quality)",
-    style: "Najwyższa jakość filmowa (Master Quality). Autentyczne, głębokie emocje, naturalne światło, doskonała plastyka obrazu.",
-    musicStyle: "Szlachetna, emocjonalna kompozycja studyjna.",
-    voiceoverStyle: "Naturalny i głęboki tekst do nagrania własnego głosu.",
-    timelineGuidelines: "Harmonijny flow ujęć."
+    name: "Monumentalny Zwiastun Filmowy",
+    style: "Dramatyczny, trailerowy charakter z głębokimi cieniami, kontrastowym światłem i kinowym prowadzeniem kamery (dron, jazdy na sliderze).",
+    musicStyle: "Epicki, rosnący aranż symfoniczny z pulsującą perkusją orkiestrową i monumentami dętymi drewnianymi i blaszanymi.",
+    voiceoverStyle: "Dojrzały, dostojny i poruszający voiceover kinowy z przerwami na oddech i pauzami dramatycznymi.",
+    timelineGuidelines: "Segmentowa struktura: Trzypaktowy scenariusz (Prolog -> Kulminacja -> Szalona Celebracja -> Sentymentalny Epilog)."
   },
   modern: {
-    name: "Wysoka Jakość Kinowa (Master Quality)",
-    style: "Najwyższa jakość filmowa (Master Quality). Autentyczne, głębokie emocje, naturalne światło, doskonała plastyka obrazu.",
-    musicStyle: "Szlachetna, emocjonalna kompozycja studyjna.",
-    voiceoverStyle: "Naturalny i głęboki tekst do nagrania własnego głosu.",
-    timelineGuidelines: "Harmonijny flow ujęć."
+    name: "Modern Vogue Reel & Aesthetic",
+    style: "Świeży, modny design wideo inspirowany estetyką fashion & Vogue Weddings. Minimalistyczna typografia, szybkie cięcia detali, nowoczesne zbliżenia.",
+    musicStyle: "Stylowy indie-pop, chill-house lub nowofalowy elektroniczny beat o ciepłym, nowoczesnym brzmieniu.",
+    voiceoverStyle: "Nowoczesny, bezpośredni, pewny siebie i lekki głos z szczyptą humoru i autentyczności.",
+    timelineGuidelines: "Aesthetic cuts, szybkie sekwencje detali (perfumy, biżuteria, buty, spojrzenia) przeplatane płynnymi zoomami."
   },
   nostalgic: {
-    name: "Wysoka Jakość Kinowa (Master Quality)",
-    style: "Najwyższa jakość filmowa (Master Quality). Autentyczne, głębokie emocje, naturalne światło, doskonała plastyka obrazu.",
-    musicStyle: "Szlachetna, emocjonalna kompozycja studyjna.",
-    voiceoverStyle: "Naturalny i głęboki tekst do nagrania własnego głosu.",
-    timelineGuidelines: "Harmonijny flow ujęć."
+    name: "Ponadczasowe Wspomnienia (Analog Super 8)",
+    style: "Klimat starych taśm celuloidowych Super 8 i 16mm, ciepły odcień sepii, mikro-ziarno, winieta i nostalgiczna ciepła barwa światła.",
+    musicStyle: "Nostalgiczny folkowy utwór akustyczny z delikatnym szumem płyty winylowej, banjo i smyczkami.",
+    voiceoverStyle: "Ciepły, rodzinny, gawędziarski głos przypominający rodzinne historie i miłość przekazywaną z pokolenia na pokolenie.",
+    timelineGuidelines: "Ciepłe, powolne ujęcia łączące pokolenia – uśmiechy dziadków, dzieci, tradycje i wieczną miłość."
   }
 };
 
@@ -269,27 +304,38 @@ function generateFallbackStory(analyzedItems: any[] = [], mood: string = 'romant
   };
 }
 
-// Utility to fetch a file from Google Drive and return as base64
+// Utility to fetch a file from Google Drive and return as base64 with retry
 async function fetchDriveFileBase64(fileId: string, token: string): Promise<{ base64: string, mimeType: string }> {
-  // First, get metadata to know the mime type
-  const metaRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=mimeType`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (!metaRes.ok) throw new Error(`Drive metadata error: ${metaRes.statusText}`);
-  const meta = await metaRes.json();
-  
-  // Then download the content
-  const mediaRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (!mediaRes.ok) throw new Error(`Drive media error: ${mediaRes.statusText}`);
-  
-  const arrayBuffer = await mediaRes.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  return {
-    base64: buffer.toString('base64'),
-    mimeType: meta.mimeType || 'application/octet-stream'
-  };
+  return retryWithBackoff(async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+    try {
+      // First, get metadata to know the mime type
+      const metaRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=mimeType`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal
+      });
+      if (!metaRes.ok) throw new Error(`Drive metadata error: ${metaRes.statusText}`);
+      const meta = await metaRes.json();
+      
+      // Then download the content
+      const mediaRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal
+      });
+      if (!mediaRes.ok) throw new Error(`Drive media error: ${mediaRes.statusText}`);
+      
+      const arrayBuffer = await mediaRes.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      return {
+        base64: buffer.toString('base64'),
+        mimeType: meta.mimeType || 'application/octet-stream'
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }, 2, 800);
 }
 
 app.post('/api/analyze-media', async (req, res) => {
@@ -549,6 +595,8 @@ Zwróć wynik jako JSON z polami:
 
     return res.json({ ...storyData, mood });
   } catch (err: any) {
+    console.error('[AI Director] Error generating story:', err);
+    if (err?.cause) console.error('[AI Director] Cause:', err.cause?.message || err.cause);
     console.log('Automatyczne przejście do trybu standardowego dla scenariusza.');
     const fallback = generateFallbackStory(req.body?.analyzedItems || req.body?.items, req.body?.mood || 'romantic');
     res.json(fallback);
@@ -560,51 +608,82 @@ app.post('/api/generate-storyboard', handleGenerateStory);
 
 // Stream a file from Google Drive directly to client (e.g. <video> or <img>)
 app.get('/api/drive/stream/:id', async (req, res) => {
-  try {
-    const fileId = req.params.id;
-    const token = (req.query.accessToken as string) || (req.headers.authorization?.replace('Bearer ', ''));
-    if (!token) return res.status(401).json({ error: 'Missing access token' });
+  const fileId = req.params.id;
+  const token = (req.query.accessToken as string) || (req.headers.authorization?.replace('Bearer ', ''));
+  if (!token) return res.status(401).json({ error: 'Missing access token' });
 
-    const fetchHeaders: Record<string, string> = { 
-      Authorization: `Bearer ${token}` 
-    };
-    if (req.headers.range) {
-      fetchHeaders['Range'] = req.headers.range as string;
-    }
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${token}`
+  };
+  if (req.headers.range) {
+    headers['Range'] = req.headers.range as string;
+  }
 
-    const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-      headers: fetchHeaders
+  const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+  
+  // Wrapper for request execution with retry
+  const executeRequest = (attempt = 1) => {
+    const request = https.get(url, { headers, family: 4 }, (driveRes) => {
+      // Handle redirects
+      if (driveRes.statusCode === 301 || driveRes.statusCode === 302 || driveRes.statusCode === 307 || driveRes.statusCode === 308) {
+        if (driveRes.headers.location) {
+          https.get(driveRes.headers.location, { headers, family: 4 }, (redirectRes) => {
+            handleResponse(redirectRes);
+          }).on('error', handleError);
+          return;
+        }
+      }
+      handleResponse(driveRes);
     });
 
-    if (!driveRes.ok && driveRes.status !== 206) {
-      return res.status(driveRes.status).json({ error: `Drive error: ${driveRes.statusText}` });
-    }
+    const handleResponse = (driveRes: any) => {
+      if (driveRes.statusCode && driveRes.statusCode >= 400 && driveRes.statusCode !== 206) {
+        if (attempt < 2) {
+          console.log(`[Server] Drive stream retry ${attempt}/2 due to status ${driveRes.statusCode}`);
+          executeRequest(attempt + 1);
+          return;
+        }
+        res.status(driveRes.statusCode).end();
+        return;
+      }
 
-    res.status(driveRes.status);
-    const contentType = driveRes.headers.get('content-type') || 'video/mp4';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Accept-Ranges', 'bytes');
-    if (driveRes.headers.get('content-range')) {
-      res.setHeader('Content-Range', driveRes.headers.get('content-range')!);
-    }
-    if (driveRes.headers.get('content-length')) {
-      res.setHeader('Content-Length', driveRes.headers.get('content-length')!);
-    }
-    
-    const { Readable } = await import('stream');
-    if (driveRes.body) {
-      Readable.fromWeb(driveRes.body as any).pipe(res);
-    } else {
-      res.end();
-    }
-  } catch (err: any) {
-    console.error('Drive stream error:', err);
-    res.status(500).json({ error: err.message });
-  }
+      res.status(driveRes.statusCode || 200);
+      const contentType = driveRes.headers['content-type'] || 'video/mp4';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      if (driveRes.headers['content-range']) res.setHeader('Content-Range', driveRes.headers['content-range']);
+      if (driveRes.headers['content-length']) res.setHeader('Content-Length', driveRes.headers['content-length']);
+
+      driveRes.pipe(res);
+    };
+
+    const handleError = (err: any) => {
+      if (attempt < 2) {
+        console.log(`[Server] Drive stream retry ${attempt}/2 due to error: ${err.message}`);
+        executeRequest(attempt + 1);
+        return;
+      }
+      console.warn('[Server] Drive stream connection error (https):', err.message);
+      if (!res.headersSent) {
+        res.status(504).json({ error: 'Błąd strumieniowania z Dysku Google' });
+      }
+    };
+
+    request.on('error', handleError);
+    req.on('close', () => {
+      request.destroy();
+    });
+  };
+
+  executeRequest();
 });
 
 // List user files from Google Drive
 app.get('/api/drive/list', async (req, res) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
   try {
     const token = (req.query.accessToken as string) || (req.headers.authorization?.replace('Bearer ', ''));
     if (!token) return res.status(401).json({ error: 'Wymagany token autoryzacji Google' });
@@ -613,7 +692,8 @@ app.get('/api/drive/list', async (req, res) => {
     const driveUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size,thumbnailLink,createdTime,webViewLink,videoMediaMetadata,imageMediaMetadata)&orderBy=modifiedTime desc&pageSize=100`;
 
     const driveRes = await fetch(driveUrl, {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal
     });
 
     if (!driveRes.ok) {
@@ -624,8 +704,10 @@ app.get('/api/drive/list', async (req, res) => {
     const data = await driveRes.json();
     res.json({ files: data.files || [] });
   } catch (err: any) {
-    console.error('Drive list error:', err);
-    res.status(500).json({ error: err.message || 'Błąd pobierania listy plików z Google Drive' });
+    console.warn('[Server] Drive list error/timeout:', err?.message || err);
+    res.status(504).json({ error: err.message || 'Błąd pobierania listy plików z Google Drive' });
+  } finally {
+    clearTimeout(timeoutId);
   }
 });
 
@@ -841,6 +923,77 @@ Użyj narzędzia Google Search, aby znaleźć najnowsze techniki i trendy. Odpow
   }
 });
 
+// Generator poetyckiego scenariusza i lektora audio AI (Gemini TTS)
+app.post('/api/generate-voiceover-tts', async (req, res) => {
+  try {
+    const { text, style = 'poetic_romantic', coupleNames = 'Młoda Para', voiceName = 'Kore' } = req.body;
+    
+    let textToSpeak = text;
+
+    // If no text provided, generate a creative poetic wedding narration text first
+    if (!textToSpeak || textToSpeak.length < 5) {
+      const scriptPrompt = `Jesteś mistrzem scenopisarstwa filmów ślubnych.
+Napisz wzruszający, krótki (2-4 zdania, ok. 25-45 słów) tekst narracyjny z offu dla pary: "${coupleNames}".
+Styl: "${style}" (np. poruszające wyznanie miłości, poetycka narracja o przeznaczeniu, ciepły szept wspomnień).
+Napisz wyłącznie czysty tekst po polsku, gotowy do odczytania przez lektora.`;
+
+      try {
+        const scriptRes = await retryWithBackoff(() => 
+          ai.models.generateContent({
+            model: 'gemini-3.8-flash',
+            contents: scriptPrompt
+          })
+        );
+        textToSpeak = scriptRes.text?.trim() || "To był dzień, w którym każde spojrzenie miało znaczenie, a przysięga stała się początkiem najpiękniejszej wspólnej drogi.";
+      } catch (err) {
+        textToSpeak = "Dwa serca, jedna obietnica na całe życie. Dziś zaczyna się nasza najpiękniejsza wspólna opowieść.";
+      }
+    }
+
+    // Call Gemini TTS model gemini-3.8-flash-lite-tts to convert text to spoken audio
+    let audioBase64: string | null = null;
+    try {
+      const ttsResponse = await retryWithBackoff(() => 
+        ai.models.generateContent({
+          model: 'gemini-3.8-flash-lite-tts',
+          contents: {
+            role: 'user',
+            parts: [
+              {
+                text: textToSpeak
+              } as any
+            ]
+          },
+          config: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: voiceName || "Kore" }
+              }
+            }
+          }
+        }),
+        2,
+        1000
+      );
+
+      audioBase64 = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || null;
+    } catch (ttsErr: any) {
+      console.warn('[TTS] Gemini TTS API unavailable or quota reached:', ttsErr?.message || ttsErr);
+    }
+
+    res.json({
+      scriptText: textToSpeak,
+      audioBase64: audioBase64,
+      audioMimeType: 'audio/wav',
+      voiceName: voiceName || 'Kore'
+    });
+  } catch (err: any) {
+    console.error('Voiceover TTS error:', err);
+    res.status(500).json({ error: err?.message || 'Błąd generowania lektora AI' });
+  }
+});
+
 // Inteligentna sugestia korekty czasu ujęć na podstawie notatek reżyserskich i tempa montażu
 app.post('/api/smart-duration-suggestion', async (req, res) => {
   try {
@@ -931,6 +1084,8 @@ Odpowiedz jako JSON z polami:
 
     res.json(resultData);
   } catch (err: any) {
+    console.error('[AI Duration] Error:', err);
+    if (err?.cause) console.error('[AI Duration] Cause:', err.cause?.message || err.cause);
     console.log('Smart duration fallback aktywny.');
     const suggestions = (req.body?.items || []).map((item: any, idx: number) => ({
       itemId: item.id || String(idx),
@@ -1056,7 +1211,8 @@ ${JSON.stringify(clips.map((c: any, i: number) => ({
 
     res.json(result);
   } catch (err: any) {
-    console.error('Auto caption error:', err);
+    console.error('[AI Caption] Error:', err);
+    if (err?.cause) console.error('[AI Caption] Cause:', err.cause?.message || err.cause);
     res.json({ captions: [] });
   }
 });
@@ -1069,23 +1225,27 @@ app.post('/api/smart-chronological-sequencing', async (req, res) => {
       return res.json({ orderedSequence: [], storyConcept: '' });
     }
 
-    const prompt = `Jesteś głównym reżyserem montażu filmu ślubnego dla: "${coupleNames}" (${weddingDate || 'Uroczystość weselna'}).
-Przeanalizuj poniższe klipy wideo (uwzględnij daty/godziny nagrania capturedAt/createdAt, nazwy plików, długości oraz kontekst sceny).
-Ułóż je w perfekcyjną, spójną i emocjonującą filmową chronologię dnia ślubu:
-Prolog/Przygotowania -> Błogosławieństwo -> Kościół/Ceremonia -> Życzenia -> Przyjęcie/Toast -> Pierwszy Taniec -> Zabawa/Wesele -> Tort -> Kulminacja/Zimne Ognie.
+    const prompt = `Jesteś głównym reżyserem montażu i inżynierem postprodukcji filmów ślubnych dla: "${coupleNames}" (${weddingDate || 'Uroczystość weselna'}).
+Przeanalizuj poniższe klipy wideo i przygotuj profesjonalny scenariusz montażu zgodny z poniższymi żelaznymi zasadami:
+
+I. ZASADY REŻYSERSKIE I EDYCYJNE (AI DIRECTOR):
+1. SMART TRIM (Cięcie dłużyzn - MAKSYMALNIE 10-15 SEKUND):
+   - Żaden fragment wideo po cięciu (trimEnd - trimStart) NIE MOŻE trwać dłużej niż 10–15 sekund (optymalnie 6–12 sekund).
+   - Wycinaj puste kadry, powtarzalne ujęcia, nieostre fragmenty i pauzy bez akcji.
+   - Zostawiaj wyłącznie kluczowe momenty: konkretne wypowiedzi, reakcje, spojrzenia, uśmiechy, dynamikę tańca.
+   - Dla każdego klipu precyzyjnie wylicz "trimStart" oraz "trimEnd" (gdzie trimEnd - trimStart <= 12 sekund).
+
+2. GENEROWANIE KART I PODPISÓW:
+   - Przed KAŻDYM klipem wideo umieszczana jest spersonalizowana karta wstępna sceny.
+   - KARTY NIE MOGĄ zawierać technicznych nazw plików (np. "I3200.MP4", "DSC_001.MOV", "SCENA 2").
+   - Każda karta MUSI zawierać:
+     * "smartTitle": chwytliwy, krótki (3-5 słów) tytuł sceny w języku polskim (np. "Błogosławieństwo w Domu Rodzinnym", "Przysięga Przed Ołtarzem", "Pierwszy Taniec w Chmurach", "Krojenie Tortu Weselnego", "Zabawa na Parkiecie", "Uroczysty Toast Weselny").
+     * "subtitleCaption": 1 zwięzłe zdanie podsumowujące kontekst lub emocjonalną treść danej sceny.
+
+3. PŁYNNOŚĆ I PRZEJŚCIA:
+   - "transition": "dissolve" (delikatne przenikanie 0.5s), "dip_black" (dla zmiany aktu), "dip_white" (dla kulminacji).
 
 Wytyczne tempa montażu: "${pacing}".
-
-Dla każdego ujęcia określ:
-- "clipId": ID z listy
-- "targetOrder": Pozycja (1, 2, 3...)
-- "smartTitle": Elegancki tytuł sceny
-- "subtitleCaption": Wzruszający podpis/cytat na ekran
-- "category": Kategoria etapów wesela
-- "transition": "dissolve" (dla ujęć romantycznych), "cut" (dla dynamicznych), "dip_black" (dla zmiany rozdziału), "dip_white" (dla kluczowych momentów)
-- "trimStart": Rekomendowane przycięcie początku w sekundach (np. 0.5s na ustabilizowanie kadru)
-- "trimEnd": Rekomendowane przycięcie końca w sekundach
-- "directorReason": Krótkie uzasadnienie reżysera dlaczego to ujęcie powinno znaleźć się w tym miejscu
 
 Klipy:
 ${JSON.stringify(clips.map((c: any) => ({
@@ -1159,6 +1319,31 @@ ${JSON.stringify(clips.map((c: any) => ({
       }
     }
 
+    // Helper function to produce beautiful Polish scene titles without technical filenames
+    const sanitizeSceneTitle = (title: string, cat: string, index: number): string => {
+      let t = (title || '').replace(/\.[a-zA-Z0-9]{2,5}$/i, '').trim();
+      const isTechnical = !t || 
+        /\.(mp4|mov|avi|mkv|jpg|jpeg|png)$/i.test(title || '') ||
+        /^(clip|video|dsc|img|vid|i\d{2,}|scena\s*\d*|ujęcie\s*\d*)/i.test(t);
+
+      if (isTechnical) {
+        const titleDictionary: Record<string, string[]> = {
+          preparations: ['Poranne Przygotowania i Detale', 'Błogosławieństwo w Domu Rodzinnym', 'Ostatnie Szlify Przed Ślubem'],
+          ceremony: ['Przysięga Przed Ołtarzem', 'Wymiana Obrączek Ślubnych', 'Uroczyste Błogosławieństwo Kapłana'],
+          congratulations: ['Wzruszające Życzenia od Bliskich', 'Uściski i Gratulacje Rodziców', 'Radość Wspólnych Chwil'],
+          first_dance: ['Pierwszy Taniec w Chmurach', 'Romantyczny Walc Nowożeńców', 'Magia Pierwszego Tańca'],
+          toast: ['Wzniesienie Pierwszego Toastu', 'Uroczyste Przemowy i Wiwaty', 'Toast za Pomyślność Młodej Pary'],
+          party: ['Zabawa na Parkiecie', 'Weselne Szaleństwo z Gośćmi', 'Najgorętsze Chwile Nocy'],
+          cake: ['Krojenie Tortu Weselnego', 'Słodka Chwila Wesela', 'Tradycyjny Tort Nowożeńców'],
+          outdoor: ['Romantyczny Spacer w Plenerze', 'Złote Promienie Miłości', 'Sesja w Ciepłym Słońcu'],
+          ending: ['Zimne Ognie i Nocny Finał', 'Finałowa Iskra Miłości', 'Niezapomniane Zakończenie Nocy']
+        };
+        const pool = titleDictionary[cat] || ['Pamiątkowa Scena Weselna', 'Wyjątkowy Moment Uroczystości'];
+        return pool[index % pool.length];
+      }
+      return t;
+    };
+
     if (!result || !result.orderedSequence || result.orderedSequence.length === 0) {
       // Deterministic sort by capturedAt timestamp or createdAt or natural sort
       const sortedClips = [...clips].sort((a: any, b: any) => {
@@ -1173,30 +1358,93 @@ ${JSON.stringify(clips.map((c: any) => ({
       const fallbackSequence = sortedClips.map((clip: any, idx: number) => {
         const catIdx = Math.min(categoriesList.length - 1, Math.floor((idx / sortedClips.length) * categoriesList.length));
         const cat = categoriesList[catIdx];
+        const clipDur = clip.duration || 10;
+        const trimEnd = Math.min(12, Math.max(3, clipDur));
+        const cleanTitle = sanitizeSceneTitle(clip.name, cat, idx);
+
         return {
           clipId: clip.id,
           targetOrder: idx + 1,
-          smartTitle: `Scena ${idx + 1}: ${clip.name}`,
-          subtitleCaption: `Wyjątkowy moment uroczystości – ${clip.name}`,
+          smartTitle: cleanTitle,
+          subtitleCaption: `Wyjątkowy moment uroczystości – ${cleanTitle}.`,
           category: cat,
           transition: idx === 0 ? 'dip_black' : 'dissolve',
           trimStart: 0.5,
-          trimEnd: Math.max(0.5, (clip.duration || 5) - 0.5),
-          directorReason: "Ułożono precyzyjnie według znaczników czasu i naturalnego biegu ceremonii."
+          trimEnd: Number(trimEnd.toFixed(2)),
+          directorReason: "Ułożono precyzyjnie według znaczników czasu i skrócono do kluczowych 10-12 sekund."
         };
       });
 
       result = {
-        storyConcept: `Kinowa kronika ślubna ułożona w naturalnej chronologii dnia z płynnymi przejściami i podpisami scen.`,
+        storyConcept: `Kinowa kronika ślubna ułożona w naturalnej chronologii dnia z płynnymi przejściami i kartami scen.`,
         musicSuggestion: "Akustyczny fortepian i ciepła orkiestra symfoniczna (65-80 BPM)",
         orderedSequence: fallbackSequence
       };
+    } else {
+      // Post-process AI sequence to guarantee strict 10-15s bounds and clean titles
+      const clipMap = new Map(clips.map((c: any) => [c.id, c]));
+      result.orderedSequence = result.orderedSequence.map((item: any, idx: number) => {
+        const origClip = clipMap.get(item.clipId);
+        const totalDur = origClip ? origClip.duration : 15;
+        
+        let tStart = typeof item.trimStart === 'number' && item.trimStart >= 0 ? item.trimStart : 0.5;
+        let tEnd = typeof item.trimEnd === 'number' && item.trimEnd > tStart ? item.trimEnd : totalDur;
+        
+        // Strict 10-15s max rule
+        if (tEnd - tStart > 12) {
+          tEnd = Math.min(totalDur, tStart + 12);
+        }
+        if (tEnd - tStart > 12) {
+          tStart = Math.max(0, tEnd - 12);
+        }
+        if (tEnd - tStart < 3 && totalDur >= 3) {
+          tEnd = Math.min(totalDur, tStart + Math.min(8, totalDur));
+        }
+
+        const cat = item.category || 'ceremony';
+        const cleanTitle = sanitizeSceneTitle(item.smartTitle, cat, idx);
+        const cleanSubtitle = (item.subtitleCaption && !item.subtitleCaption.includes('.mp4')) 
+          ? item.subtitleCaption 
+          : `Niezapomniane chwile podczas uroczystości (${cleanTitle}).`;
+
+        return {
+          ...item,
+          smartTitle: cleanTitle,
+          subtitleCaption: cleanSubtitle,
+          trimStart: Number(tStart.toFixed(2)),
+          trimEnd: Number(tEnd.toFixed(2)),
+          transition: item.transition || (idx === 0 ? 'dip_black' : 'dissolve')
+        };
+      });
     }
 
     res.json(result);
   } catch (err: any) {
     console.error('Chronological sequencing error:', err);
-    res.json({ orderedSequence: [], storyConcept: '' });
+    if (err?.cause) {
+      console.error('Chronological sequencing cause:', err.cause?.message || err.cause);
+    }
+    res.status(500).json({ 
+      error: 'Błąd podczas sekwencjonowania chronologicznego', 
+      details: err?.message || String(err),
+      orderedSequence: [] 
+    });
+  }
+});
+
+// Catch-all 404 for API routes to prevent serving index.html for failed API requests
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `Nie odnaleziono endpointu API: ${req.originalUrl}` });
+});
+
+// Global error handler for unhandled exceptions in routes
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error('[Global Server Error]', err);
+  if (!res.headersSent) {
+    res.status(500).json({ 
+      error: 'Wystąpił nieoczekiwany błąd serwera', 
+      details: err?.message || String(err) 
+    });
   }
 });
 

@@ -14,6 +14,7 @@ import {
   AlertCircle,
   Sparkles,
   Mic,
+  Music,
   Bookmark,
   Keyboard,
   Activity,
@@ -154,6 +155,7 @@ interface StudioLayoutProps {
   onToggleHealthPanel?: () => void;
   isHealthPanelOpen?: boolean;
   onOpenVoiceRecorder?: () => void;
+  onOpenSoundscapes?: () => void;
   isDbConnected?: boolean;
 }
 
@@ -179,6 +181,7 @@ export function StudioLayout({
   onToggleHealthPanel,
   isHealthPanelOpen = false,
   onOpenVoiceRecorder, 
+  onOpenSoundscapes,
   isDbConnected = true 
 }: StudioLayoutProps) {
   
@@ -249,26 +252,31 @@ export function StudioLayout({
       )}
 
       {/* Top Header - Desktop (Haute Couture Atelier Console) */}
-      <header className="hidden lg:flex h-16 border-b border-[#26221A] bg-[#0E0D0B]/85 backdrop-blur-2xl items-center justify-between px-6 shrink-0 z-40 shadow-[0_4px_30px_rgba(0,0,0,0.6)]">
+      <header className="hidden lg:flex h-16 border-b border-[#30281D]/80 bg-[#0A0907]/90 backdrop-blur-2xl items-center justify-between px-6 shrink-0 z-40 shadow-[0_8px_32px_rgba(0,0,0,0.8)]">
         
         {/* Left: Brand & Editable Project Name */}
         <div className="flex items-center gap-3.5">
-          <div className="flex items-center gap-2.5">
-            <div className="relative w-9 h-9 rounded-xl bg-gradient-to-br from-[#2D2411] to-[#12100A] border border-[#D4AF37]/40 flex items-center justify-center shadow-[0_0_15px_rgba(212,175,55,0.2)]">
-              <Film className="w-4 h-4 text-[#FDE047]" />
-              <div className="absolute inset-0 rounded-xl bg-[#D4AF37]/10 animate-pulse-subtle pointer-events-none" />
+          <div className="flex items-center gap-3">
+            <div className="relative w-10 h-10 rounded-2xl overflow-hidden border border-[#D4AF37]/50 shadow-[0_0_20px_rgba(212,175,55,0.25)] shrink-0 bg-[#16120B]">
+              <img 
+                src="/src/assets/images/luxury_atelier_brand_emblem_1790787963331.jpg" 
+                alt="Niezapomniane Chwile Atelier" 
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+              <div className="absolute inset-0 rounded-2xl ring-1 ring-inset ring-[#D4AF37]/30 pointer-events-none" />
             </div>
             <div>
-              <span className="font-cinematic font-bold tracking-[0.14em] text-sm text-transparent bg-clip-text bg-gradient-to-r from-[#FFF5C0] via-[#D4AF37] to-[#E3C368] drop-shadow-sm block leading-none">
+              <span className="font-cinematic font-bold tracking-[0.16em] text-sm text-transparent bg-clip-text bg-gradient-to-r from-[#FFFCE8] via-[#D4AF37] to-[#E3C368] drop-shadow-sm block leading-none">
                 NIEZAPOMNIANE CHWILE
               </span>
-              <span className="text-[8.5px] uppercase tracking-[0.24em] text-[#9E9070] font-semibold mt-1 block">
+              <span className="text-[8.5px] uppercase tracking-[0.26em] text-[#A69777] font-semibold mt-1 block">
                 ATELIER MONTAŻU ŚLUBNEGO • 4K HDR
               </span>
             </div>
           </div>
 
-          <div className="h-6 w-px bg-gradient-to-b from-transparent via-[#3A3222] to-transparent mx-1" />
+          <div className="h-6 w-px bg-gradient-to-b from-transparent via-[#3E3424] to-transparent mx-1" />
           
           {isEditingName ? (
             <input 
@@ -278,42 +286,42 @@ export function StudioLayout({
               onBlur={handleFinishNameEdit}
               onKeyDown={(e) => e.key === 'Enter' && handleFinishNameEdit()}
               autoFocus
-              className="bg-[#16130D] border border-[#D4AF37] rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none shadow-[0_0_15px_rgba(212,175,55,0.25)] font-medium"
+              className="bg-[#16130D] border border-[#D4AF37] rounded-xl px-3 py-1 text-xs text-white focus:outline-none shadow-[0_0_15px_rgba(212,175,55,0.25)] font-medium"
             />
           ) : (
             <button 
               onClick={() => { setTempName(projectName); setIsEditingName(true); }}
-              className="group flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#14120D] border border-[#2D261A] hover:border-[#D4AF37]/50 text-xs text-[#EADFC9] hover:text-[#FDE047] transition-all cursor-pointer max-w-[200px]"
+              className="group flex items-center gap-2 px-3 py-1 rounded-xl bg-[#14120D] border border-[#30281C] hover:border-[#D4AF37]/60 text-xs text-[#EADFC9] hover:text-[#FDE047] transition-all cursor-pointer max-w-[210px] shadow-sm"
               title="Kliknij, aby zmienić nazwę filmu ślubnego"
             >
               <span className="truncate font-medium">{projectName || 'Film_Weselny'}</span>
-              <span className="text-[10px] text-[#8C7D5B] opacity-0 group-hover:opacity-100 transition-opacity">✎</span>
+              <span className="text-[10px] text-[#8C7D5B] opacity-60 group-hover:opacity-100 transition-opacity">✎</span>
             </button>
           )}
 
           {/* Sync indicator */}
-          <span className="text-[9.5px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#18150F] border border-[#2A2317] text-[#A69777] flex items-center gap-1">
-            <span className={`w-1.5 h-1.5 rounded-full ${hasUnsavedChanges ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'}`} />
+          <span className="text-[9.5px] font-mono uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-[#18150F] border border-[#2A2317] text-[#A69777] flex items-center gap-1.5 shadow-inner">
+            <span className={`w-1.5 h-1.5 rounded-full ${hasUnsavedChanges ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]'}`} />
             {hasUnsavedChanges ? 'Zapisywanie...' : 'Zsynchronizowano'}
           </span>
         </div>
 
         {/* Center Tabs - Floating Glass Dock */}
-        <div className="flex items-center gap-1 p-1 rounded-2xl dock-pill">
+        <div className="flex items-center gap-1 p-1 rounded-2xl bg-[#12100C]/90 border border-[#30281C] shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
           {tabs.map(tab => {
             const isActive = activeTab === tab.id;
             return (
               <button
                 key={tab.id}
                 onClick={() => onTabChange(tab.id)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold tracking-wide transition-all cursor-pointer relative ${
+                className={`px-4 py-1.5 rounded-xl text-xs font-semibold tracking-wide transition-all cursor-pointer relative ${
                   isActive 
-                    ? 'dock-pill-active text-[#FDE047]' 
-                    : 'text-[#A09886] hover:text-[#F5F2EA] hover:bg-white/[0.04]'
+                    ? 'bg-gradient-to-r from-[#2F2613] via-[#21190D] to-[#17120A] border border-[#D4AF37]/60 text-[#FDE047] shadow-[0_0_15px_rgba(212,175,55,0.25)]' 
+                    : 'text-[#A09886] hover:text-[#F5F2EA] hover:bg-white/[0.05]'
                 }`}
               >
                 <div className="flex items-center gap-1.5 relative z-10">
-                  <tab.icon className={`w-3.5 h-3.5 ${isActive ? 'text-[#FDE047]' : 'text-[#8E8675]'}`} />
+                  <tab.icon className={`w-3.5 h-3.5 ${isActive ? 'text-[#FDE047] drop-shadow-[0_0_5px_rgba(253,224,71,0.5)]' : 'text-[#8E8675]'}`} />
                   <span>{tab.label}</span>
                 </div>
               </button>
@@ -333,6 +341,18 @@ export function StudioLayout({
             >
               <Mic className="w-3.5 h-3.5 text-[#D4AF37]" />
               <span className="hidden xl:inline">Lektor</span>
+            </button>
+          )}
+
+          {/* AI Wedding Soundscapes / Music Studio */}
+          {onOpenSoundscapes && (
+            <button
+              onClick={onOpenSoundscapes}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-[#16130D] border border-[#2D261A] text-[#B0A590] hover:text-[#FDE047] hover:border-[#D4AF37]/40 transition-all cursor-pointer font-medium"
+              title="Generator Muzyki i Tła Dźwiękowego AI (Organy, Fortepian, Walc, Wiolonczela)"
+            >
+              <Music className="w-3.5 h-3.5 text-[#D4AF37]" />
+              <span className="hidden lg:inline">Muzyka AI</span>
             </button>
           )}
 
