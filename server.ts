@@ -40,11 +40,19 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import multer from 'multer';
+import * as https from 'node:https';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 
 const app = express();
 const PORT = 3000;
+
+// Critical for FFmpeg Multi-thread (SharedArrayBuffer)
+app.use((req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  next();
+});
 
 app.use(cors());
 app.use(express.json({ limit: '500mb' }));
@@ -82,13 +90,13 @@ const ai = new Proxy({} as GoogleGenAI, {
 });
 
 // Helper for retrying with exponential backoff on 429 (Rate Limit) or 503 (Unavailable / High Demand)
-async function retryWithBackoff<T>(fn: () => Promise<T>, retries = 2, delayMs = 1200): Promise<T> {
+async function retryWithBackoff<T>(fn: () => Promise<T>, retries = 5, delayMs = 2000): Promise<T> {
   try {
     return await fn();
   } catch (err: any) {
     const errStr = typeof err === 'string' ? err : (err?.message || JSON.stringify(err || ''));
     const isRetryable = 
-      err?.status === 'RESOURCE_EXHAUSTED' || 
+      (err?.status === 'RESOURCE_EXHAUSTED' || 
       err?.status === 429 || 
       err?.status === 503 ||
       err?.status === 'UNAVAILABLE' ||
@@ -105,7 +113,11 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, retries = 2, delayMs = 
       errStr.includes('temporarily unavailable') ||
       errStr.includes('ECONNRESET') ||
       errStr.includes('ETIMEDOUT') ||
-      err?.name === 'FetchError';
+      err?.name === 'FetchError') &&
+      err?.status !== 402 &&
+      err?.error?.code !== 402 &&
+      !errStr.includes('402') &&
+      !errStr.includes('credits are depleted');
       
     if (retries > 0 && isRetryable) {
       console.log(`[AI Retry] Retrying in ${delayMs}ms... (attempts left: ${retries}). Error: ${errStr.substring(0, 100)}`);
@@ -307,33 +319,35 @@ function generateFallbackStory(analyzedItems: any[] = [], mood: string = 'romant
 // Utility to fetch a file from Google Drive and return as base64 with retry
 async function fetchDriveFileBase64(fileId: string, token: string): Promise<{ base64: string, mimeType: string }> {
   return retryWithBackoff(async () => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    const urlMetadata = `https://www.googleapis.com/drive/v3/files/${fileId}?fields=mimeType`;
+    const urlMedia = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const driveFetch = (url: string): Promise<{ buffer: Buffer, headers: any }> => {
+      return new Promise((resolve, reject) => {
+        https.get(url, { headers, family: 4 }, (res) => {
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`Drive API error: ${res.statusCode}`));
+            return;
+          }
+          const chunks: any[] = [];
+          res.on('data', chunk => chunks.push(chunk));
+          res.on('end', () => resolve({ buffer: Buffer.concat(chunks), headers: res.headers }));
+        }).on('error', reject);
+      });
+    };
 
     try {
-      // First, get metadata to know the mime type
-      const metaRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=mimeType`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal
-      });
-      if (!metaRes.ok) throw new Error(`Drive metadata error: ${metaRes.statusText}`);
-      const meta = await metaRes.json();
+      const metaRes = await driveFetch(urlMetadata);
+      const meta = JSON.parse(metaRes.buffer.toString());
       
-      // Then download the content
-      const mediaRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal
-      });
-      if (!mediaRes.ok) throw new Error(`Drive media error: ${mediaRes.statusText}`);
-      
-      const arrayBuffer = await mediaRes.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
+      const mediaRes = await driveFetch(urlMedia);
       return {
-        base64: buffer.toString('base64'),
+        base64: mediaRes.buffer.toString('base64'),
         mimeType: meta.mimeType || 'application/octet-stream'
       };
-    } finally {
-      clearTimeout(timeoutId);
+    } catch (err: any) {
+      throw err;
     }
   }, 2, 800);
 }
@@ -410,16 +424,27 @@ app.post('/api/analyze-media', async (req, res) => {
               contents: {
                 parts: [
                   { inlineData: { mimeType: itemMimeType, data: base64 } },
-                  { text: "Analiza wideo ślubnego: opisz krótko (2-3 zdania) emocje, kluczowe ujęcia i atmosferę." }
+                  { text: `Analiza wideo ślubnego. Zwróć JSON:
+{
+  "description": "krótki opis (2-3 zdania)",
+  "emotion": "romantic" | "energetic" | "nostalgic" | "solemn" | "joyful" | "neutral",
+  "timeOfDay": "morning" | "afternoon" | "golden_hour" | "evening" | "night",
+  "sceneType": "detale" | "ludzie" | "akcja" | "architektura"
+}` }
                 ]
-              }
+              },
+              config: { responseMimeType: "application/json" }
             })
           );
           
+          const parsed = JSON.parse(modelResponse.text || '{}');
           analysisResults.push({
             name: itemName,
             type: 'video',
-            description: modelResponse.text || `Nagranie ślubne: ${itemName}`,
+            description: parsed.description || `Nagranie ślubne: ${itemName}`,
+            emotion: parsed.emotion || 'neutral',
+            timeOfDay: parsed.timeOfDay || 'afternoon',
+            sceneType: parsed.sceneType || 'akcja',
             transcription: null
           });
         } catch (videoErr: any) {
@@ -428,6 +453,9 @@ app.post('/api/analyze-media', async (req, res) => {
             name: itemName,
             type: 'video',
             description: `Nagranie ślubne: ${itemName} – kluczowy moment ceremonii lub wesela.`,
+            emotion: 'neutral',
+            timeOfDay: 'afternoon',
+            sceneType: 'akcja',
             transcription: null
           });
         }
@@ -441,16 +469,27 @@ app.post('/api/analyze-media', async (req, res) => {
               contents: {
                 parts: [
                   { inlineData: { mimeType: itemMimeType, data: base64 } },
-                  { text: "Opisz krótko (1-2 zdania) to zdjęcie ślubne i widoczne emocje." }
+                  { text: `Analiza zdjęcia ślubnego. Zwróć JSON:
+{
+  "description": "krótki opis (1-2 zdania)",
+  "emotion": "romantic" | "energetic" | "nostalgic" | "solemn" | "joyful" | "neutral",
+  "timeOfDay": "morning" | "afternoon" | "golden_hour" | "evening" | "night",
+  "sceneType": "detale" | "ludzie" | "akcja" | "architektura"
+}` }
                 ]
-              }
+              },
+              config: { responseMimeType: "application/json" }
             })
           );
           
+          const parsed = JSON.parse(modelResponse.text || '{}');
           analysisResults.push({
             name: itemName,
             type: 'image',
-            description: modelResponse.text || `Zdjęcie ślubne: ${itemName}`,
+            description: parsed.description || `Zdjęcie ślubne: ${itemName}`,
+            emotion: parsed.emotion || 'neutral',
+            timeOfDay: parsed.timeOfDay || 'afternoon',
+            sceneType: parsed.sceneType || 'ludzie',
             transcription: null
           });
         } catch (imgErr: any) {
@@ -459,6 +498,9 @@ app.post('/api/analyze-media', async (req, res) => {
             name: itemName,
             type: 'image',
             description: `Zdjęcie ślubne: ${itemName} – pamiątkowe ujęcie z uroczystości.`,
+            emotion: 'neutral',
+            timeOfDay: 'afternoon',
+            sceneType: 'ludzie',
             transcription: null
           });
         }
@@ -650,6 +692,7 @@ app.get('/api/drive/stream/:id', async (req, res) => {
       res.status(driveRes.statusCode || 200);
       const contentType = driveRes.headers['content-type'] || 'video/mp4';
       res.setHeader('Content-Type', contentType);
+      res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Cache-Control', 'public, max-age=3600');
       if (driveRes.headers['content-range']) res.setHeader('Content-Range', driveRes.headers['content-range']);
@@ -665,6 +708,9 @@ app.get('/api/drive/stream/:id', async (req, res) => {
         return;
       }
       console.warn('[Server] Drive stream connection error (https):', err.message);
+      if (err.cause) {
+        console.warn('[Server] Drive stream error cause:', err.cause.message || err.cause);
+      }
       if (!res.headersSent) {
         res.status(504).json({ error: 'Błąd strumieniowania z Dysku Google' });
       }
@@ -1225,25 +1271,26 @@ app.post('/api/smart-chronological-sequencing', async (req, res) => {
       return res.json({ orderedSequence: [], storyConcept: '' });
     }
 
-    const prompt = `Jesteś głównym reżyserem montażu i inżynierem postprodukcji filmów ślubnych dla: "${coupleNames}" (${weddingDate || 'Uroczystość weselna'}).
-Przeanalizuj poniższe klipy wideo i przygotuj profesjonalny scenariusz montażu zgodny z poniższymi żelaznymi zasadami:
+    const prompt = `Jesteś światowej klasy reżyserem montażu filmów ślubnych. Twoim zadaniem jest stworzenie arcydzieła (Master Montage) dla: "${coupleNames}" (${weddingDate}).
+Przeanalizuj poniższe klipy i przygotuj zaawansowany scenariusz montażu (Smart Montage) z uwzględnieniem pory dnia, nastroju i tempa.
 
-I. ZASADY REŻYSERSKIE I EDYCYJNE (AI DIRECTOR):
-1. SMART TRIM (Cięcie dłużyzn - MAKSYMALNIE 10-15 SEKUND):
-   - Żaden fragment wideo po cięciu (trimEnd - trimStart) NIE MOŻE trwać dłużej niż 10–15 sekund (optymalnie 6–12 sekund).
-   - Wycinaj puste kadry, powtarzalne ujęcia, nieostre fragmenty i pauzy bez akcji.
-   - Zostawiaj wyłącznie kluczowe momenty: konkretne wypowiedzi, reakcje, spojrzenia, uśmiechy, dynamikę tańca.
-   - Dla każdego klipu precyzyjnie wylicz "trimStart" oraz "trimEnd" (gdzie trimEnd - trimStart <= 12 sekund).
-
-2. GENEROWANIE KART I PODPISÓW:
-   - Przed KAŻDYM klipem wideo umieszczana jest spersonalizowana karta wstępna sceny.
-   - KARTY NIE MOGĄ zawierać technicznych nazw plików (np. "I3200.MP4", "DSC_001.MOV", "SCENA 2").
-   - Każda karta MUSI zawierać:
-     * "smartTitle": chwytliwy, krótki (3-5 słów) tytuł sceny w języku polskim (np. "Błogosławieństwo w Domu Rodzinnym", "Przysięga Przed Ołtarzem", "Pierwszy Taniec w Chmurach", "Krojenie Tortu Weselnego", "Zabawa na Parkiecie", "Uroczysty Toast Weselny").
-     * "subtitleCaption": 1 zwięzłe zdanie podsumowujące kontekst lub emocjonalną treść danej sceny.
-
-3. PŁYNNOŚĆ I PRZEJŚCIA:
-   - "transition": "dissolve" (delikatne przenikanie 0.5s), "dip_black" (dla zmiany aktu), "dip_white" (dla kulminacji).
+WYTYCZNE ARTYSTYCZNE:
+1. GRUPOWANIE (Clustering):
+   - Pogrupuj klipy w logiczne akty: Przygotowania (rano), Ceremonia (powaga), Życzenia (emocje), Wesele (energia), Finał (nostalgia/magia).
+   - Wykryj "Time of Day": morning, afternoon, golden_hour, evening, night.
+2. ARC EMOCJONALNY:
+   - Buduj napięcie. Zacznij od spokoju (nostalgic/solemn), przejdź do wzruszenia (romantic), a następnie do czystej radości (joyful/energetic).
+3. INTELIGENTNY MONTAŻ (BRAK SZTUCZNYCH OGRANICZEŃ DŁUGOŚCI):
+   - Dopasuj długość każdego ujęcia do jego naturalnej treści i dramaturgii.
+   - Nie narzucaj sztywnych limitów 10-12s: ujęcia detali mogą trwać 4-8s, sceny spacerów i zabawy 6-18s, a kluczowe momenty (przysięga, pierwszy taniec, wzruszające toasty i przemowy) mogą trwać pełną długość nagrania, aby nie uciąć słów ani emocji!
+4. DYNAMICZNE PRZEJŚCIA:
+   - Wybieraj spośród: "dissolve", "dip_black", "dip_white", "zoom", "blur", "light_leak", "film_burn", "fade", "slide", "wipe".
+   - Dopasuj transition do nastroju klipu: 
+     * romantic -> light_leak / blur / dissolve
+     * energetic -> zoom / film_burn / wipe
+     * solemn -> dip_black / fade
+     * joyful -> slide / dissolve
+   - "cut" (brak przejścia) stosuj tylko przy bardzo szybkim tempie.
 
 Wytyczne tempa montażu: "${pacing}".
 
@@ -1275,12 +1322,14 @@ ${JSON.stringify(clips.map((c: any) => ({
                 smartTitle: { type: Type.STRING },
                 subtitleCaption: { type: Type.STRING },
                 category: { type: Type.STRING },
+                emotion: { type: Type.STRING },
+                timeOfDay: { type: Type.STRING },
                 transition: { type: Type.STRING },
                 trimStart: { type: Type.NUMBER },
                 trimEnd: { type: Type.NUMBER },
                 directorReason: { type: Type.STRING }
               },
-              required: ["clipId", "targetOrder", "smartTitle", "subtitleCaption", "category", "transition"]
+              required: ["clipId", "targetOrder", "smartTitle", "subtitleCaption", "category", "transition", "emotion", "timeOfDay"]
             }
           }
         },
@@ -1359,7 +1408,7 @@ ${JSON.stringify(clips.map((c: any) => ({
         const catIdx = Math.min(categoriesList.length - 1, Math.floor((idx / sortedClips.length) * categoriesList.length));
         const cat = categoriesList[catIdx];
         const clipDur = clip.duration || 10;
-        const trimEnd = Math.min(12, Math.max(3, clipDur));
+        const trimEnd = clipDur;
         const cleanTitle = sanitizeSceneTitle(clip.name, cat, idx);
 
         return {
@@ -1369,9 +1418,9 @@ ${JSON.stringify(clips.map((c: any) => ({
           subtitleCaption: `Wyjątkowy moment uroczystości – ${cleanTitle}.`,
           category: cat,
           transition: idx === 0 ? 'dip_black' : 'dissolve',
-          trimStart: 0.5,
+          trimStart: 0,
           trimEnd: Number(trimEnd.toFixed(2)),
-          directorReason: "Ułożono precyzyjnie według znaczników czasu i skrócono do kluczowych 10-12 sekund."
+          directorReason: "Ułożono precyzyjnie według naturalnej chronologii z zachowaniem pełnej treści sceny."
         };
       });
 
@@ -1381,25 +1430,17 @@ ${JSON.stringify(clips.map((c: any) => ({
         orderedSequence: fallbackSequence
       };
     } else {
-      // Post-process AI sequence to guarantee strict 10-15s bounds and clean titles
+      // Post-process AI sequence to guarantee clean bounds and valid titles without artificial truncation
       const clipMap = new Map(clips.map((c: any) => [c.id, c]));
       result.orderedSequence = result.orderedSequence.map((item: any, idx: number) => {
         const origClip = clipMap.get(item.clipId);
         const totalDur = origClip ? origClip.duration : 15;
         
-        let tStart = typeof item.trimStart === 'number' && item.trimStart >= 0 ? item.trimStart : 0.5;
+        let tStart = typeof item.trimStart === 'number' && item.trimStart >= 0 ? item.trimStart : 0;
         let tEnd = typeof item.trimEnd === 'number' && item.trimEnd > tStart ? item.trimEnd : totalDur;
         
-        // Strict 10-15s max rule
-        if (tEnd - tStart > 12) {
-          tEnd = Math.min(totalDur, tStart + 12);
-        }
-        if (tEnd - tStart > 12) {
-          tStart = Math.max(0, tEnd - 12);
-        }
-        if (tEnd - tStart < 3 && totalDur >= 3) {
-          tEnd = Math.min(totalDur, tStart + Math.min(8, totalDur));
-        }
+        if (tEnd > totalDur) tEnd = totalDur;
+        if (tStart >= tEnd) tStart = 0;
 
         const cat = item.category || 'ceremony';
         const cleanTitle = sanitizeSceneTitle(item.smartTitle, cat, idx);
@@ -1424,7 +1465,11 @@ ${JSON.stringify(clips.map((c: any) => ({
     if (err?.cause) {
       console.error('Chronological sequencing cause:', err.cause?.message || err.cause);
     }
-    res.status(500).json({ 
+    
+    // Specifically handle 429 Rate Limit
+    const status = (err?.message || '').includes('429') ? 429 : 500;
+    
+    res.status(status).json({ 
       error: 'Błąd podczas sekwencjonowania chronologicznego', 
       details: err?.message || String(err),
       orderedSequence: [] 

@@ -156,6 +156,7 @@ interface StudioLayoutProps {
   isHealthPanelOpen?: boolean;
   onOpenVoiceRecorder?: () => void;
   onOpenSoundscapes?: () => void;
+  onOpenTemplateGallery?: () => void;
   isDbConnected?: boolean;
 }
 
@@ -182,6 +183,7 @@ export function StudioLayout({
   isHealthPanelOpen = false,
   onOpenVoiceRecorder, 
   onOpenSoundscapes,
+  onOpenTemplateGallery,
   isDbConnected = true 
 }: StudioLayoutProps) {
   
@@ -353,6 +355,18 @@ export function StudioLayout({
             >
               <Music className="w-3.5 h-3.5 text-[#D4AF37]" />
               <span className="hidden lg:inline">Muzyka AI</span>
+            </button>
+          )}
+
+          {/* Template Gallery (Firebase) */}
+          {onOpenTemplateGallery && (
+            <button
+              onClick={onOpenTemplateGallery}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs bg-[var(--bg-subtle)] border border-[var(--gold-primary)]/40 text-[var(--gold-bright)] hover:text-white hover:border-[var(--gold-primary)] transition-all cursor-pointer font-medium shadow-sm"
+              title="Galeria Szablonów Projektów w Chmurze Firebase"
+            >
+              <Bookmark className="w-3.5 h-3.5 text-[var(--gold-primary)]" />
+              <span className="hidden lg:inline">Szablony</span>
             </button>
           )}
 

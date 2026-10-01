@@ -34,6 +34,8 @@ export interface ClipTechnicalAnalysis {
   bestInGroup?: boolean;
   narrativeImportance?: 'HIGH' | 'MEDIUM' | 'LOW';
   sceneType?: string;
+  emotion?: 'romantic' | 'energetic' | 'nostalgic' | 'solemn' | 'joyful' | 'neutral';
+  timeOfDay?: 'morning' | 'afternoon' | 'golden_hour' | 'evening' | 'night';
 }
 
 export type LookPreset = 
@@ -248,7 +250,7 @@ export interface TimelineMarker {
 
 export interface WeddingChapter {
   id: string;
-  chapterKey: 'opening' | 'preparations' | 'ceremony' | 'congratulations' | 'wishes' | 'first_dance' | 'toast' | 'party' | 'guests' | 'family' | 'climax' | 'ending';
+  chapterKey: ClipCategory | string;
   name: string;
   startTime: number;
   endTime: number;
@@ -266,11 +268,14 @@ export type ColorGradingPreset =
 export interface ProjectSettings {
   targetResolution: '720p' | '1080p' | '4k';
   targetFps: 24 | 25 | 30 | 60;
+  resolution?: string;
+  fps?: number;
   aspectRatio: '16:9' | '9:16' | '4:3' | '1:1' | '2.39:1';
   fitMode: FitMode;
-  colorGrade?: ColorGradingPreset;
+  colorGrade?: ColorGradingPreset | string;
   colorAdjustments?: ClipColorAdjustments;
   letterbox?: 'none' | 'cinemascope' | 'standard';
+  introCard?: TitleCard;
   outroCard?: TitleCard;
   audioDucking?: boolean;
   duckingIntensity?: number; // 0 to 100%

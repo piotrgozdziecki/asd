@@ -24,22 +24,130 @@ export class ExportDiagnosticsService {
 
     const supportedH264Codecs: string[] = [];
     let h264Supported = false;
+    let hevcSupported = false;
+    let av1Supported = false;
+    let vp9Supported = false;
     let aacSupported = false;
 
+    let hevcHardware = false;
+    let av1Hardware = false;
+    let vp9Hardware = false;
+    let h264Hardware = false;
+    let opusSupported = false;
+
     if (hasVideoEncoder && typeof (window as any).VideoEncoder.isConfigSupported === 'function') {
+      // 1. Probe H.264
       for (const codec of candidateProfiles) {
         try {
-          const res = await (window as any).VideoEncoder.isConfigSupported({
+          const resHw = await (window as any).VideoEncoder.isConfigSupported({
             codec,
             width: 1920,
             height: 1080,
             bitrate: 10_000_000,
             framerate: 30,
+            hardwareAcceleration: 'prefer-hardware'
+          });
+          if (resHw && resHw.supported) {
+            supportedH264Codecs.push(codec);
+            h264Supported = true;
+            h264Hardware = true;
+          } else {
+            const resAny = await (window as any).VideoEncoder.isConfigSupported({
+              codec,
+              width: 1920,
+              height: 1080,
+              bitrate: 10_000_000,
+              framerate: 30,
+              hardwareAcceleration: 'no-preference'
+            });
+            if (resAny && resAny.supported) {
+              supportedH264Codecs.push(codec);
+              h264Supported = true;
+            }
+          }
+        } catch {}
+      }
+
+      // 2. Probe HEVC / H.265
+      const hevcCandidates = ['hvc1.1.6.L153.B0', 'hvc1.1.6.L120.B0', 'hev1.1.6.L120.B0', 'hvc1.1.6.L93.B0'];
+      for (const c of hevcCandidates) {
+        try {
+          const res = await (window as any).VideoEncoder.isConfigSupported({
+            codec: c,
+            width: 1920,
+            height: 1080,
+            bitrate: 10_000_000,
+            framerate: 30,
+            hardwareAcceleration: 'prefer-hardware'
+          });
+          if (res && res.supported) {
+            hevcSupported = true;
+            hevcHardware = true;
+            break;
+          }
+        } catch {}
+      }
+
+      // 3. Probe AV1
+      const av1Candidates = ['av01.0.08M.10', 'av01.0.08M.08', 'av01.0.05M.08', 'av01.0.04M.08'];
+      for (const c of av1Candidates) {
+        try {
+          const resHw = await (window as any).VideoEncoder.isConfigSupported({
+            codec: c,
+            width: 1920,
+            height: 1080,
+            bitrate: 8_000_000,
+            framerate: 30,
+            hardwareAcceleration: 'prefer-hardware'
+          });
+          if (resHw && resHw.supported) {
+            av1Supported = true;
+            av1Hardware = true;
+            break;
+          }
+          const res = await (window as any).VideoEncoder.isConfigSupported({
+            codec: c,
+            width: 1920,
+            height: 1080,
+            bitrate: 8_000_000,
+            framerate: 30,
             hardwareAcceleration: 'no-preference'
           });
           if (res && res.supported) {
-            supportedH264Codecs.push(codec);
-            h264Supported = true;
+            av1Supported = true;
+            break;
+          }
+        } catch {}
+      }
+
+      // 4. Probe VP9
+      const vp9Candidates = ['vp09.00.41.08', 'vp09.00.51.08', 'vp09.00.31.08'];
+      for (const c of vp9Candidates) {
+        try {
+          const resHw = await (window as any).VideoEncoder.isConfigSupported({
+            codec: c,
+            width: 1920,
+            height: 1080,
+            bitrate: 8_000_000,
+            framerate: 30,
+            hardwareAcceleration: 'prefer-hardware'
+          });
+          if (resHw && resHw.supported) {
+            vp9Supported = true;
+            vp9Hardware = true;
+            break;
+          }
+          const res = await (window as any).VideoEncoder.isConfigSupported({
+            codec: c,
+            width: 1920,
+            height: 1080,
+            bitrate: 8_000_000,
+            framerate: 30,
+            hardwareAcceleration: 'no-preference'
+          });
+          if (res && res.supported) {
+            vp9Supported = true;
+            break;
           }
         } catch {}
       }
@@ -47,16 +155,39 @@ export class ExportDiagnosticsService {
 
     if (hasAudioEncoder && typeof (window as any).AudioEncoder.isConfigSupported === 'function') {
       try {
-        const res = await (window as any).AudioEncoder.isConfigSupported({
+        const resAac = await (window as any).AudioEncoder.isConfigSupported({
           codec: 'mp4a.40.2',
           numberOfChannels: 2,
           sampleRate: 48000,
           bitrate: 128000
         });
-        aacSupported = Boolean(res && res.supported);
+        aacSupported = Boolean(resAac && resAac.supported);
       } catch {
         aacSupported = false;
       }
+
+      try {
+        const resOpus = await (window as any).AudioEncoder.isConfigSupported({
+          codec: 'opus',
+          numberOfChannels: 2,
+          sampleRate: 48000,
+          bitrate: 192000
+        });
+        opusSupported = Boolean(resOpus && resOpus.supported);
+      } catch {
+        opusSupported = false;
+      }
+    }
+
+    let recommendedCodec = 'H.264 (AVC)';
+    if (av1Hardware) {
+      recommendedCodec = 'AV1 (Sprzętowy Master)';
+    } else if (hevcHardware) {
+      recommendedCodec = 'H.265 / HEVC (Sprzętowy Apple/GPU)';
+    } else if (av1Supported) {
+      recommendedCodec = 'AV1 (Najwyższa kompresja)';
+    } else if (h264Hardware) {
+      recommendedCodec = 'H.264 High Profile (Sprzętowy)';
     }
 
     let availableMemoryMb: number | undefined;
@@ -68,7 +199,7 @@ export class ExportDiagnosticsService {
 
     const capabilities: DiagnosticsCapabilities = {
       browser,
-      version: '2.0.0',
+      version: '3.0.0',
       webCodecsSupported: hasWebCodecs,
       videoDecoderSupported: hasVideoDecoder,
       videoEncoderSupported: hasVideoEncoder,
@@ -76,8 +207,17 @@ export class ExportDiagnosticsService {
       audioEncoderSupported: hasAudioEncoder,
       h264Supported,
       supportedH264Codecs,
+      hevcSupported,
+      hevcHardware,
+      av1Supported,
+      av1Hardware,
+      vp9Supported,
+      vp9Hardware,
       aacSupported,
+      opusSupported,
       mp4MuxerSupported: true,
+      webmMuxerSupported: true,
+      recommendedCodec,
       availableMemoryMb
     };
 

@@ -40,11 +40,15 @@ import {
   DiagnosticsCapabilities,
   DiagnosticLogEntry,
   ExportStage,
-  SerialExportTask
+  SerialExportTask,
+  ExportResolution,
+  VideoCodecOption,
+  ContainerFormat
 } from '../../core/export/videoExportTypes';
 import { urlRegistry } from '../../core/media/urlRegistry';
 import { resolveClipMediaUrl } from '../../core/media/mediaResolver';
 import { useStudioToast } from '../common/ToastContext';
+import { AiMontageSummaryPanel } from './AiMontageSummaryPanel';
 
 interface ExportViewProps {
   project: ProjectState;
@@ -60,9 +64,13 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
 
   // Settings & Presets
   const [presetMode, setPresetMode] = useState<ExportPresetMode>('BALANCED');
-  const [resolution, setResolution] = useState<'720p' | '1080p' | '4k'>('1080p');
+  const [resolution, setResolution] = useState<ExportResolution>('1080p');
   const [fps, setFps] = useState<number>(30);
+  const [quality, setQuality] = useState<'standard' | 'high' | 'maximum'>('high');
   const [fitMode, setFitMode] = useState<FitMode>('fit');
+  const [videoCodec, setVideoCodec] = useState<VideoCodecOption>('auto');
+  const [container, setContainer] = useState<ContainerFormat>('auto');
+  const [isManualCodecMode, setIsManualCodecMode] = useState(false);
 
   // Export State
   const [isExporting, setIsExporting] = useState(false);
@@ -88,6 +96,20 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
     }
   }, [output?.url]);
 
+  // Load hardware capabilities on mount
+  useEffect(() => {
+    handleLoadCapabilities();
+  }, []);
+
+  const isGpuAccelerated = useMemo(() => {
+    if (!capabilities) return true; // Optimistic while loading capabilities
+    return Boolean(
+      capabilities.webCodecsSupported &&
+      capabilities.videoEncoderSupported &&
+      (capabilities.hevcHardware || capabilities.av1Hardware || capabilities.vp9Hardware || capabilities.h264Supported)
+    );
+  }, [capabilities]);
+
   // Sync preset changes
   const applyPreset = (mode: ExportPresetMode) => {
     setPresetMode(mode);
@@ -95,18 +117,22 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
       case 'FAST':
         setResolution('720p');
         setFps(30);
+        setQuality('standard');
         break;
       case 'BALANCED':
         setResolution('1080p');
         setFps(30);
+        setQuality('high');
         break;
       case 'QUALITY':
         setResolution('1080p');
         setFps(60);
+        setQuality('high');
         break;
       case 'MAX_QUALITY':
         setResolution('4k');
         setFps(60);
+        setQuality('maximum');
         break;
     }
   };
@@ -144,30 +170,52 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
   const timelineClips: TimelineClip[] = useMemo(() => {
     const rawItems = project.timelineItems || [];
     if (rawItems.length > 0) {
-      return rawItems.map(item => ({
-        id: item.id,
-        sourceId: item.clipId,
-        sourceStart: item.sourceStart,
-        sourceEnd: item.sourceEnd,
-        timelineStart: item.timelineStart,
-        duration: item.duration,
-        volume: item.volume ?? 1,
-        muted: Boolean(item.muted),
-        speed: item.speed || 1,
-        rotation: item.rotation || 0,
-        crop: item.crop,
-        fitMode: (item.fitMode as FitMode) || fitMode,
-        colorAdjustments: item.colorAdjustments,
-        titleCard: item.titleCard,
-        transitionIn: item.transitionIn,
-        transitionOut: item.transitionOut,
-        transitionDuration: item.transitionDuration
-      }));
+      let currentTimeline = 0;
+      return rawItems.map(item => {
+        const matchingSource = mediaSources.find(s => s.id === item.clipId);
+        const srcDur = matchingSource?.duration || 0;
+        let realStart = Math.max(0, item.sourceStart || 0);
+        let realEnd = item.sourceEnd;
+        
+        // If sourceEnd was uninitialized or truncated, heal with full source duration
+        if (srcDur > 0) {
+          if (realEnd <= realStart || (realEnd <= 2.5 && srcDur > 3.0)) {
+            realEnd = srcDur;
+          }
+        }
+        if (!realEnd || realEnd <= realStart) {
+          realEnd = srcDur || Math.max(item.duration, 5);
+        }
+
+        const realDur = Math.max(0.2, (realEnd - realStart) / (item.speed || 1));
+        const itemStart = currentTimeline;
+        currentTimeline += realDur;
+
+        return {
+          id: item.id,
+          sourceId: item.clipId,
+          sourceStart: realStart,
+          sourceEnd: realEnd,
+          timelineStart: itemStart,
+          duration: realDur,
+          volume: item.volume ?? 1,
+          muted: Boolean(item.muted),
+          speed: item.speed || 1,
+          rotation: item.rotation || 0,
+          crop: item.crop,
+          fitMode: (item.fitMode as FitMode) || fitMode,
+          colorAdjustments: item.colorAdjustments,
+          titleCard: item.titleCard,
+          transitionIn: item.transitionIn,
+          transitionOut: item.transitionOut,
+          transitionDuration: item.transitionDuration
+        };
+      });
     }
 
     let currentTimeline = 0;
     return mediaSources.map((source, idx) => {
-      const dur = Math.max(0.1, source.duration);
+      const dur = Math.max(0.5, source.duration || 5);
       const start = currentTimeline;
       currentTimeline += dur;
       return {
@@ -227,6 +275,114 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
     };
   }, []);
 
+  const performCodecTestEncode = async (codecString: string): Promise<boolean> => {
+    if (typeof VideoEncoder === 'undefined') return false;
+    return new Promise((resolve) => {
+      let isResolved = false;
+      let encoder: VideoEncoder | null = null;
+      let canvas: HTMLCanvasElement | null = null;
+      let frame: VideoFrame | null = null;
+
+      const cleanup = () => {
+        if (frame) {
+          try { frame.close(); } catch {}
+        }
+        if (encoder) {
+          try { encoder.close(); } catch {}
+        }
+        if (canvas) {
+          try { canvas.remove(); } catch {}
+        }
+      };
+
+      const timeout = setTimeout(() => {
+        if (!isResolved) {
+          isResolved = true;
+          cleanup();
+          resolve(false);
+        }
+      }, 400);
+
+      try {
+        encoder = new VideoEncoder({
+          output: () => {
+            if (!isResolved) {
+              isResolved = true;
+              clearTimeout(timeout);
+              cleanup();
+              resolve(true);
+            }
+          },
+          error: (err) => {
+            console.warn(`[Auto-Codec] Test encode failed for ${codecString}:`, err);
+            if (!isResolved) {
+              isResolved = true;
+              clearTimeout(timeout);
+              cleanup();
+              resolve(false);
+            }
+          }
+        });
+
+        const config = {
+          codec: codecString,
+          width: 128,
+          height: 128,
+          bitrate: 500000,
+          framerate: 30,
+          hardwareAcceleration: 'prefer-hardware' as const
+        };
+
+        encoder.configure(config);
+
+        canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#C5A059';
+          ctx.fillRect(0, 0, 128, 128);
+        }
+
+        frame = new VideoFrame(canvas, { timestamp: 0, duration: 33333 });
+        encoder.encode(frame, { keyFrame: true });
+        encoder.flush();
+      } catch (err) {
+        console.warn(`[Auto-Codec] Exception testing ${codecString}:`, err);
+        if (!isResolved) {
+          isResolved = true;
+          clearTimeout(timeout);
+          cleanup();
+          resolve(false);
+        }
+      }
+    });
+  };
+
+  const probeAndSelectOptimalCodec = async (): Promise<VideoCodecOption> => {
+    toast.showInfo('🔍 Badanie akceleracji sprzętowej: testowanie najlepszego kodeka...');
+    
+    // 1. Try H.264 hardware encoding sample write
+    const h264Codec = 'avc1.42E01F';
+    const hasH264Hw = await performCodecTestEncode(h264Codec);
+    if (hasH264Hw) {
+      console.log('[Auto-Codec] H.264 hardware acceleration successfully verified.');
+      return 'H.264';
+    }
+
+    // 2. Try VP9 hardware encoding sample write
+    const vp9Codec = 'vp09.00.10.08';
+    const hasVp9Hw = await performCodecTestEncode(vp9Codec);
+    if (hasVp9Hw) {
+      console.log('[Auto-Codec] VP9 hardware acceleration successfully verified.');
+      return 'VP9';
+    }
+
+    // 3. Fallback to CPU/Reliable codec
+    console.warn('[Auto-Codec] No hardware accelerated encoder verified. Falling back to CPU render.');
+    return 'FFMPEG_X264';
+  };
+
   const handleEnqueueExport = async () => {
     if (totalClipsCount === 0) {
       toast.showError('Dodaj przynajmniej jeden film, aby rozpocząć eksport.');
@@ -260,13 +416,26 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
         })
       );
 
+      let activeVideoCodec = videoCodec;
+      if (videoCodec === 'auto') {
+        try {
+          activeVideoCodec = await probeAndSelectOptimalCodec();
+          toast.showSuccess(`✨ Wybrano optymalny sprzętowy kodek: ${activeVideoCodec === 'H.264' ? 'H.264' : (activeVideoCodec === 'VP9' ? 'VP9' : 'CPU render')}`);
+        } catch {
+          activeVideoCodec = 'H.264';
+        }
+      }
+
       const plan = videoExportService.prepareExport(
         resolvedSources.length > 0 ? resolvedSources : mediaSources,
         timelineClips,
         {
           resolution,
           fps,
+          quality,
           fitMode,
+          videoCodec: activeVideoCodec,
+          container,
           colorGrade: (project.settings?.colorGrade as any) || 'none',
           letterbox: project.settings?.letterbox === 'cinemascope' ? 'cinemascope' : 'none'
         },
@@ -276,12 +445,14 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
       );
 
       const task = exportQueueService.enqueueTask({
-        title: `Eksport ${resolution} (${fps} FPS)`,
+        title: `Eksport ${resolution} (${fps} FPS • ${activeVideoCodec})`,
         projectName: project.name || 'Projekt Wideo',
         config: {
           presetMode,
           resolution,
           fps,
+          videoCodec,
+          container,
           fitMode,
           colorGrade: (project.settings?.colorGrade as any) || 'none',
           letterbox: project.settings?.letterbox === 'cinemascope' ? 'cinemascope' : 'none',
@@ -291,6 +462,10 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
         },
         plan
       });
+
+      if (capabilities && !isGpuAccelerated) {
+        toast.showWarning('⚠️ Brak akceleracji GPU: Eksport jest realizowany w trybie programowym CPU. Włącz "Akcelerację sprzętową" w chrome://settings/system, aby przyspieszyć renderowanie.');
+      }
 
       toast.showSuccess(`Dodano do kolejki eksportu: ${task.title}`);
     } catch (err: any) {
@@ -302,6 +477,10 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
     if (totalClipsCount === 0) {
       toast.showError('Dodaj przynajmniej jeden film, aby rozpocząć eksport.');
       return;
+    }
+
+    if (capabilities && !isGpuAccelerated) {
+      toast.showWarning('⚠️ Brak akceleracji GPU: Renderowanie odbędzie się na procesorze CPU. Dla 10-krotnie wyższej prędkości włącz "Akcelerację sprzętową" w ustawieniach przeglądarki.');
     }
 
     setError(null);
@@ -336,13 +515,26 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
         })
       );
 
+      let activeVideoCodec = videoCodec;
+      if (videoCodec === 'auto') {
+        try {
+          activeVideoCodec = await probeAndSelectOptimalCodec();
+          toast.showSuccess(`✨ Wybrano optymalny sprzętowy kodek: ${activeVideoCodec === 'H.264' ? 'H.264' : (activeVideoCodec === 'VP9' ? 'VP9' : 'CPU render')}`);
+        } catch {
+          activeVideoCodec = 'H.264';
+        }
+      }
+
       const plan = videoExportService.prepareExport(
         resolvedSources.length > 0 ? resolvedSources : mediaSources,
         timelineClips,
         {
           resolution,
           fps,
+          quality,
           fitMode,
+          videoCodec: activeVideoCodec,
+          container,
           colorGrade: (project.settings?.colorGrade as any) || 'none',
           letterbox: project.settings?.letterbox || 'none'
         },
@@ -364,9 +556,13 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
       if (isCancelled) {
         toast.showInfo('Eksport został przerwany.');
       } else {
+        let errorMsg = err?.message || 'Nieznany błąd podczas przetwarzania filmu.';
+        if (!isGpuAccelerated || errorMsg.toLowerCase().includes('videoencoder') || errorMsg.toLowerCase().includes('webcodecs') || errorMsg.toLowerCase().includes('ffmpeg')) {
+          errorMsg += ' — Wskazówka: Włącz opcję "Używaj akceleracji sprzętowej, gdy jest dostępna" w ustawieniach przeglądarki (np. chrome://settings/system) i zrestartuj przeglądarkę, aby aktywować pełne wsparcie GPU (WebCodecs/MediaRecorder).';
+        }
         const errorObj: ExportError = {
-          code: 'UNKNOWN_EXPORT_ERROR',
-          message: err?.message || 'Nieznany błąd podczas przetwarzania filmu.',
+          code: 'ENCODER_ERROR',
+          message: errorMsg,
           technicalDetails: String(err?.stack || err)
         };
         setError(errorObj);
@@ -480,9 +676,9 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
   return (
     <div className="max-w-5xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8 flex flex-col gap-6 sm:gap-8">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#242428] pb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--border-subtle)] pb-4">
         <div>
-          <div className="flex items-center gap-2 text-[#D4AF37] text-xs font-semibold tracking-wider uppercase mb-1">
+          <div className="flex items-center gap-2 text-[var(--gold-primary)] text-xs font-semibold tracking-wider uppercase mb-1">
             <Download className="w-3.5 h-3.5" />
             <span>Ekran Eksportu</span>
           </div>
@@ -500,7 +696,7 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
               setShowDiagnostics(!showDiagnostics);
               if (!capabilities) handleLoadCapabilities();
             }}
-            className="flex items-center gap-1.5 px-3 py-2 bg-[#191712] hover:bg-[#252119] text-[#D4AF37] border border-[#3E3420] text-xs font-semibold rounded-xl transition-all cursor-pointer shadow-sm min-h-[40px]"
+            className="flex items-center gap-1.5 px-3 py-2 bg-[var(--bg-subtle)] hover:bg-white/[0.08] text-[var(--gold-primary)] border border-[var(--border-luxury)] text-xs font-semibold rounded-xl transition-all cursor-pointer shadow-sm min-h-[40px]"
             title="Pokaż panel diagnostyki silnika dla developerów"
           >
             <Activity className="w-3.5 h-3.5" />
@@ -512,16 +708,16 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
             <div className="flex items-center gap-2">
               <button
                 onClick={handleEnqueueExport}
-                className="flex items-center gap-2 px-4 py-3 bg-[#242018] hover:bg-[#322A1F] text-[#D4AF37] border border-[#4A3D22] font-bold text-xs rounded-xl transition-all cursor-pointer min-h-[44px]"
+                className="flex items-center gap-2 px-4 py-3 bg-[var(--bg-card)] hover:bg-white/[0.05] text-[var(--gold-primary)] border border-[var(--border-luxury)] font-bold text-xs rounded-xl transition-all cursor-pointer min-h-[44px]"
                 title="Dodaj do kolejki bez natychmiastowego zablokowania ekranu"
               >
-                <Layers className="w-4 h-4 text-[#D4AF37]" />
+                <Layers className="w-4 h-4 text-[var(--gold-primary)]" />
                 <span>DODAJ DO KOLEJKI</span>
               </button>
 
               <button
                 onClick={handleStartExport}
-                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-[#D4AF37] to-[#FDE047] hover:brightness-110 text-black font-extrabold text-sm rounded-xl transition-all shadow-lg hover:scale-[1.02] cursor-pointer uppercase tracking-wider min-h-[44px]"
+                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-[var(--gold-primary)] to-[var(--gold-bright)] hover:brightness-110 text-black font-extrabold text-sm rounded-xl transition-all shadow-lg hover:scale-[1.02] cursor-pointer uppercase tracking-wider min-h-[44px]"
               >
                 <Play className="w-4 h-4 fill-black" />
                 <span>ROZPOCZNIJ EKSPORT</span>
@@ -531,13 +727,38 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
         </div>
       </div>
 
+      {/* GPU Hardware Acceleration Support Banner & Browser Hint */}
+      {capabilities && !isGpuAccelerated && (
+        <div className="p-4 sm:p-5 rounded-2xl bg-amber-950/40 border-2 border-amber-500/60 shadow-[0_0_25px_rgba(245,158,11,0.2)] flex flex-col sm:flex-row items-start gap-4 text-xs font-sans animate-fadeIn">
+          <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0 text-amber-400">
+            <AlertTriangle className="w-5 h-5 animate-pulse" />
+          </div>
+          <div className="space-y-2 flex-1">
+            <div className="flex items-center gap-2 font-cinematic font-bold text-amber-300 text-sm">
+              <span>⚠️ Brak Akceleracji Sprzętowej GPU w Przeglądarce (WebCodecs / MediaRecorder)</span>
+            </div>
+            <p className="text-amber-100/90 leading-relaxed">
+              Silnik wykrył brak aktywnego kodera sprzętowego GPU w bieżącej sesji przeglądarki. Eksport zostanie przeprowadzony w wolniejszym trybie programowym (CPU FFmpeg).
+            </p>
+            <div className="p-3.5 rounded-xl bg-black/50 border border-amber-500/30 text-[11px] font-mono text-amber-200/90 space-y-1.5">
+              <span className="font-bold text-amber-300 block">💡 Jak odblokować 10-krotnie szybszy render GPU (NVENC / Apple M1-M4 / Intel QuickSync):</span>
+              <ol className="list-decimal list-inside space-y-1 opacity-95">
+                <li>Używaj nowej wersji przeglądarki <strong>Google Chrome, Microsoft Edge lub Safari</strong>.</li>
+                <li>Otwórz Ustawienia przeglądarki (<code className="bg-amber-950/80 px-1.5 py-0.5 rounded text-amber-200">chrome://settings/system</code>).</li>
+                <li>Zaznacz opcję <strong>"Używaj akceleracji sprzętowej, gdy jest dostępna"</strong> (Hardware Acceleration) i zrestartuj przeglądarkę.</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Developer Diagnostics Panel */}
       {showDiagnostics && (
-        <div className="bg-[#14120D] border-2 border-[#D4AF37]/40 rounded-2xl p-5 shadow-2xl space-y-4 animate-fadeIn">
-          <div className="flex items-center justify-between border-b border-[#2D2414] pb-3">
+        <div className="bg-[var(--bg-atelier)] border-2 border-[var(--border-luxury)] rounded-2xl p-5 shadow-2xl space-y-4 animate-fadeIn">
+          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-3">
             <div className="flex items-center gap-2">
-              <Cpu className="w-4 h-4 text-[#FDE047]" />
-              <h3 className="text-xs font-bold text-[#FDE047] uppercase tracking-wider font-mono">
+              <Cpu className="w-4 h-4 text-[var(--gold-bright)]" />
+              <h3 className="text-xs font-bold text-[var(--gold-bright)] uppercase tracking-wider font-mono">
                 Panel Diagnostyczny Silnika Wideo
               </h3>
             </div>
@@ -545,7 +766,7 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
               <button
                 onClick={handleRunEngineTest}
                 disabled={isTestingEngine}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2A2211] border border-[#D4AF37] text-xs font-bold text-[#FDE047] hover:bg-[#3B3018] cursor-pointer disabled:opacity-50 min-h-[36px]"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--bg-subtle)] border border-[var(--gold-primary)] text-xs font-bold text-[var(--gold-bright)] hover:bg-white/[0.05] cursor-pointer disabled:opacity-50 min-h-[36px]"
               >
                 <RefreshCw className={`w-3 h-3 ${isTestingEngine ? 'animate-spin' : ''}`} />
                 <span>Test Eksportu MP4 (1s)</span>
@@ -568,29 +789,41 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
           )}
 
           {/* Capabilities Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-[11px] font-mono">
-            <div className="p-2.5 rounded-lg bg-[#0E0C08] border border-[#261E10]">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2 text-[11px] font-mono">
+            <div className="p-2.5 rounded-xl bg-[#0E0C08] border border-[#261E10]">
               <span className="text-[#8C7E64] block">WebCodecs:</span>
               <span className={`font-bold ${capabilities?.webCodecsSupported ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {capabilities?.webCodecsSupported ? 'Dostępny ✓' : 'Brak ✗'}
               </span>
             </div>
-            <div className="p-2.5 rounded-lg bg-[#0E0C08] border border-[#261E10]">
-              <span className="text-[#8C7E64] block">VideoEncoder H.264:</span>
+            <div className="p-2.5 rounded-xl bg-[#0E0C08] border border-[#261E10]">
+              <span className="text-[#8C7E64] block">AV1 Master:</span>
+              <span className={`font-bold ${capabilities?.av1Supported ? 'text-emerald-400' : 'text-[#8C7E64]'}`}>
+                {capabilities?.av1Supported ? 'Akceleracja GPU ✓' : 'Software / Niedostępny'}
+              </span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-[#0E0C08] border border-[#261E10]">
+              <span className="text-[#8C7E64] block">HEVC / H.265:</span>
+              <span className={`font-bold ${capabilities?.hevcSupported ? 'text-emerald-400' : 'text-[#8C7E64]'}`}>
+                {capabilities?.hevcSupported ? 'Sprzętowy NVENC/Apple ✓' : 'Niedostępny'}
+              </span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-[#0E0C08] border border-[#261E10]">
+              <span className="text-[#8C7E64] block">VP9 WebM:</span>
+              <span className={`font-bold ${capabilities?.vp9Supported ? 'text-emerald-400' : 'text-[#8C7E64]'}`}>
+                {capabilities?.vp9Supported ? 'Obsługiwany ✓' : 'Brak'}
+              </span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-[#0E0C08] border border-[#261E10]">
+              <span className="text-[#8C7E64] block">H.264 / AVC:</span>
               <span className={`font-bold ${capabilities?.h264Supported ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {capabilities?.h264Supported ? 'Obsługiwany ✓' : 'Brak ✗'}
               </span>
             </div>
-            <div className="p-2.5 rounded-lg bg-[#0E0C08] border border-[#261E10]">
-              <span className="text-[#8C7E64] block">AudioEncoder AAC:</span>
-              <span className={`font-bold ${capabilities?.aacSupported ? 'text-emerald-400' : 'text-amber-400'}`}>
-                {capabilities?.aacSupported ? 'Sprzętowy AAC ✓' : 'Miks Software ⚠️'}
-              </span>
-            </div>
-            <div className="p-2.5 rounded-lg bg-[#0E0C08] border border-[#261E10]">
-              <span className="text-[#8C7E64] block">Pamięć Heap:</span>
-              <span className="text-[#DDD] font-bold">
-                {capabilities?.availableMemoryMb ? `~${capabilities.availableMemoryMb} MB` : 'Dynamiczna'}
+            <div className="p-2.5 rounded-xl bg-[#0E0C08] border border-[#261E10]">
+              <span className="text-[#8C7E64] block">Audio Codecs:</span>
+              <span className={`font-bold ${capabilities?.aacSupported || capabilities?.opusSupported ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {capabilities?.aacSupported ? 'AAC ✓' : ''} {capabilities?.opusSupported ? '· Opus ✓' : ''}
               </span>
             </div>
           </div>
@@ -604,8 +837,8 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
               <div className="max-h-32 overflow-y-auto bg-black/60 rounded-lg p-2.5 border border-[#241C0E] text-[10px] font-mono text-[#DDD2BC] space-y-1 custom-scrollbar">
                 {logs.slice(-15).map((log, lIdx) => (
                   <div key={lIdx} className="flex items-center gap-2">
-                    <span className="text-[#8C7E64]">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
-                    <span className="text-[#D4AF37] font-bold">[{log.category}]</span>
+                    <span className="text-[var(--ink-muted)]">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                    <span className="text-[var(--gold-primary)] font-bold">[{log.category}]</span>
                     <span>{log.message}</span>
                   </div>
                 ))}
@@ -615,34 +848,85 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
         </div>
       )}
 
+      {/* Pre-Flight AI Montage Summary Panel (When idle and has clips) */}
+      {!isExporting && !output && totalClipsCount > 0 && (
+        <AiMontageSummaryPanel
+          project={project}
+          resolution={resolution}
+          fps={fps}
+          quality={quality}
+          fitMode={fitMode}
+          videoCodec={videoCodec}
+          container={container}
+          onVideoCodecChange={setVideoCodec}
+          onContainerChange={setContainer}
+          isExporting={isExporting}
+          onConfirmRender={handleStartExport}
+        />
+      )}
+
       {/* Preset & Settings Selector (When idle) */}
       {!isExporting && !output && (
-        <div className="bg-[#121215] border border-[#242428] rounded-2xl p-5 sm:p-6 shadow-xl space-y-6">
-          <div>
-            <h2 className="text-xs font-bold text-[#D4AF37] uppercase tracking-wider flex items-center gap-2">
-              <Sliders className="w-3.5 h-3.5" />
-              Wybierz Preset Jakości
-            </h2>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
+        <div className="atelier-card rounded-3xl p-6 sm:p-8 border border-[var(--border-luxury)] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.85)] space-y-7 relative overflow-hidden">
+          {/* Subtle Ambient Golden Glow */}
+          <div className="absolute top-0 right-0 w-80 h-80 bg-gradient-to-br from-[var(--gold-primary)]/10 to-transparent blur-3xl pointer-events-none" />
+
+          {/* Engine Capability Badge Banner */}
+          <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-gradient-to-r from-[var(--bg-atelier)] via-[var(--bg-card)] to-[var(--bg-atelier)] border border-[var(--border-luxury)] rounded-2xl text-xs shadow-inner relative z-10">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-2.5 w-2.5 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              </span>
+              <span className="text-[var(--gold-bright)] font-bold tracking-wide uppercase font-cinematic text-xs">
+                Silnik Renderujący Master Studio • WebCodecs GPU Multi-Codec
+              </span>
+            </div>
+            <div className="flex items-center gap-3 text-[11px] text-[var(--ink-secondary)] font-mono">
+              <span className="flex items-center gap-1 text-emerald-400 font-bold">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Akceleracja GPU Zero-Copy
+              </span>
+              <span className="hidden sm:inline text-stone-600">·</span>
+              <span className="flex items-center gap-1 text-[var(--gold-bright)]">
+                <Sparkles className="w-3.5 h-3.5" /> Rec.709 VBR Quality
+              </span>
+              <span className="hidden sm:inline text-stone-600">·</span>
+              <span className="text-cyan-400">Audio Ducking -18dB</span>
+            </div>
+          </div>
+
+          {/* Preset Selector */}
+          <div className="relative z-10 space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold text-[var(--gold-primary)] uppercase tracking-wider font-cinematic flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-[var(--gold-primary)]" />
+                <span>Wybierz Styl i Preset Jakości</span>
+              </h2>
+              <span className="text-[11px] font-mono text-[var(--ink-muted)]">
+                Zoptymalizowany dla telewizorów 4K i projekcji kinowych
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {[
-                { id: 'FAST', name: 'SZYBKI', desc: '720p • Najszybszy eksport' },
-                { id: 'BALANCED', name: 'ZRÓWNOWAŻONY', desc: '1080p • Standardowa jakość' },
-                { id: 'QUALITY', name: 'WYSOKA JAKOŚĆ', desc: '1080p 60FPS • Płynny obraz' },
-                { id: 'MAX_QUALITY', name: 'MAKSYMALNA (4K)', desc: '4K Ultra HD • Master' }
+                { id: 'FAST', name: 'SZYBKI INTERNET', desc: '720p • Błyskawiczny transfer' },
+                { id: 'BALANCED', name: 'ZRÓWNOWAŻONY', desc: '1080p • Standard ślubny' },
+                { id: 'QUALITY', name: 'WYSOKA JAKOŚĆ', desc: '1080p 60FPS • Płynny taniec' },
+                { id: 'MAX_QUALITY', name: 'MAKSYMALNY (4K)', desc: '4K Ultra HD • Master 60FPS' }
               ].map(p => (
                 <button
                   key={p.id}
                   onClick={() => applyPreset(p.id as ExportPresetMode)}
-                  className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer min-h-[44px] ${
+                  className={`p-4 rounded-2xl border text-left transition-all cursor-pointer min-h-[50px] relative overflow-hidden ${
                     presetMode === p.id
-                      ? 'bg-[#2A2414] border-[#D4AF37] text-white shadow-md'
-                      : 'bg-[#18181C] border-[#2A2A30] text-[#888892] hover:text-white hover:border-[#3A3A42]'
+                      ? 'bg-gradient-to-br from-[var(--accent-emerald)] via-[var(--bg-atelier)] to-[var(--bg-atelier)] border-[var(--gold-primary)] text-white shadow-[0_0_20px_rgba(197,160,89,0.25)]'
+                      : 'bg-[var(--bg-card)] border-[var(--border-subtle)] text-[var(--ink-muted)] hover:text-white hover:border-[var(--gold-primary)]/40'
                   }`}
                 >
-                  <span className={`block text-xs font-bold ${presetMode === p.id ? 'text-[#E5C158]' : 'text-white'}`}>
+                  <span className={`block text-xs font-bold font-cinematic ${presetMode === p.id ? 'text-[var(--gold-bright)]' : 'text-white'}`}>
                     {p.name}
                   </span>
-                  <span className="block text-[11px] text-[#777782] mt-1 font-mono">
+                  <span className="block text-[10px] text-[var(--ink-muted)] mt-1 font-mono">
                     {p.desc}
                   </span>
                 </button>
@@ -651,51 +935,70 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
           </div>
 
           {/* Granular Parameter Adjustments */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-[#202024]">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 pt-4 border-t border-[#261E13] relative z-10">
             <div>
-              <label className="text-xs text-[#888892] block mb-1.5 font-medium">Rozdzielczość</label>
+              <label className="text-xs text-[var(--ink-secondary)] block mb-1.5 font-medium">Rozdzielczość</label>
               <select
                 value={resolution}
                 onChange={(e) => setResolution(e.target.value as any)}
-                className="w-full bg-[#18181C] border border-[#2E2E36] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none min-h-[44px]"
+                className="w-full bg-[var(--bg-atelier)] border border-[var(--border-subtle)] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[var(--gold-primary)] focus:outline-none min-h-[44px]"
               >
-                <option value="720p">1280 × 720 (HD)</option>
-                <option value="1080p">1920 × 1080 (Full HD)</option>
-                <option value="4k">3840 × 2160 (4K UHD)</option>
+                <option value="1080p">1920 × 1080 (Full HD 16:9)</option>
+                <option value="1440p">2560 × 1440 (2K QHD 16:9)</option>
+                <option value="4k">3840 × 2160 (4K Ultra HD Master)</option>
+                <option value="720p">1280 × 720 (HD 16:9)</option>
+                <option value="vertical_1080p">1080 × 1920 (Pionowy 9:16 Reels)</option>
+                <option value="vertical_4k">2160 × 3840 (Pionowy 4K Reels)</option>
+                <option value="square_1080p">1080 × 1080 (Kwadrat 1:1 Feed)</option>
               </select>
             </div>
 
             <div>
-              <label className="text-xs text-[#888892] block mb-1.5 font-medium">Płynność (FPS)</label>
+              <label className="text-xs text-[var(--ink-secondary)] block mb-1.5 font-medium">Płynność (FPS)</label>
               <select
                 value={fps}
                 onChange={(e) => setFps(Number(e.target.value))}
-                className="w-full bg-[#18181C] border border-[#2E2E36] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none min-h-[44px]"
+                className="w-full bg-[var(--bg-atelier)] border border-[var(--border-subtle)] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[var(--gold-primary)] focus:outline-none min-h-[44px]"
               >
-                <option value={24}>24 FPS (Kinowy)</option>
-                <option value={30}>30 FPS (Standard)</option>
-                <option value={60}>60 FPS (Wysoka płynność)</option>
+                <option value={24}>24 FPS (Kinowy Hollywood 24p)</option>
+                <option value={25}>25 FPS (Europejski PAL 25p)</option>
+                <option value={30}>30 FPS (Standard 30p)</option>
+                <option value={50}>50 FPS (Płynny PAL 50p)</option>
+                <option value={60}>60 FPS (Ultra Płynny 60p HFR)</option>
               </select>
             </div>
 
             <div>
-              <label className="text-xs text-[#888892] block mb-1.5 font-medium">Kadrowanie proporcji</label>
+              <label className="text-xs text-[var(--ink-secondary)] block mb-1.5 font-medium">Jakość & Bitrate</label>
+              <select
+                value={quality}
+                onChange={(e) => setQuality(e.target.value as any)}
+                className="w-full bg-[var(--bg-atelier)] border border-[var(--border-subtle)] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[var(--gold-primary)] focus:outline-none min-h-[44px]"
+              >
+                <option value="maximum">Maksymalna Master (do 85-120 Mbps)</option>
+                <option value="high">Wysoka Studio (18-55 Mbps)</option>
+                <option value="standard">Standardowa (8-16 Mbps)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs text-[var(--ink-secondary)] block mb-1.5 font-medium">Kadrowanie proporcji</label>
               <select
                 value={fitMode}
                 onChange={(e) => setFitMode(e.target.value as any)}
-                className="w-full bg-[#18181C] border border-[#2E2E36] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none min-h-[44px]"
+                className="w-full bg-[var(--bg-atelier)] border border-[var(--border-subtle)] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[var(--gold-primary)] focus:outline-none min-h-[44px]"
               >
-                <option value="fit">FIT (Cały kadr + rozmyte tło dla pionowych)</option>
-                <option value="fill">FILL (Wypełnij ekran)</option>
+                <option value="fit">FIT (Kadr + rozmyte tło dla mieszanych)</option>
+                <option value="fill">FILL (Wypełnij ekran bez pasów)</option>
                 <option value="original">ORIGINAL (Bez zmian)</option>
               </select>
             </div>
           </div>
 
           {/* Color Grading & CinemaScope Letterbox Controls */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-[#202024]">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-[var(--border-subtle)] relative z-10">
             <div>
-              <label className="text-xs text-[#D4AF37] block mb-1.5 font-medium flex items-center gap-1.5">
+              <label className="text-xs text-[var(--gold-primary)] block mb-1.5 font-medium flex items-center gap-1.5 font-cinematic">
                 <span>🎨 Styl Barwny / LUT Kinowy</span>
               </label>
               <select
@@ -711,9 +1014,9 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
                     });
                   }
                 }}
-                className="w-full bg-[#18181C] border border-[#3E3422] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none min-h-[44px]"
+                className="w-full bg-[var(--bg-atelier)] border border-[var(--border-subtle)] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[var(--gold-primary)] focus:outline-none min-h-[44px]"
               >
-                <option value="none">Oryginalny (Brak filtra)</option>
+                <option value="none">Oryginalny (Czysty zapis z kamer)</option>
                 <option value="golden_hour">✨ Złota Godzina (Ciepły romantyczny blask)</option>
                 <option value="vivid_master">💎 Czysty Master (Maksymalna czystość & kontrast)</option>
                 <option value="pastel_boho">🌸 Pastelowy Sen (Soft Boho & Delikatne pastele)</option>
@@ -723,7 +1026,7 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
             </div>
 
             <div>
-              <label className="text-xs text-[#D4AF37] block mb-1.5 font-medium flex items-center gap-1.5">
+              <label className="text-xs text-[var(--gold-primary)] block mb-1.5 font-medium flex items-center gap-1.5 font-cinematic">
                 <span>🎬 Format Kinowy (Letterbox)</span>
               </label>
               <select
@@ -739,22 +1042,257 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
                     });
                   }
                 }}
-                className="w-full bg-[#18181C] border border-[#3E3422] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[#D4AF37] focus:outline-none min-h-[44px]"
+                className="w-full bg-[var(--bg-atelier)] border border-[var(--border-subtle)] rounded-xl px-3 py-2.5 text-xs text-white focus:border-[var(--gold-primary)] focus:outline-none min-h-[44px]"
               >
                 <option value="none">Standardowy (16:9 Pełny kadr)</option>
                 <option value="cinemascope">CinemaScope 2.39:1 (Hollywoodzkie czarne pasy góra/dół)</option>
               </select>
             </div>
           </div>
+
+          {/* ADVANCED MULTI-CODEC & CONTAINER ENGINE CONFIGURATION */}
+          <div className="pt-4 border-t border-[#261E13] space-y-4 relative z-10">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-bold text-[#FDE047] uppercase tracking-wider font-cinematic flex items-center gap-2">
+                  <Cpu className="w-4 h-4 text-[#D4AF37]" />
+                  <span>Kodek Wideo & Akceleracja Sprzętowa GPU</span>
+                </h3>
+                <p className="text-[11px] text-[#8C7D5B] font-mono mt-0.5">
+                  Domyślnie silnik bada sprzęt i samoczynnie dobiera optymalny kodek bez konieczności wiedzy technicznej.
+                </p>
+              </div>
+
+              {/* Mode Toggle: Auto vs Manual */}
+              <div className="flex items-center gap-1.5 p-1 bg-[#120F0A] border border-[#2A2114] rounded-xl text-[11px] font-mono">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsManualCodecMode(false);
+                    setVideoCodec('auto');
+                    setContainer('auto');
+                  }}
+                  className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer font-bold ${
+                    !isManualCodecMode 
+                      ? 'bg-gradient-to-r from-[#D4AF37] to-[#FDE047] text-black shadow-md' 
+                      : 'text-[#8C7D5B] hover:text-white'
+                  }`}
+                >
+                  ⚡ Wybór Automatyczny (Rekomendowany)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsManualCodecMode(true)}
+                  className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer font-medium ${
+                    isManualCodecMode 
+                      ? 'bg-[#2B2112] text-[#FDE047] border border-[#D4AF37]/50 shadow-md' 
+                      : 'text-[#8C7D5B] hover:text-white'
+                  }`}
+                >
+                  ⚙️ Wybór Ręczny (Zaawansowany)
+                </button>
+              </div>
+            </div>
+
+            {/* If Automatic Mode (Default) */}
+            {!isManualCodecMode ? (
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-[#241A0B] via-[#161209] to-[#0E0C08] border border-[#D4AF37]/50 shadow-[0_0_30px_rgba(212,175,55,0.15)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="space-y-1.5 max-w-xl">
+                  <div className="flex items-center gap-2 text-xs font-cinematic font-bold text-[#FDE047]">
+                    <Sparkles className="w-4 h-4 text-[#D4AF37]" />
+                    <span>Tryb Inteligentny AI & GPU Aktywny (Auto)</span>
+                  </div>
+                  <p className="text-xs text-[#EADFC9] leading-relaxed">
+                    Nie musisz znać kodeków. Silnik automatycznie wykryje Twoją kartę graficzną (<span className="text-[#FDE047] font-semibold">Apple Silicon M1-M4 / NVENC / AV1 / H.264</span>) oraz ujęcia ślubne i zastosuje najnowocześniejsze kodowanie sprzętowe z bezstratnym audio i kalibracją barwną Rec.709.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-1.5 shrink-0 text-right sm:border-l sm:border-[var(--border-subtle)] sm:pl-5 text-xs font-mono">
+                  {isGpuAccelerated ? (
+                    <span className="text-emerald-400 font-bold flex items-center justify-end gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Akceleracja GPU Zero-Copy
+                    </span>
+                  ) : (
+                    <span className="text-amber-400 font-bold flex items-center justify-end gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5" /> Tryb Programowy CPU (Brak GPU)
+                    </span>
+                  )}
+                  <span className="text-[var(--gold-primary)]">
+                    Kontener: Auto (MP4 / WebM)
+                  </span>
+                  <span className="text-[var(--gold-dark)] text-[10px]">
+                    Bitrate: VBR Adaptive Cinema
+                  </span>
+                </div>
+              </div>
+            ) : (
+              /* If Manual Mode */
+              <div className="space-y-4 animate-fadeIn">
+                {/* Interactive Codec Cards Selection Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+                  {[
+                    { 
+                      id: 'auto' as VideoCodecOption, 
+                      title: 'Auto GPU', 
+                      badge: 'Optymalny',
+                      desc: 'Negocjuje najszybszy sprzętowy kodek',
+                      isHw: true
+                    },
+                    { 
+                      id: 'FFMPEG_X264' as VideoCodecOption, 
+                      title: 'Reliable CPU', 
+                      badge: 'NAJWYŻSZA ZGODNOŚĆ',
+                      desc: 'Naprawia błędy obrazu i zacięcia (x264)',
+                      isHw: false
+                    },
+                    { 
+                      id: 'AV1' as VideoCodecOption, 
+                      title: 'AV1 Master', 
+                      badge: '-40% Rozmiar',
+                      desc: 'Brak bloków w cieniach i dymie',
+                      isHw: capabilities?.av1Supported
+                    },
+                    { 
+                      id: 'H.265' as VideoCodecOption, 
+                      title: 'Apple HEVC', 
+                      badge: 'M1-M4 / NVENC',
+                      desc: 'Dedykowane bloki sprzętowe GPU',
+                      isHw: capabilities?.hevcSupported
+                    },
+                    { 
+                      id: 'VP9' as VideoCodecOption, 
+                      title: 'VP9 YouTube', 
+                      badge: 'WebM + Opus',
+                      desc: 'Stabilne strumieniowanie 4K',
+                      isHw: capabilities?.vp9Supported
+                    },
+                    { 
+                      id: 'H.264' as VideoCodecOption, 
+                      title: 'H.264 / AVC', 
+                      badge: '100% Zgodny',
+                      desc: 'Smart TV, telefony i auta',
+                      isHw: capabilities?.h264Supported
+                    },
+                    { 
+                      id: 'ProRes_Master' as VideoCodecOption, 
+                      title: 'ProRes Master', 
+                      badge: '120 Mbps',
+                      desc: 'Bezstratna archiwizacja ślubna',
+                      isHw: true
+                    }
+                  ].map(c => {
+                    const isSelected = videoCodec === c.id;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => setVideoCodec(c.id)}
+                        className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 min-h-[96px] ${
+                          isSelected
+                            ? 'bg-gradient-to-br from-[#1B4332] via-[#0D1A10] to-[#050705] border-[#C5A059] text-white shadow-[0_0_20px_rgba(197,160,89,0.3)] ring-1 ring-[#C5A059]/50'
+                            : 'bg-[#0A0C0A]/80 border-[#202520] text-[#949B96] hover:border-[#C5A059]/40 hover:text-white'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between gap-1 mb-1">
+                            <span className={`text-xs font-bold font-cinematic ${isSelected ? 'text-[#E5C992]' : 'text-[#F8F7F4]'}`}>
+                              {c.title}
+                            </span>
+                            {isSelected && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-[#E5C992] shadow-[0_0_6px_#E5C992]" />
+                            )}
+                          </div>
+                          <span className={`text-[9.5px] font-mono font-semibold block ${c.id === 'FFMPEG_X264' ? 'text-cyan-400' : 'text-[#C5A059]'}`}>
+                            {c.badge}
+                          </span>
+                        </div>
+
+                        <div>
+                          <p className={`text-[9.5px] font-mono leading-tight ${isSelected ? 'text-white/80' : 'text-[#7A6E57]'}`}>
+                            {c.desc}
+                          </p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Container Format Selector (MP4 vs WebM) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                  <div className="p-4 rounded-2xl bg-[#14110A]/90 border border-[#2B2317]">
+                    <label className="text-xs text-[#EADFC9] block mb-2 font-medium flex items-center justify-between font-cinematic">
+                      <span className="flex items-center gap-2">
+                        <Layers className="w-3.5 h-3.5 text-[#D4AF37]" />
+                        <span>Kontener Pliku Wyjściowego</span>
+                      </span>
+                      <span className="text-[10px] text-[#D4AF37] font-mono">
+                        {container === 'auto' ? 'Auto-Dopasowany' : container.toUpperCase()}
+                      </span>
+                    </label>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: 'auto' as ContainerFormat, name: 'Auto', audio: 'Domyślny' },
+                        { id: 'mp4' as ContainerFormat, name: 'MP4', audio: 'AAC 192k' },
+                        { id: 'webm' as ContainerFormat, name: 'WebM', audio: 'Opus 48k' }
+                      ].map(cnt => (
+                        <button
+                          key={cnt.id}
+                          type="button"
+                          onClick={() => setContainer(cnt.id)}
+                          className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
+                            container === cnt.id
+                              ? 'bg-[var(--gold-soft)] border-[var(--gold-primary)] text-[var(--gold-bright)] font-bold shadow-md'
+                              : 'bg-[var(--bg-atelier)] border-[var(--border-subtle)] text-[var(--gold-dark)] hover:text-[#CCC]'
+                          }`}
+                        >
+                          <span className="block text-xs font-mono">{cnt.name}</span>
+                          <span className="block text-[9.5px] font-mono text-[#8C7D5B] mt-0.5">{cnt.audio}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <p className="text-[10px] text-[var(--gold-dark)] font-mono mt-2.5 leading-relaxed">
+                      {container === 'mp4' && 'Kontener MP4 gwarantuje bezproblemowe odtworzenie na telewizorach Smart TV, odtwarzaczach stacjonarnych i smartfonach z audio AAC.'}
+                      {container === 'webm' && 'WebM oferuje zoptymalizowane strumieniowanie z bezstratnym kodekiem Opus 48 kHz (standard YouTube 4K).'}
+                      {container === 'auto' && 'Automatycznie dobiera kontener MP4 dla H.264/HEVC/AV1 oraz WebM dla VP9.'}
+                    </p>
+                  </div>
+
+                  {/* Codec Advantage Technical Specs Card */}
+                  <div className="p-4 rounded-2xl bg-[var(--bg-card)] border border-[var(--border-subtle)] flex flex-col justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-[var(--gold-primary)] uppercase tracking-wider font-cinematic block mb-1.5">
+                        Charakterystyka: {videoCodec === 'auto' ? 'Auto GPU' : videoCodec}
+                      </span>
+                      <p className="text-[11px] text-[#A89C82] leading-relaxed">
+                        {videoCodec === 'AV1' && 'AOMedia Video 1 redukuje bitrate o 40% bez jakichkolwiek bloków kompresyjnych na ciemnym tle ceremonii kościelnej lub zabawy weselnej.'}
+                        {videoCodec === 'H.265' && 'HEVC wykorzystuje sprzętowe jednostki NVENC i Apple Silicon Media Engine, skracając czas renderowania nawet 3-krotnie.'}
+                        {videoCodec === 'VP9' && 'VP9 to format rekomendowany do bezpośredniej publikacji na YouTube z natywnym dźwiękiem Opus 48 kHz bez ponownej kompresji.'}
+                        {videoCodec === 'H.264' && 'Klasyczny High Profile AVC gwarantuje zgodność z każdym, nawet 10-letnim telewizorem i odtwarzaczem samochodowym.'}
+                        {videoCodec === 'ProRes_Master' && 'Profil Master Studio z bitrate dochodzącym do 120 Mbps — idealny do archiwizacji na dyskach twardych.'}
+                        {videoCodec === 'auto' && 'Inteligentna analiza bada możliwości Twojej karty graficznej i wybiera optymalną kombinację jakości do czasu renderowania.'}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] font-mono text-[var(--ink-muted)] pt-2 border-t border-[var(--border-subtle)] mt-2">
+                      <span>Przestrzeń barw: Rec.709 Broadcast</span>
+                      <span>Tryb: VBR Adaptive</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {/* In-Flight Real Progress View */}
       {isExporting && (
-        <div className="bg-[#121215] border border-[#D4AF37]/50 rounded-2xl p-6 sm:p-10 shadow-2xl space-y-8 my-2">
+        <div className="bg-[var(--bg-atelier)] border border-[var(--gold-primary)]/50 rounded-2xl p-6 sm:p-10 shadow-2xl space-y-8 my-2">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <span className="text-xs uppercase text-[#D4AF37] font-bold tracking-wider flex items-center gap-2 font-mono">
+              <span className="text-xs uppercase text-[var(--gold-primary)] font-bold tracking-wider flex items-center gap-2 font-mono">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 EKSPORT W TOKU
               </span>
@@ -785,9 +1323,9 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
           </div>
 
           {/* Real progress bar */}
-          <div className="h-3 w-full bg-[#1A1A1E] rounded-full overflow-hidden p-0.5 border border-[#2E2E36]">
+          <div className="h-3 w-full bg-[var(--bg-subtle)] rounded-full overflow-hidden p-0.5 border border-[var(--border-subtle)]">
             <div 
-              className="h-full bg-gradient-to-r from-[#B8942A] via-[#E5C158] to-[#FDE047] rounded-full transition-all duration-200"
+              className="h-full bg-gradient-to-r from-[var(--gold-dark)] via-[var(--gold-primary)] to-[var(--gold-bright)] rounded-full transition-all duration-200"
               style={{ width: `${progress?.percent || 0}%` }}
             />
           </div>
@@ -1075,7 +1613,7 @@ export function ExportView({ project, onUpdateProject, onNavigateTab, onResetPro
                     </div>
 
                     <div className="text-[11px] text-[#888892] font-mono mt-1 flex items-center gap-3">
-                      <span>{task.config.resolution} • {task.config.fps} FPS</span>
+                      <span>{task.config.resolution} • {task.config.fps} FPS • {task.config.videoCodec || 'Auto GPU'}</span>
                       {task.config.clipCount !== undefined && <span>• {task.config.clipCount} ujęć</span>}
                       {task.config.durationSec !== undefined && <span>• {formatDuration(task.config.durationSec)}</span>}
                     </div>

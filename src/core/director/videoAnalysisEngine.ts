@@ -106,7 +106,7 @@ export async function analyzeClipVideo(
   canvas.height = 90;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-  const frameDataList: { luminance: number; sharpness: number; frameDiff: number }[] = [];
+  const frameDataList: { luminance: number; sharpness: number; frameDiff: number; contrast?: number }[] = [];
   let prevImageData: ImageData | null = null;
 
   try {
@@ -160,8 +160,9 @@ export async function analyzeClipVideo(
       const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const data = imgData.data;
 
-      // 1. Luminance
+      // 1. Luminance and Contrast
       let totalLuminance = 0;
+      let totalLuminanceSq = 0;
       let totalDiff = 0;
       let edgeVariance = 0;
 
@@ -172,6 +173,7 @@ export async function analyzeClipVideo(
         const b = data[p + 2];
         const lum = (0.299 * r + 0.587 * g + 0.114 * b);
         totalLuminance += lum;
+        totalLuminanceSq += lum * lum;
 
         // Horizontal gradient (rough edge sharpness)
         if ((p / 4) % canvas.width < canvas.width - 1) {
@@ -190,13 +192,16 @@ export async function analyzeClipVideo(
       }
 
       const avgLuminance = totalLuminance / pixelCount;
+      const variance = (totalLuminanceSq / pixelCount) - (avgLuminance * avgLuminance);
+      const contrast = Math.sqrt(Math.max(0, variance));
       const avgSharpness = (edgeVariance / pixelCount) * 4;
       const avgDiff = prevImageData ? (totalDiff / pixelCount) : 10;
 
       frameDataList.push({
         luminance: avgLuminance,
         sharpness: avgSharpness,
-        frameDiff: avgDiff
+        frameDiff: avgDiff,
+        contrast: contrast
       });
 
       prevImageData = imgData;
@@ -217,6 +222,7 @@ export async function analyzeClipVideo(
     const avgLum = frameDataList.reduce((acc, f) => acc + f.luminance, 0) / frameDataList.length;
     const avgSharp = frameDataList.reduce((acc, f) => acc + f.sharpness, 0) / frameDataList.length;
     const avgDiff = frameDataList.reduce((acc, f) => acc + f.frameDiff, 0) / frameDataList.length;
+    const avgContrast = (frameDataList as any).reduce((acc: any, f: any) => acc + (f.contrast || 0), 0) / frameDataList.length;
 
     // Exposure score (Optimal luminance is around 100-160)
     if (avgLum < 40) {
@@ -229,13 +235,17 @@ export async function analyzeClipVideo(
       exposureScore = Math.min(100, Math.round(75 + (1 - Math.abs(avgLum - 128) / 128) * 25));
     }
 
+    // Contrast score (Higher contrast is generally better for "pop")
+    const contrastScore = Math.min(100, Math.round(avgContrast * 1.5));
+    if (contrastScore < 30) issues.push('Niski kontrast (płaski obraz)');
+
     // Sharpness score
     sharpnessScore = Math.min(100, Math.max(25, Math.round(avgSharp * 3.5)));
     if (sharpnessScore < 35) {
       issues.push('Niska ostrość / rozmycie');
     }
 
-    // Stability score (Very high diff between sampled frames indicates heavy shaking or erratic camera)
+    // Stability score
     if (avgDiff > 45) {
       stabilityScore = Math.max(15, Math.round(100 - (avgDiff - 45) * 1.5));
       issues.push('Poruszone ujęcie / silne drgania kamery');
@@ -245,12 +255,8 @@ export async function analyzeClipVideo(
       stabilityScore = Math.min(100, Math.round(85 + (25 - avgDiff) * 0.6));
     }
 
-    // Resolution bonus/penalty
-    const pixels = clip.width * clip.height;
-    if (pixels < 1280 * 720) {
-      issues.push('Niska rozdzielczość (poniżej HD)');
-      qualityScore = Math.round(qualityScore * 0.85);
-    }
+    // Overall quality score refined (Phase 4.3)
+    qualityScore = Math.round((stabilityScore * 0.3) + (sharpnessScore * 0.3) + (exposureScore * 0.2) + (contrastScore * 0.2));
   }
 
   // Duration checks

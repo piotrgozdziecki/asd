@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { StudioLayout } from './layout/StudioLayout';
 import { ProjectOverviewView } from './project/ProjectOverviewView';
 import { MediaManager } from './media/MediaManager';
@@ -9,10 +10,16 @@ import { AiAssistantModal } from './ai/AiAssistantModal';
 import { VoiceRecorderModal } from './VoiceRecorderModal';
 import { SoundscapeStudioModal } from './audio/SoundscapeStudioModal';
 import { AiWeddingDirectorModal } from './director/AiWeddingDirectorModal';
-import { AiChronologicalMergeModal, DirectorMergeOptions } from './director/AiChronologicalMergeModal';
+import { 
+  AiChronologicalMergeModal, 
+  DirectorMergeOptions 
+} from './director/AiChronologicalMergeModal';
+import { SOUNDSCAPE_PRESETS, soundscapeGenerator } from '../core/audio/soundscapeGenerator';
 import { WeddingNarrativeModal } from './director/WeddingNarrativeModal';
 import { ProjectHealthPanel } from './director/ProjectHealthPanel';
 import { QuickActionsBar } from './director/QuickActionsBar';
+import { TemplateGalleryModal } from './templates/TemplateGalleryModal';
+import type { ProjectTemplate } from '../types/template';
 import { useProject } from '../hooks/useProject';
 import { useAuth } from '../lib/firebase/AuthContext';
 import { saveProject, loadProject, deleteProjectFromCloud } from '../lib/firebase/api';
@@ -21,7 +28,7 @@ import { useStudioToast } from './common/ToastContext';
 import { probeVideoMetadata } from '../core/media/metadataProber';
 import { urlRegistry } from '../core/media/urlRegistry';
 import { localIndexedDB } from '../core/storage/indexedDBProvider';
-import { soundscapeGenerator } from '../core/audio/soundscapeGenerator';
+import { videoExportService } from '../core/export/videoExportService';
 import type { MediaClip, TimelineItem, AudioTrackItem, TextLayer, WeddingChapter, ClipCategory } from '../types/project';
 
 export function StudioApp() {
@@ -34,6 +41,7 @@ export function StudioApp() {
   const [isHealthPanelOpen, setIsHealthPanelOpen] = useState(false);
   const [isVoiceRecorderOpen, setIsVoiceRecorderOpen] = useState(false);
   const [isSoundscapeModalOpen, setIsSoundscapeModalOpen] = useState(false);
+  const [isTemplateGalleryOpen, setIsTemplateGalleryOpen] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   
@@ -78,7 +86,32 @@ export function StudioApp() {
   const { user, loading: authLoading, login } = useAuth();
   const [isSaving, setIsSaving] = useState(false);
   const [isDbConnected, setIsDbConnected] = useState(true);
+  const [gpuWarningHint, setGpuWarningHint] = useState<string | null>(null);
   const toast = useStudioToast();
+
+  // Probe GPU hardware acceleration support on startup
+  useEffect(() => {
+    async function checkGpuSupport() {
+      try {
+        const caps = await videoExportService.getDiagnostics();
+        const hasGpu = Boolean(
+          caps.webCodecsSupported &&
+          caps.videoEncoderSupported &&
+          (caps.hevcHardware || caps.av1Hardware || caps.vp9Hardware || caps.h264Supported)
+        );
+        if (!hasGpu) {
+          setGpuWarningHint(
+            'Brak aktywnej akceleracji sprzętowej GPU w przeglądarce (WebCodecs / MediaRecorder). Włącz opcję "Używaj akceleracji sprzętowej, gdy jest dostępna" w ustawieniach przeglądarki (np. chrome://settings/system dla Chrome/Edge lub Ustawienia -> System w Safari), aby przyspieszyć renderowanie 10x i zapobiec błędom eksportu.'
+          );
+        } else {
+          setGpuWarningHint(null);
+        }
+      } catch (err) {
+        console.warn('[StudioApp] GPU capability check:', err);
+      }
+    }
+    checkGpuSupport();
+  }, []);
 
   // Sync DB connection status
   useEffect(() => {
@@ -356,7 +389,7 @@ export function StudioApp() {
   }, [removeMediaClips]);
 
   const handleApplyChronologicalMerge = useCallback(async (
-    items: { clip: MediaClip; smartTitle: string; subtitleCaption: string; category: ClipCategory; transition: string; trimStart: number; trimEnd: number }[],
+    items: { clip: MediaClip; smartTitle: string; subtitleCaption: string; category: ClipCategory; transition: string; trimStart: number; trimEnd: number; emotion?: string; timeOfDay?: string }[],
     options?: DirectorMergeOptions
   ) => {
     if (!items || items.length === 0) return;
@@ -374,46 +407,84 @@ export function StudioApp() {
     const includeOutro = options ? options.includeOutroTitleCard : true;
 
     let lastCategory: string | null = null;
+    let lastTimeOfDay: string | null = null;
+
+    // 2. Determine soundtrack and its BPM for sync
+    let musicBpm = 72; // Default
+    let selectedPresetId = options?.soundtrackPresetId || 'golden_hour_piano';
+    
+    const existingMusic = project.audioTracks.find(t => t.volume > 0.3);
+    if (existingMusic) {
+      // Try to find BPM if it's one of our presets
+      const preset = SOUNDSCAPE_PRESETS.find(p => existingMusic.name.includes(p.title));
+      if (preset) musicBpm = preset.bpm;
+    } else if (options?.includeSoundtrack) {
+      const preset = SOUNDSCAPE_PRESETS.find(p => p.id === selectedPresetId) || SOUNDSCAPE_PRESETS[0];
+      musicBpm = preset.bpm;
+    }
+
+    const beatDuration = 60 / musicBpm;
+    const transitionDuration = Math.max(0.3, Math.min(1.5, beatDuration)); // Match 1 beat or half beat
 
     items.forEach((item, idx) => {
-      // I.1 SMART TRIM: strictly bound every trimmed segment to max 10-12s
-      const rawDuration = (item.trimEnd > item.trimStart) ? (item.trimEnd - item.trimStart) : 10;
-      const clipDuration = Math.min(12.0, Math.max(3.0, rawDuration));
+      // UNRESTRICTED DURATION & NATURAL MONTAGE:
+      // Zero artificial limits - preserves full speech, vows, dance or smart cuts
+      const rawDuration = (item.trimEnd > item.trimStart) 
+        ? (item.trimEnd - item.trimStart) 
+        : (item.clip.duration || 10);
+      
+      let clipDuration = rawDuration;
+      if (options?.applySmartTrim) {
+        if (options?.pacing === 'fast') {
+          // Fast highlights: keep between 4s and 8s
+          clipDuration = Math.min(8.0, Math.max(3.0, rawDuration));
+        } else if (options?.pacing === 'slow') {
+          // Slow emotional pacing: keep full natural length
+          clipDuration = rawDuration;
+        } else {
+          // Cinematic / Natural: keep natural length without artificial cutoff
+          clipDuration = rawDuration;
+        }
+      }
+      
       const effectiveTrimEnd = item.trimStart + clipDuration;
 
       const isFirstItem = idx === 0;
       const isLastItem = idx === items.length - 1;
       const isNewCategory = lastCategory !== item.category;
+      const isNewTimeOfDay = lastTimeOfDay !== item.timeOfDay;
+      
       lastCategory = item.category;
+      lastTimeOfDay = item.timeOfDay;
 
       const transitionType = applyTransitions
         ? ((item.transition as any) || (isFirstItem ? 'dip_black' : 'dissolve'))
         : 'cut';
       
-      // I.2 GENEROWANIE KART I PODPISÓW: Przed KAŻDYM klipem umieszczana jest spersonalizowana karta
+      // I.2 GENEROWANIE KART I PODPISÓW
       let itemTitleCard = undefined;
       let hasActiveTitleCard = false;
 
       if (isFirstItem && includeIntro) {
-        // Karta Główna Projektu
         hasActiveTitleCard = true;
         itemTitleCard = {
           enabled: true,
-          text: options?.introTitle || 'ŚLUB JOANNY I PIOTRA',
-          subtitle: options?.introSubtitle || '14.09.2024 • Sakrament Małżeństwa',
-          duration: options?.introDuration || 3.5,
+          text: options?.introTitle || `ŚLUB: ${project.name || 'WSPOMNIENIA'}`,
+          subtitle: options?.introSubtitle || `${new Date().toLocaleDateString('pl-PL')} • Smart Montage AI`,
+          duration: options?.introDuration || 4.0,
           style: (options?.introStyle as any) || 'liturgical',
           backgroundColor: 'gradient',
           cardType: 'intro' as const
         };
-      } else if (includeScenes) {
-        // Karta Sceny przed każdym klipem bez technicznych nazw plików
+      } else if (includeScenes && (isNewCategory || isNewTimeOfDay)) {
+        // Only show scene card on major transitions (Category or Time of Day change) for "Maximal Quality"
         hasActiveTitleCard = true;
+        const timeLabel = item.timeOfDay ? ` [${item.timeOfDay.replace('_', ' ').toUpperCase()}]` : '';
         itemTitleCard = {
           enabled: true,
           text: item.smartTitle,
-          subtitle: item.subtitleCaption,
-          duration: 2.5,
+          subtitle: `${item.subtitleCaption}${timeLabel}`,
+          duration: 3.0,
           style: 'cinematic' as const,
           backgroundColor: 'gradient',
           cardType: 'scene' as const
@@ -425,9 +496,9 @@ export function StudioApp() {
       if (isLastItem && includeOutro) {
         itemOutroCard = {
           enabled: true,
-          text: options?.outroTitle || 'PODZIĘKOWANIA',
-          subtitle: options?.outroSubtitle || 'Z całego serca dziękujemy Rodzicom za dar życia i miłość, Świadkom za pomoc i wsparcie, oraz wszystkim wspaniałym Gościom za modlitwę, radość i wspólne świętowanie. Joanna & Piotr • 14.09.2024',
-          duration: options?.outroDuration || 4.0,
+          text: options?.outroTitle || 'FINAŁ',
+          subtitle: options?.outroSubtitle || 'Dziękujemy za bycie częścią naszej historii. Joanna & Piotr.',
+          duration: 4.5,
           style: 'elegant' as const,
           backgroundColor: 'gradient',
           cardType: 'outro' as const
@@ -444,23 +515,41 @@ export function StudioApp() {
         duration: clipDuration,
         speed: 1,
         volume: 1,
-        fadeIn: 0.5, // II.2 Płynne przenikanie audio/wideo 0.5s
-        fadeOut: 0.5,
+        fadeIn: transitionDuration, 
+        fadeOut: transitionDuration,
         muted: false,
         scale: 1,
         rotation: 0,
         fitMode: 'fit',
         transitionIn: transitionType,
-        transitionDuration: applyTransitions ? 0.5 : 0,
+        transitionDuration: applyTransitions ? transitionDuration : 0,
         titleCard: itemTitleCard,
         outroCard: itemOutroCard
       };
       newTimelineItems.push(tItem);
 
-      // Add subtitle text layer for prominent scenes if enabled
+      // Add floating "Time of Day" badge as TextLayer if it's a new time of day but not a full title card
+      if (item.timeOfDay && isNewTimeOfDay && !hasActiveTitleCard) {
+        newTextLayers.push({
+          id: `tl_time_${Date.now()}_${idx}`,
+          text: item.timeOfDay.replace('_', ' ').toUpperCase(),
+          type: 'title',
+          style: 'minimalist',
+          timelineStart: start + 0.5,
+          duration: 3.0,
+          position: { x: 0.1, y: 0.1 },
+          fontSize: 14,
+          color: '#FDE047',
+          backgroundColor: 'transparent',
+          animation: 'slide',
+          fontWeight: '800'
+        });
+      }
+
+      // Add subtitle text layer
       if (includeSubtitles && item.subtitleCaption && item.subtitleCaption.trim()) {
-        const subtitleOffset = hasActiveTitleCard ? (itemTitleCard?.duration || 2.5) : 0.4;
-        const subDuration = Math.max(1.5, Math.min(4.5, clipDuration - subtitleOffset));
+        const subtitleOffset = hasActiveTitleCard ? (itemTitleCard?.duration || 3.0) : 0.4;
+        const subDuration = Math.max(2.0, Math.min(5.0, clipDuration - subtitleOffset));
         newTextLayers.push({
           id: `tl_${Date.now()}_${idx}`,
           text: item.subtitleCaption,
@@ -468,10 +557,10 @@ export function StudioApp() {
           style: 'cinematic',
           timelineStart: Number((start + subtitleOffset).toFixed(2)),
           duration: Number(subDuration.toFixed(2)),
-          position: { x: 0.5, y: 0.86 },
-          fontSize: 20,
+          position: { x: 0.5, y: 0.88 },
+          fontSize: 18,
           color: '#FFFFFF',
-          backgroundColor: 'rgba(0,0,0,0.65)',
+          backgroundColor: 'rgba(0,0,0,0.7)',
           animation: 'fade',
           fontWeight: '600'
         });
@@ -492,7 +581,12 @@ export function StudioApp() {
       updatedMediaMap.set(item.clip.id, {
         category: item.category,
         name: item.smartTitle,
-        comment: item.subtitleCaption
+        comment: item.subtitleCaption,
+        analysis: {
+          ...item.clip.analysis,
+          emotion: item.emotion as any,
+          timeOfDay: item.timeOfDay as any
+        } as any
       });
 
       start += clipDuration;
@@ -507,11 +601,11 @@ export function StudioApp() {
       return clip;
     });
 
-    // Sound as foundation: auto-generate high-quality wedding soundtrack if none exists
-    let updatedAudioTracks = [...(project.audioTracks || [])];
-    if (options?.includeSoundtrack && updatedAudioTracks.length === 0) {
+    // Sound handling: only generate background soundtrack if explicitly requested by user
+    let updatedAudioTracks: AudioTrackItem[] = [];
+    if (options?.includeSoundtrack) {
       try {
-        const presetId = options.soundtrackPresetId || 'altar_procession';
+        const presetId = options.soundtrackPresetId || 'golden_hour_piano';
         const { file, duration } = await soundscapeGenerator.generateTrackFile(presetId);
         const trackId = `track_soundscape_${Date.now()}`;
         try {
@@ -534,6 +628,9 @@ export function StudioApp() {
       } catch (audioErr) {
         console.warn('[StudioApp] Auto soundtrack generation failed:', audioErr);
       }
+    } else {
+      // Keep only user-recorded voiceovers if any, otherwise keep audioTracks empty for 100% original audio
+      updatedAudioTracks = (project.audioTracks || []).filter(t => t.trackType === 'voiceover');
     }
 
     const updatedSettings = {
@@ -575,6 +672,56 @@ export function StudioApp() {
     setActiveTab(destinationTab);
   }, [project, pushState]);
 
+  const handleApplyTemplate = useCallback((
+    template: ProjectTemplate,
+    options: { applySettingsOnly: boolean; generateChapters: boolean; applyTitleCards: boolean }
+  ) => {
+    const s = template.structure;
+    const updatedSettings = {
+      ...(project.settings || {}),
+      colorGrade: s.colorGrade || project.settings?.colorGrade || 'golden_hour',
+      resolution: s.resolution || project.settings?.resolution || '1080p',
+      fps: s.fps || project.settings?.fps || 30,
+      fitMode: s.fitMode || project.settings?.fitMode || 'fit',
+    };
+
+    if (options.applyTitleCards) {
+      if (s.introCard) (updatedSettings as any).introCard = s.introCard;
+      if (s.outroCard) (updatedSettings as any).outroCard = s.outroCard;
+    }
+
+    let updatedChapters = project.chapters;
+    if (options.generateChapters && s.chapters && s.chapters.length > 0) {
+      let currentStart = 0;
+      updatedChapters = s.chapters.map((ch, idx) => {
+        const dur = ch.targetDurationSec || 60;
+        const start = currentStart;
+        const end = start + dur;
+        currentStart = end;
+        return {
+          id: `ch_${Date.now()}_${idx}`,
+          chapterKey: (ch.chapterKey as ClipCategory) || 'ceremony',
+          name: ch.name,
+          startTime: start,
+          endTime: end,
+          description: ch.description || ''
+        };
+      });
+    }
+
+    pushState({
+      ...project,
+      settings: updatedSettings as any,
+      chapters: updatedChapters,
+      updatedAt: new Date().toISOString()
+    });
+
+    // Switch to montage tab to see the new structure/chapters
+    setActiveTab('montage');
+
+    toast.showSuccess(`✨ Zastosowano szablon "${template.title}" do projektu!`);
+  }, [project, pushState, toast]);
+
   const handleOneClickDirectorCut = useCallback(async (selectedClips?: MediaClip[]) => {
     const clipsToUse = (selectedClips && selectedClips.length > 0) ? selectedClips : project.mediaLibrary;
     if (!clipsToUse || clipsToUse.length === 0) {
@@ -582,37 +729,20 @@ export function StudioApp() {
       return;
     }
 
-    // Sort chronologically by capturedAt or createdAt
-    const sorted = [...clipsToUse].sort((a, b) => {
-      const tA = new Date(a.capturedAt || a.createdAt || 0).getTime();
-      const tB = new Date(b.capturedAt || b.createdAt || 0).getTime();
-      if (tA !== tB) return tA - tB;
-      return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' });
-    });
+    toast.showInfo('🚀 AI przygotowuje zaawansowany scenariusz Smart Montage (analiza nastroju i pory dnia)...');
 
-    const categoriesList: ClipCategory[] = ['preparations', 'ceremony', 'congratulations', 'first_dance', 'toast', 'party', 'cake', 'ending'];
-    const items = sorted.map((c, idx) => {
-      const catIdx = Math.min(categoriesList.length - 1, Math.floor((idx / sorted.length) * categoriesList.length));
-      return {
-        clip: c,
-        smartTitle: c.name || `Scena ${idx + 1}`,
-        subtitleCaption: `Ujęcie ślubne – ${c.name}`,
-        category: c.category && c.category !== 'unassigned' ? c.category : categoriesList[catIdx],
-        transition: idx === 0 ? 'dip_black' : 'dissolve',
-        trimStart: 0,
-        trimEnd: c.duration
-      };
-    });
+    let sequencedItems: any[] = [];
+    const isMostlyVertical = clipsToUse.filter(c => c.orientation === 'portrait').length > clipsToUse.length / 2;
 
     const defaultOptions: DirectorMergeOptions = {
       includeIntroTitleCard: true,
-      introTitle: 'ŚLUB JOANNY I PIOTRA',
-      introSubtitle: '14.09.2024 • Sakrament Małżeństwa',
+      introTitle: `FILM ŚLUBNY: ${project.name || 'WSPOMNIENIA'}`,
+      introSubtitle: new Date().toLocaleDateString('pl-PL'),
       introDuration: 3.5,
       introStyle: 'liturgical',
       includeOutroTitleCard: true,
-      outroTitle: 'PODZIĘKOWANIA',
-      outroSubtitle: 'Z całego serca dziękujemy Rodzicom za dar życia i miłość, Świadkom za pomoc i wsparcie, oraz wszystkim wspaniałym Gościom za modlitwę, radość i wspólne świętowanie. Joanna & Piotr • 14.09.2024',
+      outroTitle: 'DZIĘKUJEMY',
+      outroSubtitle: 'Z całego serca dziękujemy wszystkim gościom za wspólną celebrację naszej miłości.',
       outroDuration: 4.0,
       includeSceneTitles: true,
       includeSubtitles: true,
@@ -620,14 +750,118 @@ export function StudioApp() {
       applySmartTrim: true,
       colorGrade: 'golden_hour',
       generateChapters: true,
-      includeSoundtrack: true,
+      includeSoundtrack: false,
       soundtrackPresetId: 'altar_procession',
       targetTab: 'montage'
     };
 
-    await handleApplyChronologicalMerge(items, defaultOptions);
-    toast.showSuccess('✨ Reżyser AI w 1 kliknięciu połączył wszystkie ujęcia z kartą liturgiczną, scenami i podziękowaniami!');
-  }, [project.mediaLibrary, handleApplyChronologicalMerge, toast]);
+    // Update project resolution if mostly vertical
+    if (isMostlyVertical && project.settings?.targetResolution !== '720p' && !project.settings?.resolution?.includes('vertical')) {
+      pushState({
+        ...project,
+        settings: {
+          ...project.settings,
+          resolution: 'vertical_1080p',
+          targetResolution: '1080p',
+          aspectRatio: '9:16'
+        } as any
+      });
+    }
+
+    try {
+      // 1. Call the advanced sequencing API
+      const response = await fetch('/api/smart-chronological-sequencing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clips: clipsToUse.map(c => ({
+            id: c.id,
+            name: c.name,
+            duration: c.duration,
+            capturedAt: c.capturedAt || c.createdAt,
+            tags: c.tags,
+            comment: c.comment
+          })),
+          pacing: 'cinematic',
+          coupleNames: project.name || 'Nowożeńcy',
+          weddingDate: ''
+        })
+      });
+
+      if (!response.ok) throw new Error('API Error');
+      const data = await response.json();
+      
+      const clipMap = new Map(clipsToUse.map(c => [c.id, c]));
+      sequencedItems = (data.orderedSequence || []).map((item: any) => {
+        const clip = clipMap.get(item.clipId);
+        if (!clip) return null;
+        return {
+          clip,
+          smartTitle: item.smartTitle,
+          subtitleCaption: item.subtitleCaption,
+          category: item.category as ClipCategory,
+          emotion: item.emotion,
+          timeOfDay: item.timeOfDay,
+          transition: item.transition,
+          trimStart: item.trimStart,
+          trimEnd: item.trimEnd
+        };
+      }).filter(Boolean);
+    } catch (err) {
+      console.warn('[Smart Montage] Fallback to local sequencing:', err);
+      // Fallback: Local chronological sort (previous logic)
+      const sorted = [...clipsToUse].sort((a, b) => {
+        const tA = new Date(a.capturedAt || a.createdAt || 0).getTime();
+        const tB = new Date(b.capturedAt || b.createdAt || 0).getTime();
+        if (tA !== tB) return tA - tB;
+        const catA = a.category || 'unassigned';
+        const catB = b.category || 'unassigned';
+        if (catA !== catB) return catA.localeCompare(catB);
+        return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' });
+      });
+
+      const categoriesList: ClipCategory[] = ['preparations', 'ceremony', 'congratulations', 'first_dance', 'toast', 'party', 'cake', 'ending'];
+      sequencedItems = sorted.map((c, idx) => {
+        const catIdx = Math.min(categoriesList.length - 1, Math.floor((idx / sorted.length) * categoriesList.length));
+        return {
+          clip: c,
+          smartTitle: c.name || `Scena ${idx + 1}`,
+          subtitleCaption: `Ujęcie ślubne – ${c.name}`,
+          category: c.category && c.category !== 'unassigned' ? c.category : categoriesList[catIdx],
+          transition: idx === 0 ? 'dip_black' : 'dissolve',
+          trimStart: 0,
+          trimEnd: c.duration
+        };
+      });
+    }
+
+    if (sequencedItems.length > 0) {
+      await handleApplyChronologicalMerge(sequencedItems, defaultOptions);
+      toast.showSuccess('✨ Inteligentny montaż Smart Montage zakończony sukcesem!');
+    }
+  }, [project, handleApplyChronologicalMerge, toast]);
+
+  const handleMagicProduce = useCallback(async () => {
+    if (project.mediaLibrary.length === 0) {
+      toast.showWarning('Dodaj filmy do projektu, aby reżyser AI mógł je scalić i wyeksportować.');
+      return;
+    }
+
+    if (gpuWarningHint) {
+      toast.showWarning(`⚠️ ${gpuWarningHint}`);
+    }
+
+    toast.showInfo('🚀 Uruchamiam Magiczną Produkcję (1-Kliknięcie): Reżyseria Smart AI...');
+    
+    // 1. Run the one-click director cut (now upgraded to AI Smart Montage)
+    await handleOneClickDirectorCut();
+    
+    // 2. Switch to export tab
+    setActiveTab('export');
+    
+    // 3. Inform the user and potentially auto-navigate
+    toast.showSuccess('✨ Inteligentny montaż zakończony. Twój film jest gotowy do finalnego wygenerowania!');
+  }, [project, handleOneClickDirectorCut, toast, gpuWarningHint]);
 
   const handleApplyCaptionsToLibrary = useCallback((updates: { id: string; name: string; category: ClipCategory; comment: string; tags: string[] }[]) => {
     const updateMap = new Map<string, { name: string; category: ClipCategory; comment: string; tags: string[] }>();
@@ -719,6 +953,7 @@ export function StudioApp() {
         isHealthPanelOpen={isHealthPanelOpen}
         onOpenVoiceRecorder={() => setIsVoiceRecorderOpen(true)}
         onOpenSoundscapes={() => setIsSoundscapeModalOpen(true)}
+        onOpenTemplateGallery={() => setIsTemplateGalleryOpen(true)}
         isDbConnected={isDbConnected}
       >
         <div className="flex-1 w-full min-h-0 overflow-y-auto overflow-x-hidden relative custom-scrollbar flex flex-col gap-3 p-2 sm:p-4 md:p-6 max-w-full">
@@ -733,8 +968,31 @@ export function StudioApp() {
               onOpenChronologicalModal={() => setIsChronologicalModalOpen(true)}
               onOpenWeddingNarrativeModal={() => setIsWeddingNarrativeModalOpen(true)}
               onOpenSoundscapes={() => setIsSoundscapeModalOpen(true)}
+              onOpenTemplateGallery={() => setIsTemplateGalleryOpen(true)}
+              onMagicProduce={handleMagicProduce}
             />
           </div>
+
+          {/* GPU Hardware Acceleration Warning Banner */}
+          {gpuWarningHint && (
+            <div className="shrink-0 w-full p-3.5 sm:p-4 rounded-2xl bg-amber-950/40 border border-amber-500/50 text-amber-200 text-xs flex items-start sm:items-center justify-between gap-3 shadow-lg animate-fadeIn">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0 text-amber-400">
+                  <AlertTriangle className="w-4 h-4 animate-pulse" />
+                </div>
+                <div>
+                  <span className="font-bold text-amber-300 block text-xs sm:text-sm">⚠️ Wykryto Brak Akceleracji GPU (WebCodecs / MediaRecorder)</span>
+                  <p className="text-amber-100/90 text-xs mt-0.5 leading-relaxed">{gpuWarningHint}</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setActiveTab('export')}
+                className="shrink-0 px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Konfiguruj Eksport
+              </button>
+            </div>
+          )}
 
           {/* Project Health Floating Drawer */}
           {isHealthPanelOpen && (
@@ -908,6 +1166,14 @@ export function StudioApp() {
             }
           });
         }}
+      />
+
+      {/* Template Gallery Modal (Firebase Cloud Storage & Preset Structures) */}
+      <TemplateGalleryModal
+        isOpen={isTemplateGalleryOpen}
+        onClose={() => setIsTemplateGalleryOpen(false)}
+        project={project}
+        onApplyTemplate={handleApplyTemplate}
       />
     </>
   );

@@ -1,39 +1,53 @@
 @import "tailwindcss";
 
+@theme {
+  /* Tailwind 4 Custom Theme Integration */
+  --color-gold-primary: var(--gold-primary);
+  --color-gold-bright: var(--gold-bright);
+  --color-gold-dark: var(--gold-dark);
+  --color-bg-atelier: var(--bg-atelier);
+  --font-cinematic: var(--font-cinematic);
+  --font-serif-luxury: var(--font-serif);
+}
+
 @layer base {
   html {
     font-size: clamp(14px, 12px + 0.8vw, 16px);
     scroll-behavior: smooth;
     text-rendering: optimizeLegibility;
-    overflow-x: hidden;
-    max-width: 100vw;
-    width: 100%;
+    /* Prevent layout shift during font loading */
+    font-variant-ligatures: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   
   :root {
-    /* HIGH-CONTRAST DARK LUXURY THEME */
-    --bg-atelier: #030303; 
-    --bg-card: rgba(18, 18, 18, 0.7);
-    --bg-subtle: rgba(26, 26, 26, 0.6);
+    /* MODERN NOIR & EMERALD WEDDING THEME */
+    --bg-atelier: #050705; 
+    --bg-card: rgba(10, 15, 12, 0.75);
+    --bg-subtle: rgba(20, 25, 22, 0.6);
     
-    --ink-primary: #FAFAF9; 
-    --ink-secondary: #E7E5E4;
-    --ink-muted: #A8A29E;
+    --ink-primary: #F8F7F4; 
+    --ink-secondary: #DEDCD5;
+    --ink-muted: #949B96;
     
-    /* True Gold colors for sharp contrast */
-    --gold-primary: #D4AF37;
-    --gold-bright: #FDE047;
-    --gold-dark: #A1821C;
-    --gold-glow: rgba(212, 175, 55, 0.25);
-    --gold-soft: rgba(212, 175, 55, 0.12);
+    /* Elegant Burnished Gold & Emerald Accents */
+    --gold-primary: #C5A059;
+    --gold-bright: #E5C992;
+    --gold-dark: #8B6B35;
+    --gold-glow: rgba(197, 160, 89, 0.2);
+    --gold-soft: rgba(197, 160, 89, 0.08);
     
-    --border-luxury: rgba(212, 175, 55, 0.4);
-    --border-glass: rgba(255, 255, 255, 0.15);
-    --border-subtle: rgba(255, 255, 255, 0.08);
+    --accent-emerald: #1B4332;
+    --accent-emerald-bright: #2D6A4F;
+    
+    --border-luxury: rgba(197, 160, 89, 0.35);
+    --border-glass: rgba(255, 255, 255, 0.12);
+    --border-subtle: rgba(255, 255, 255, 0.05);
     
     --font-cinematic: 'Cinzel', 'Playfair Display', serif;
     --font-serif: 'Playfair Display', Georgia, serif;
-    --font-sans: 'Manrope', system-ui, -apple-system, sans-serif;
+    --font-sans: 'Plus Jakarta Sans', 'Manrope', system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
   }
 
@@ -41,31 +55,40 @@
     font-family: var(--font-sans);
     background-color: var(--bg-atelier);
     color: var(--ink-primary);
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
     min-height: 100vh;
     letter-spacing: -0.01em;
     overflow-x: hidden;
-    max-width: 100vw;
     width: 100%;
     position: relative;
+    /* Smooth overscroll for mobile */
+    overscroll-behavior-y: none;
     background-image: 
-      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(212, 175, 55, 0.12) 0%, transparent 60%),
-      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(161, 130, 28, 0.08) 0%, transparent 50%),
-      radial-gradient(circle at 0% 50%, rgba(25, 23, 18, 0.6) 0%, transparent 50%);
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(27, 67, 50, 0.25) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(197, 160, 89, 0.06) 0%, transparent 50%),
+      radial-gradient(circle at 0% 50%, rgba(10, 15, 12, 0.8) 0%, transparent 50%);
+    background-attachment: fixed;
   }
 
   #root {
     width: 100%;
-    max-width: 100vw;
-    overflow-x: hidden;
     min-height: 100vh;
     display: flex;
     flex-direction: column;
+    position: relative;
+    z-index: 1;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
   }
 
   img, video, canvas {
     max-width: 100%;
+    height: auto;
   }
 }
 
@@ -153,6 +176,7 @@
 
 .gold-gradient-text {
   background: linear-gradient(135deg, #FEF08A 0%, #D4AF37 45%, #A1821C 80%, #FDE047 100%);
+  background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -326,4 +350,5 @@
   color: #FDE047;
   text-shadow: 0 0 10px rgba(212, 175, 55, 0.3);
 }
+
 

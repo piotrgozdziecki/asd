@@ -4,7 +4,11 @@ import App from './App.tsx';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { AuthProvider } from './lib/firebase/AuthContext';
 import { registerSW } from 'virtual:pwa-register';
+import { patchGlobalJsonStringify } from './lib/safeJson';
 import './index.css';
+
+// Apply global JSON circular reference protection
+patchGlobalJsonStringify();
 
 // Silence benign Vite websocket connection notices in container iframe preview
 if (typeof window !== 'undefined') {

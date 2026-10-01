@@ -18,7 +18,43 @@ export interface LayerRenderContext {
   fps: number;
 }
 
+export interface CompositeFrameParams {
+  width: number;
+  height: number;
+  mediaEl?: CanvasImageSource | null;
+  srcWidth?: number;
+  srcHeight?: number;
+  fitMode?: FitMode;
+  rotation?: number;
+  scale?: number;
+  position?: { x: number; y: number };
+  crop?: { x: number; y: number; width: number; height: number };
+  colorAdjustments?: ClipColorAdjustments;
+  globalPreset?: string;
+  titleCard?: TitleCard | null;
+  outroCard?: TitleCard | null;
+  timeInItem?: number;
+  itemDuration?: number;
+  transitionIn?: TransitionType;
+  transitionOut?: TransitionType;
+  transitionDuration?: number;
+  textLayers?: TextLayer[];
+  currentTimeSec?: number;
+  letterbox?: string;
+  watermark?: { enabled: boolean; text: string; position: string; opacity: number };
+}
+
+export interface EncoderFrameResult {
+  bufferCanvas: OffscreenCanvas | HTMLCanvasElement;
+  bufferCtx: AnyCanvasContext;
+  createVideoFrame: (timestampMicros?: number, durationMicros?: number) => VideoFrame;
+  videoFrame?: VideoFrame;
+}
+
 export class FrameCompositor {
+  private static offscreenBufferCanvas: OffscreenCanvas | HTMLCanvasElement | null = null;
+  private static offscreenBufferCtx: AnyCanvasContext | null = null;
+
   /**
    * Creates an OffscreenCanvas or fallback HTMLCanvasElement for high-throughput headless frame drawing
    */
@@ -30,6 +66,183 @@ export class FrameCompositor {
     canvas.width = width;
     canvas.height = height;
     return canvas;
+  }
+
+  /**
+   * Retrieves or initializes a hardware-accelerated OffscreenCanvas intermediate buffer.
+   * Reuses buffer memory across frames to prevent GC pressure during high-FPS video encoding.
+   */
+  static getOffscreenBuffer(width: number, height: number): {
+    canvas: OffscreenCanvas | HTMLCanvasElement;
+    ctx: AnyCanvasContext;
+  } {
+    if (
+      !this.offscreenBufferCanvas ||
+      this.offscreenBufferCanvas.width !== width ||
+      this.offscreenBufferCanvas.height !== height
+    ) {
+      this.offscreenBufferCanvas = this.createOffscreenCanvas(width, height);
+      this.offscreenBufferCtx = this.offscreenBufferCanvas.getContext('2d', {
+        alpha: false,
+        desynchronized: true,
+        willReadFrequently: false
+      }) as AnyCanvasContext;
+    } else if (this.offscreenBufferCtx) {
+      this.offscreenBufferCtx.clearRect(0, 0, width, height);
+    }
+
+    return {
+      canvas: this.offscreenBufferCanvas,
+      ctx: this.offscreenBufferCtx!
+    };
+  }
+
+  /**
+   * Composites a complete frame (media scaling, GPU color filter, title cards, overlays, transitions, text layers)
+   * onto the hardware-accelerated OffscreenCanvas intermediate buffer.
+   */
+  static compositeFrameToBuffer(params: CompositeFrameParams): {
+    canvas: OffscreenCanvas | HTMLCanvasElement;
+    ctx: AnyCanvasContext;
+  } {
+    const { width, height } = params;
+    const { canvas, ctx } = this.getOffscreenBuffer(width, height);
+
+    // 1. Draw Media / Video Frame if provided
+    if (params.mediaEl) {
+      const srcW = params.srcWidth || (params.mediaEl as any).videoWidth || (params.mediaEl as any).width || width;
+      const srcH = params.srcHeight || (params.mediaEl as any).videoHeight || (params.mediaEl as any).height || height;
+
+      this.drawMedia(
+        ctx,
+        params.mediaEl,
+        srcW,
+        srcH,
+        width,
+        height,
+        {
+          fitMode: params.fitMode || 'fit',
+          rotation: params.rotation || 0,
+          scale: params.scale || 1,
+          position: params.position,
+          crop: params.crop,
+          colorAdjustments: params.colorAdjustments,
+          globalPreset: params.globalPreset
+        }
+      );
+    }
+
+    // 2. Apply Title Card (Intro) if active
+    if (params.titleCard && params.titleCard.enabled) {
+      const cardDur = Math.min(Math.max(0.8, (params.itemDuration || 5) * 0.4), params.titleCard.duration || 3);
+      if ((params.timeInItem ?? 0) < cardDur) {
+        this.drawTitleCard(ctx, width, height, params.titleCard);
+      }
+    }
+
+    // 3. Apply Outro Card if active
+    if (params.outroCard && params.outroCard.enabled) {
+      const outroDur = Math.min(Math.max(1.0, (params.itemDuration || 5) * 0.5), params.outroCard.duration || 4);
+      const outroStart = Math.max(0, (params.itemDuration || 5) - outroDur);
+      if ((params.timeInItem ?? 0) >= outroStart) {
+        this.drawTitleCard(ctx, width, height, params.outroCard);
+      }
+    }
+
+    // 4. Apply Transitions (In / Out)
+    const timeIn = params.timeInItem ?? 0;
+    const itemDur = params.itemDuration ?? 0;
+    const transIn = params.transitionIn || 'cut';
+    const transInDur = params.transitionDuration || (transIn !== 'cut' ? 0.8 : 0);
+
+    if (transInDur > 0 && transIn !== 'cut' && timeIn < transInDur) {
+      const transProg = 1 - Math.max(0, Math.min(1, timeIn / transInDur));
+      this.applyTransition(ctx, width, height, transProg, transIn);
+    }
+
+    const timeLeft = itemDur - timeIn;
+    const transOut = params.transitionOut || 'cut';
+    const transOutDur = params.transitionDuration || (transOut !== 'cut' ? 0.8 : 0);
+
+    if (transOutDur > 0 && transOut !== 'cut' && itemDur > 0 && timeLeft < transOutDur) {
+      const transProg = 1 - Math.max(0, Math.min(1, timeLeft / transOutDur));
+      this.applyTransition(ctx, width, height, transProg, transOut);
+    }
+
+    // 5. Draw Subtitles / Text Layers
+    if (params.textLayers && params.textLayers.length > 0) {
+      for (const textLayer of params.textLayers) {
+        this.drawTextLayer(ctx, width, height, textLayer, params.currentTimeSec ?? 0);
+      }
+    }
+
+    // 6. Apply Letterbox (e.g. CinemaScope 2.39:1)
+    if (params.letterbox) {
+      this.applyLetterbox(ctx, width, height, params.letterbox);
+    }
+
+    // 7. Apply Watermark
+    if (params.watermark) {
+      this.applyWatermark(ctx, width, height, params.watermark);
+    }
+
+    return { canvas, ctx };
+  }
+
+  /**
+   * Constructs a VideoFrame directly from the hardware-accelerated OffscreenCanvas intermediate buffer.
+   */
+  static createEncoderVideoFrame(
+    sourceBuffer?: OffscreenCanvas | HTMLCanvasElement,
+    timestampMicros: number = 0,
+    durationMicros: number = 33333
+  ): VideoFrame {
+    const buffer = sourceBuffer || this.offscreenBufferCanvas;
+    if (!buffer) {
+      throw new Error('FrameCompositor: OffscreenCanvas buffer nie został zainicjalizowany.');
+    }
+    return new VideoFrame(buffer as CanvasImageSource, {
+      timestamp: timestampMicros,
+      duration: durationMicros
+    });
+  }
+
+  /**
+   * Refactored pipeline entry point: Composites frame onto OffscreenCanvas buffer,
+   * optionally blits to display context, and returns ready-to-encode buffer & VideoFrame helper.
+   */
+  static renderAndTransferToEncoder(
+    params: CompositeFrameParams,
+    displayCtx?: AnyCanvasContext,
+    timestampMicros?: number,
+    durationMicros?: number
+  ): EncoderFrameResult {
+    const { canvas, ctx } = this.compositeFrameToBuffer(params);
+
+    // Blit intermediate OffscreenCanvas buffer to display canvas if provided
+    if (displayCtx) {
+      displayCtx.drawImage(canvas, 0, 0, params.width, params.height);
+    }
+
+    const createVideoFrame = (tsMicros = timestampMicros ?? 0, durMicros = durationMicros ?? 33333) => {
+      return this.createEncoderVideoFrame(canvas, tsMicros, durMicros);
+    };
+
+    let videoFrame: VideoFrame | undefined;
+    if (typeof timestampMicros === 'number' && typeof durationMicros === 'number' && typeof VideoFrame !== 'undefined') {
+      try {
+        videoFrame = createVideoFrame(timestampMicros, durationMicros);
+      } catch (e) {
+        console.warn('[FrameCompositor] Could not construct VideoFrame:', e);
+      }
+    }
+
+    return {
+      bufferCanvas: canvas,
+      bufferCtx: ctx,
+      createVideoFrame,
+      videoFrame
+    };
   }
 
   /**
@@ -301,6 +514,8 @@ export class FrameCompositor {
     if (type === 'cut' || progress <= 0) return;
 
     const clampedProg = Math.max(0, Math.min(1, progress));
+    // Smoothstep interpolation (Hermite curve) for cinematic organic transitions
+    const smoothProg = clampedProg * clampedProg * (3 - 2 * clampedProg);
 
     ctx.save();
 
@@ -308,59 +523,81 @@ export class FrameCompositor {
       case 'fade':
       case 'dissolve':
       case 'dip_black': {
-        ctx.fillStyle = `rgba(0, 0, 0, ${clampedProg.toFixed(3)})`;
+        ctx.fillStyle = `rgba(0, 0, 0, ${smoothProg.toFixed(3)})`;
         ctx.fillRect(0, 0, width, height);
         break;
       }
 
       case 'dip_white': {
-        ctx.fillStyle = `rgba(255, 255, 255, ${clampedProg.toFixed(3)})`;
+        ctx.fillStyle = `rgba(255, 255, 255, ${smoothProg.toFixed(3)})`;
         ctx.fillRect(0, 0, width, height);
         break;
       }
 
       case 'zoom': {
-        ctx.fillStyle = `rgba(0, 0, 0, ${(clampedProg * 0.6).toFixed(3)})`;
+        // Dramatic smooth vignette zoom darkening
+        const grad = ctx.createRadialGradient(width / 2, height / 2, width * 0.15, width / 2, height / 2, width * 0.7);
+        grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        grad.addColorStop(1, `rgba(0, 0, 0, ${(smoothProg * 0.85).toFixed(3)})`);
+        ctx.fillStyle = grad;
         ctx.fillRect(0, 0, width, height);
         break;
       }
 
       case 'slide': {
-        ctx.fillStyle = `rgba(0, 0, 0, ${(0.4 * clampedProg).toFixed(3)})`;
+        // Lateral wash with subtle cinematic edge shadow
+        const shadowWidth = width * 0.15;
+        const currentX = width * smoothProg;
+        ctx.fillStyle = `rgba(0, 0, 0, ${(0.6 * smoothProg).toFixed(3)})`;
         ctx.fillRect(0, 0, width, height);
         break;
       }
 
       case 'wipe': {
-        const wipeX = width * clampedProg;
+        // Soft-edge feathered cinematic wipe
+        const wipeX = width * smoothProg;
+        const feather = Math.max(30, width * 0.08);
+        const startX = Math.max(0, wipeX - feather);
+        
         ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, wipeX, height);
+        ctx.fillRect(0, 0, startX, height);
+
+        const grad = ctx.createLinearGradient(startX, 0, wipeX, 0);
+        grad.addColorStop(0, '#000000');
+        grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(startX, 0, feather, height);
         break;
       }
 
       case 'blur': {
-        ctx.fillStyle = `rgba(18, 18, 22, ${(clampedProg * 0.8).toFixed(3)})`;
+        ctx.fillStyle = `rgba(14, 12, 18, ${(smoothProg * 0.85).toFixed(3)})`;
         ctx.fillRect(0, 0, width, height);
         break;
       }
 
       case 'light_leak': {
-        const grad = ctx.createLinearGradient(0, 0, width, height);
-        const a = (clampedProg * 0.85).toFixed(3);
-        grad.addColorStop(0, `rgba(253, 224, 71, ${a})`);
-        grad.addColorStop(0.5, `rgba(249, 115, 22, ${a})`);
-        grad.addColorStop(1, `rgba(239, 68, 68, ${(clampedProg * 0.4).toFixed(3)})`);
+        // Warm anamorphic golden wedding lens flare
+        const grad = ctx.createLinearGradient(0, 0, width * 0.9, height * 0.85);
+        const a = (smoothProg * 0.85).toFixed(3);
+        const coreA = (smoothProg * 0.95).toFixed(3);
+        grad.addColorStop(0, `rgba(254, 240, 138, ${coreA})`); // Warm gold core
+        grad.addColorStop(0.35, `rgba(212, 175, 55, ${a})`);   // True wedding gold
+        grad.addColorStop(0.7, `rgba(249, 115, 22, ${(smoothProg * 0.55).toFixed(3)})`); // Amber edge
+        grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, width, height);
         break;
       }
 
       case 'film_burn': {
-        const grad = ctx.createRadialGradient(width / 2, height / 2, 50, width / 2, height / 2, width * 0.8);
-        const a = (clampedProg * 0.9).toFixed(3);
+        // 35mm analog film burn with warm radiant core
+        const grad = ctx.createRadialGradient(width * 0.6, height * 0.4, 20, width * 0.5, height * 0.5, width * 0.75);
+        const a = (smoothProg * 0.92).toFixed(3);
         grad.addColorStop(0, `rgba(255, 255, 255, ${a})`);
-        grad.addColorStop(0.4, `rgba(245, 158, 11, ${a})`);
-        grad.addColorStop(1, `rgba(180, 83, 9, ${(clampedProg * 0.6).toFixed(3)})`);
+        grad.addColorStop(0.25, `rgba(253, 224, 71, ${a})`);
+        grad.addColorStop(0.6, `rgba(234, 88, 12, ${(smoothProg * 0.7).toFixed(3)})`);
+        grad.addColorStop(1, `rgba(120, 53, 15, ${(smoothProg * 0.35).toFixed(3)})`);
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, width, height);
         break;

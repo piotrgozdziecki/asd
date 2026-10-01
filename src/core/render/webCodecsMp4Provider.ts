@@ -721,108 +721,89 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
           item => currentTime >= item.timelineStart && currentTime < (item.timelineStart + item.duration)
         );
 
-        for (const activeItem of activeItems) {
-          const clip = clipMap.get(activeItem.clipId);
-          const mediaEl = clip ? mediaElements.get(clip.id) : null;
-          if (!mediaEl || !clip) continue;
+        let mediaEl: CanvasImageSource | null = null;
+        let activeItem: TimelineItem | undefined;
+        let clip: MediaClip | undefined;
+        let timeInItem = 0;
 
-          const timeInItem = currentTime - activeItem.timelineStart;
-          const speed = activeItem.speed || 1;
+        if (activeItems.length > 0) {
+          activeItem = activeItems[0];
+          clip = clipMap.get(activeItem.clipId);
+          const rawMedia = clip ? mediaElements.get(clip.id) : null;
+          if (rawMedia) {
+            mediaEl = rawMedia;
+            timeInItem = currentTime - activeItem.timelineStart;
 
-          if (mediaEl instanceof HTMLVideoElement) {
-            failureStage = 'decoding';
-            const targetSourceTime = activeItem.sourceStart + (timeInItem * speed);
-            const diff = Math.abs(mediaEl.currentTime - targetSourceTime);
+            if (mediaEl instanceof HTMLVideoElement) {
+              failureStage = 'decoding';
+              const videoEl = mediaEl;
+              const speed = activeItem.speed || 1;
+              const targetSourceTime = activeItem.sourceStart + (timeInItem * speed);
+              const diff = Math.abs(videoEl.currentTime - targetSourceTime);
 
-            if (diff > (0.25 / fps)) {
-              mediaEl.currentTime = targetSourceTime;
-              await new Promise<void>((res) => {
-                const onSeeked = () => {
-                  mediaEl.removeEventListener('seeked', onSeeked);
-                  res();
-                };
-                mediaEl.addEventListener('seeked', onSeeked);
-                setTimeout(() => {
-                  mediaEl.removeEventListener('seeked', onSeeked);
-                  res();
-                }, 600);
-              });
-              heartbeat();
+              if (diff > (0.25 / fps)) {
+                videoEl.currentTime = targetSourceTime;
+                await new Promise<void>((res) => {
+                  const onSeeked = () => {
+                    videoEl.removeEventListener('seeked', onSeeked);
+                    res();
+                  };
+                  videoEl.addEventListener('seeked', onSeeked);
+                  setTimeout(() => {
+                    videoEl.removeEventListener('seeked', onSeeked);
+                    res();
+                  }, 600);
+                });
+                heartbeat();
+              }
             }
           }
+        }
 
-          // Composite Frame with FrameCompositor
-          failureStage = 'rendering';
-          const srcW = mediaEl instanceof HTMLVideoElement ? mediaEl.videoWidth : ('naturalWidth' in mediaEl ? mediaEl.naturalWidth : (mediaEl as HTMLCanvasElement).width);
-          const srcH = mediaEl instanceof HTMLVideoElement ? mediaEl.videoHeight : ('naturalHeight' in mediaEl ? mediaEl.naturalHeight : (mediaEl as HTMLCanvasElement).height);
+        // Composite Frame via FrameCompositor using OffscreenCanvas intermediate buffer
+        failureStage = 'rendering';
+        const srcW = mediaEl ? (mediaEl instanceof HTMLVideoElement ? mediaEl.videoWidth : ('naturalWidth' in mediaEl ? (mediaEl as any).naturalWidth : (mediaEl as HTMLCanvasElement).width)) : width;
+        const srcH = mediaEl ? (mediaEl instanceof HTMLVideoElement ? mediaEl.videoHeight : ('naturalHeight' in mediaEl ? (mediaEl as any).naturalHeight : (mediaEl as HTMLCanvasElement).height)) : height;
 
-          FrameCompositor.drawMedia(
-            ctx,
-            mediaEl,
-            srcW || width,
-            srcH || height,
+        const activeOutro = activeItem ? (activeItem.outroCard || (activeItem === sortedItems[sortedItems.length - 1] ? project.settings?.outroCard : undefined)) : undefined;
+        const transInType = activeItem ? (activeItem.transitionIn || (activeItem.fadeIn ? 'fade' : 'cut')) : 'cut';
+        const transOutType = activeItem ? (activeItem.transitionOut || (activeItem.fadeOut ? 'fade' : 'cut')) : 'cut';
+
+        const timestampMicros = Math.round(frameIndex * frameDurationMicros);
+
+        const intermediateResult = FrameCompositor.renderAndTransferToEncoder(
+          {
             width,
             height,
-            {
-              fitMode: activeItem.fitMode || 'fit',
-              rotation: activeItem.rotation || 0,
-              scale: activeItem.scale || 1,
-              position: activeItem.position,
-              crop: activeItem.crop,
-              colorAdjustments: activeItem.colorAdjustments || clip.colorAdjustments,
-              globalPreset: project.settings?.colorGrade
-            }
-          );
+            mediaEl,
+            srcWidth: srcW || width,
+            srcHeight: srcH || height,
+            fitMode: activeItem?.fitMode || 'fit',
+            rotation: activeItem?.rotation || 0,
+            scale: activeItem?.scale || 1,
+            position: activeItem?.position,
+            crop: activeItem?.crop,
+            colorAdjustments: activeItem?.colorAdjustments || clip?.colorAdjustments,
+            globalPreset: project.settings?.colorGrade,
+            titleCard: activeItem?.titleCard,
+            outroCard: activeOutro,
+            timeInItem,
+            itemDuration: activeItem?.duration,
+            transitionIn: transInType,
+            transitionOut: transOutType,
+            transitionDuration: activeItem?.transitionDuration,
+            textLayers: project.textLayers,
+            currentTimeSec: currentTime,
+            letterbox: project.settings?.letterbox
+          },
+          ctx,
+          timestampMicros,
+          frameDurationMicros
+        );
 
-          // Apply Title Card if enabled for this item
-          if (activeItem.titleCard && activeItem.titleCard.enabled) {
-            const cardDuration = Math.min(Math.max(0.8, activeItem.duration * 0.4), activeItem.titleCard.duration || 3);
-            if (timeInItem < cardDuration) {
-              FrameCompositor.drawTitleCard(ctx, width, height, activeItem.titleCard);
-            }
-          }
-
-          // Apply Outro Card if enabled (e.g. final gratitude card at the end of the film)
-          const activeOutro = activeItem.outroCard || (activeItem === sortedItems[sortedItems.length - 1] ? project.settings?.outroCard : undefined);
-          if (activeOutro && activeOutro.enabled) {
-            const outroDuration = Math.min(Math.max(1.0, activeItem.duration * 0.5), activeOutro.duration || 4);
-            const outroStart = Math.max(0, activeItem.duration - outroDuration);
-            if (timeInItem >= outroStart) {
-              FrameCompositor.drawTitleCard(ctx, width, height, activeOutro);
-            }
-          }
-
-          // Apply transitions
-          const transInType = activeItem.transitionIn || (activeItem.fadeIn ? 'fade' : 'cut');
-          const transInDuration = activeItem.transitionDuration || activeItem.fadeIn || (transInType !== 'cut' ? 0.8 : 0);
-          if (transInDuration > 0 && timeInItem < transInDuration) {
-            const transProgress = 1 - Math.max(0, Math.min(1, timeInItem / transInDuration));
-            FrameCompositor.applyTransition(ctx, width, height, transProgress, transInType);
-          }
-
-          const timeLeft = activeItem.duration - timeInItem;
-          const transOutType = activeItem.transitionOut || (activeItem.fadeOut ? 'fade' : 'cut');
-          const transOutDuration = activeItem.transitionDuration || activeItem.fadeOut || (transOutType !== 'cut' ? 0.8 : 0);
-          if (transOutDuration > 0 && timeLeft < transOutDuration) {
-            const transProgress = 1 - Math.max(0, Math.min(1, timeLeft / transOutDuration));
-            FrameCompositor.applyTransition(ctx, width, height, transProgress, transOutType);
-          }
-        }
-
-        // Draw Subtitles & Text Layers with FrameCompositor
-        if (project.textLayers && project.textLayers.length > 0) {
-          for (const textLayer of project.textLayers) {
-            FrameCompositor.drawTextLayer(ctx, width, height, textLayer, currentTime);
-          }
-        }
-
-        // Encode Frame to WebCodecs
+        // Encode Frame to WebCodecs using the OffscreenCanvas intermediate buffer directly
         failureStage = 'encoding_video';
-        const timestampMicros = Math.round(frameIndex * frameDurationMicros);
-        const videoFrame = new VideoFrame(canvas, {
-          timestamp: timestampMicros,
-          duration: frameDurationMicros
-        });
+        const videoFrame = intermediateResult.videoFrame || intermediateResult.createVideoFrame(timestampMicros, frameDurationMicros);
 
         try {
           if (videoEncoder.state !== 'configured') {

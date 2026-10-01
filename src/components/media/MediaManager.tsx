@@ -61,7 +61,7 @@ interface MediaManagerProps {
 }
 
 export function MediaManager({ 
-  clips, 
+  clips = [], 
   onAddClips, 
   onUpdateClip, 
   onRemoveClip, 
@@ -81,6 +81,9 @@ export function MediaManager({
   externalFilterTab,
   onFilterTabChange
 }: MediaManagerProps) {
+  // Extra safety check for clips being null or undefined
+  const safeClips = Array.isArray(clips) ? clips : [];
+  
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStatus, setProcessingStatus] = useState<string>('');
@@ -89,13 +92,13 @@ export function MediaManager({
   const [isVerifyingDurations, setIsVerifyingDurations] = useState(false);
 
   const handleBatchMergeAndExport = () => {
-    if (clips.length === 0) {
+    if (safeClips.length === 0) {
       toast.showWarning('Dodaj filmy do biblioteki przed scalaniem.');
       return;
     }
     const targetClips = selectedIds.size > 0 
-      ? clips.filter(c => selectedIds.has(c.id)) 
-      : (filteredClips.length > 0 ? filteredClips : clips);
+      ? safeClips.filter(c => selectedIds.has(c.id)) 
+      : (filteredClips.length > 0 ? filteredClips : safeClips);
 
     // Sort chronologically by recording or creation timestamp
     const sorted = [...targetClips].sort((a, b) => {
@@ -147,14 +150,14 @@ export function MediaManager({
     }
   };
 
-  const videoClips = useMemo(() => clips.filter(c => c.type === 'video'), [clips]);
+  const videoClips = useMemo(() => safeClips.filter(c => c.type === 'video'), [safeClips]);
   const hasSuspicious10sClips = useMemo(() => videoClips.some(c => c.duration === 10), [videoClips]);
 
   const handleAutoCategorizeChronologically = () => {
-    if (clips.length === 0) return;
+    if (safeClips.length === 0) return;
     
     // Sort clips chronologically by recording or creation timestamp
-    const sorted = [...clips].sort((a, b) => {
+    const sorted = [...safeClips].sort((a, b) => {
       const timeA = new Date(a.capturedAt || a.createdAt).getTime();
       const timeB = new Date(b.capturedAt || b.createdAt).getTime();
       return timeA - timeB;
@@ -216,7 +219,7 @@ export function MediaManager({
       let recoveredCount = 0;
       const detectedMissingIds: string[] = [];
 
-      for (const clip of clips) {
+      for (const clip of safeClips) {
         let isReachable = true;
         
         // Check blob URLs
@@ -280,7 +283,7 @@ export function MediaManager({
   const handleClearFavorites = () => {
     if (!onClearFavorites) {
       // Fallback if prop not provided
-      clips.forEach(c => {
+      safeClips.forEach(c => {
         if (c.isFavorite) onUpdateClip(c.id, { isFavorite: false });
       });
       return;
@@ -299,7 +302,7 @@ export function MediaManager({
     } else if (onClearAllMedia) {
       onClearAllMedia();
     } else {
-      clips.forEach(c => onRemoveClip(c.id));
+      safeClips.forEach(c => onRemoveClip(c.id));
     }
     toast.showSuccess('Pomyślnie wyczyszczono wszystkie materiały z projektu.');
   };
@@ -372,7 +375,7 @@ export function MediaManager({
   };
 
   const handleBatchToggleFavorite = () => {
-    const selected = clips.filter(c => selectedIds.has(c.id));
+    const selected = safeClips.filter(c => selectedIds.has(c.id));
     const allFav = selected.every(c => c.isFavorite);
     selected.forEach(c => {
       onUpdateClip(c.id, { isFavorite: !allFav });
@@ -403,7 +406,7 @@ export function MediaManager({
   };
 
   const handleAddBestMomentsToTimeline = () => {
-    const bestClips = clips.filter(c => 
+    const bestClips = safeClips.filter(c => 
       c.type === 'video' && 
       (c.analysis?.ratingCategory === 'BEST' || (c.analysis?.qualityScore ?? 0) >= 75)
     );
@@ -624,7 +627,7 @@ export function MediaManager({
 
   // Filtered & Sorted Clips
   const filteredClips = useMemo(() => {
-    let result = clips.filter(clip => {
+    let result = safeClips.filter(clip => {
       // Search
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
@@ -693,9 +696,9 @@ export function MediaManager({
           return 0;
       }
     });
-  }, [clips, searchQuery, filterTab, categoryFilter, sortOrder]);
+  }, [safeClips, searchQuery, filterTab, categoryFilter, sortOrder]);
 
-  const totalDuration = clips.reduce((acc, c) => acc + c.duration, 0);
+  const totalDuration = safeClips.reduce((acc, c) => acc + c.duration, 0);
 
   // Grouping by similarity helper
   const groupedClips = useMemo(() => {
@@ -736,36 +739,36 @@ export function MediaManager({
           onDrop={handleDrop}
           className={`md:col-span-2 relative atelier-card rounded-2xl p-6 flex flex-col items-center justify-center transition-all group overflow-hidden ${
             isDragging 
-              ? 'border-[#FDE047] bg-[#D4AF37]/15 shadow-[0_0_35px_rgba(212,175,55,0.3)]' 
-              : 'hover:border-[#D4AF37]/60'
+              ? 'border-[var(--gold-bright)] bg-[var(--gold-soft)] shadow-[0_0_35px_rgba(197,160,89,0.3)]' 
+              : 'hover:border-[var(--gold-primary)]/60'
           }`}
         >
           {/* Subtle Corner Light Glow */}
-          <div className="absolute top-0 right-0 w-48 h-48 bg-[#D4AF37]/10 rounded-full blur-3xl pointer-events-none group-hover:bg-[#D4AF37]/20 transition-all" />
+          <div className="absolute top-0 right-0 w-48 h-48 bg-[var(--gold-glow)] rounded-full blur-3xl pointer-events-none group-hover:bg-[var(--gold-glow)]/20 transition-all" />
           
           <div className="text-center space-y-3 relative z-10">
             <div className="relative inline-block mx-auto">
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#2F2714] to-[#14120D] border border-[#D4AF37]/50 flex items-center justify-center shadow-[0_0_20px_rgba(212,175,55,0.25)] group-hover:scale-105 transition-transform">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#2F2714] to-[#14120D] border border-[var(--gold-primary)]/50 flex items-center justify-center shadow-[0_0_20px_rgba(197,160,89,0.25)] group-hover:scale-105 transition-transform">
                 {isProcessing ? (
-                  <Loader2 className="w-7 h-7 text-[#FDE047] animate-spin" />
+                  <Loader2 className="w-7 h-7 text-[var(--gold-bright)] animate-spin" />
                 ) : (
-                  <UploadCloud className="w-7 h-7 text-[#FDE047]" />
+                  <UploadCloud className="w-7 h-7 text-[var(--gold-bright)]" />
                 )}
               </div>
-              <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#1A1812] border border-[#D4AF37]/60 flex items-center justify-center text-[10px] text-[#FDE047]">
+              <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#1A1812] border border-[var(--gold-primary)]/60 flex items-center justify-center text-[10px] text-[var(--gold-bright)]">
                 ✦
               </span>
             </div>
 
             <div>
-              <h3 className="font-cinematic font-bold text-base text-transparent bg-clip-text bg-gradient-to-r from-[#FFF5C0] via-[#E8D288] to-[#D4AF37] tracking-wider">
+              <h3 className="font-cinematic font-bold text-base text-transparent bg-clip-text bg-gradient-to-r from-[#FFF5C0] via-[#E8D288] to-[var(--gold-primary)] tracking-wider">
                 {isProcessing ? processingStatus : 'ATELIER FILMOWE: IMPORT UJĘĆ'}
               </h3>
               <p className="text-xs text-[#C5BCA8] mt-1 max-w-md mx-auto">
                 Przeciągnij i upuść lub kliknij, aby wczytać nagrania wideo i zdjęcia ślubne
               </p>
               <div className="flex flex-wrap items-center justify-center gap-2 mt-2.5">
-                <span className="px-2 py-0.5 rounded-md bg-[#1B1812] border border-[#3A3222] text-[10px] font-mono text-[#D4AF37]">4K UHD / 1080p</span>
+                <span className="px-2 py-0.5 rounded-md bg-[#1B1812] border border-[#3A3222] text-[10px] font-mono text-[var(--gold-primary)]">4K UHD / 1080p</span>
                 <span className="px-2 py-0.5 rounded-md bg-[#1B1812] border border-[#3A3222] text-[10px] font-mono text-[#AAA08B]">MP4 • MOV • WEBM</span>
                 <span className="px-2 py-0.5 rounded-md bg-[#1B1812] border border-[#3A3222] text-[10px] font-mono text-[#AAA08B]">JPG • PNG • HEVC</span>
               </div>
@@ -774,7 +777,7 @@ export function MediaManager({
             {isProcessing && (
               <div className="w-64 h-2 bg-[#1A1813] rounded-full mx-auto overflow-hidden mt-3 border border-[#3E3422] shadow-inner">
                 <div 
-                  className="h-full bg-gradient-to-r from-[#D4AF37] via-[#FDE047] to-[#C59B48] transition-all duration-200 shadow-[0_0_10px_rgba(253,224,71,0.5)]"
+                  className="h-full bg-gradient-to-r from-[var(--gold-primary)] via-[var(--gold-bright)] to-[var(--gold-dark)] transition-all duration-200 shadow-[0_0_10px_rgba(253,224,71,0.5)]"
                   style={{ width: `${uploadProgress}%` }}
                 />
               </div>

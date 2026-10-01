@@ -42,6 +42,16 @@ service cloud.firestore {
         && data.updatedAt is string;
     }
 
+    function isValidTemplate(data) {
+      return data.keys().hasAll(['id', 'userId', 'title', 'structure', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.userId is string && data.userId.size() <= 128 && data.userId == request.auth.uid
+        && data.title is string && data.title.size() <= 256
+        && data.structure is map
+        && data.createdAt is string
+        && data.updatedAt is string;
+    }
+
     match /users/{userId}/projects/{projectId} {
       allow get, list: if isSignedIn() && request.auth.uid == userId;
       
@@ -74,6 +84,23 @@ service cloud.firestore {
         && isValidStory(incoming());
 
       allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(storyId);
+    }
+
+    match /users/{userId}/templates/{templateId} {
+      allow get, list: if isSignedIn() && request.auth.uid == userId;
+
+      allow create: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidId(templateId)
+        && isValidTemplate(incoming());
+
+      allow update: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidId(templateId)
+        && incoming().userId == existing().userId
+        && isValidTemplate(incoming());
+
+      allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(templateId);
     }
   }
 }

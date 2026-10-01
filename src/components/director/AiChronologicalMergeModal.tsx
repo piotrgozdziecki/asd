@@ -50,6 +50,7 @@ export interface DirectorMergeOptions {
   includeSoundtrack: boolean;
   soundtrackPresetId?: string;
   targetTab: 'montage' | 'export';
+  pacing?: 'cinematic' | 'fast' | 'slow';
 }
 
 export interface SequencedItem {
@@ -59,6 +60,8 @@ export interface SequencedItem {
   smartTitle: string;
   subtitleCaption: string;
   category: ClipCategory;
+  emotion?: string;
+  timeOfDay?: string;
   transition: string;
   trimStart: number;
   trimEnd: number;
@@ -76,6 +79,8 @@ interface AiChronologicalMergeModalProps {
       smartTitle: string;
       subtitleCaption: string;
       category: ClipCategory;
+      emotion?: string;
+      timeOfDay?: string;
       transition: string;
       trimStart: number;
       trimEnd: number;
@@ -133,11 +138,11 @@ export function AiChronologicalMergeModal({
   const [outroDuration, setOutroDuration] = useState<number>(4.0);
   const [includeSubtitles, setIncludeSubtitles] = useState<boolean>(true);
   const [applyTransitions, setApplyTransitions] = useState<boolean>(true);
-  const [applySmartTrim, setApplySmartTrim] = useState<boolean>(true);
+  const [applySmartTrim, setApplySmartTrim] = useState<boolean>(false);
   const [colorGrade, setColorGrade] = useState<LookPreset>('golden_hour');
   const [generateChapters, setGenerateChapters] = useState<boolean>(true);
-  const [includeSoundtrack, setIncludeSoundtrack] = useState<boolean>(true);
-  const [soundtrackPresetId, setSoundtrackPresetId] = useState<string>('altar_procession');
+  const [includeSoundtrack, setIncludeSoundtrack] = useState<boolean>(false);
+  const [soundtrackPresetId, setSoundtrackPresetId] = useState<string>('golden_hour_piano');
 
   const prevClipsIdsRef = useRef<string>('');
   const toast = useStudioToast();
@@ -188,6 +193,10 @@ export function AiChronologicalMergeModal({
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'No error details');
         console.error('[MergeModal] API Error:', response.status, errorText);
+        
+        if (response.status === 429) {
+          throw new Error('429: Limit zapytań (Rate Limit) został przekroczony. Proszę odczekać chwilę przed ponowną próbą.');
+        }
         throw new Error(`Błąd serwera (${response.status}): ${errorText.substring(0, 100)}`);
       }
 
@@ -229,6 +238,8 @@ export function AiChronologicalMergeModal({
             smartTitle: item.smartTitle || foundClip.name,
             subtitleCaption: item.subtitleCaption || `Pamiątkowa chwila – ${foundClip.name}`,
             category: (item.category as ClipCategory) || foundClip.category || 'unassigned',
+            emotion: item.emotion || 'neutral',
+            timeOfDay: item.timeOfDay || 'afternoon',
             transition: item.transition || (idx === 0 ? 'dip_black' : 'dissolve'),
             trimStart: typeof item.trimStart === 'number' ? item.trimStart : (applySmartTrim ? 0.5 : 0),
             trimEnd: typeof item.trimEnd === 'number' ? item.trimEnd : Math.max(0.5, foundClip.duration - (applySmartTrim ? 0.5 : 0)),
@@ -351,23 +362,23 @@ export function AiChronologicalMergeModal({
     }
 
     const options: DirectorMergeOptions = {
-      includeIntroTitleCard: true,
+      includeIntroTitleCard: includeIntroTitleCard,
       introTitle: introTitle || 'ŚLUB JOANNY I PIOTRA',
       introSubtitle: introSubtitle || '14.09.2024 • Sakrament Małżeństwa',
       introDuration: 3.5,
-      introStyle: 'liturgical',
-      includeOutroTitleCard: true,
+      introStyle: introStyle || 'liturgical',
+      includeOutroTitleCard: includeOutroTitleCard,
       outroTitle: outroTitle || 'PODZIĘKOWANIA',
       outroSubtitle: outroSubtitle || 'Z całego serca dziękujemy Rodzicom za dar życia i miłość, Świadkom za pomoc i wsparcie, oraz wszystkim wspaniałym Gościom za modlitwę, radość i wspólne świętowanie. Joanna & Piotr • 14.09.2024',
       outroDuration: 4.0,
-      includeSceneTitles: true,
-      includeSubtitles: true,
+      includeSceneTitles: includeSceneTitles,
+      includeSubtitles: includeSubtitles,
       applyTransitions: true,
-      applySmartTrim: true,
-      colorGrade: 'golden_hour',
+      applySmartTrim: applySmartTrim,
+      colorGrade: colorGrade || 'golden_hour',
       generateChapters: true,
-      includeSoundtrack: true,
-      soundtrackPresetId: 'altar_procession',
+      includeSoundtrack: includeSoundtrack,
+      soundtrackPresetId: soundtrackPresetId || 'altar_procession',
       targetTab
     };
 
@@ -376,6 +387,8 @@ export function AiChronologicalMergeModal({
       smartTitle: i.smartTitle,
       subtitleCaption: i.subtitleCaption,
       category: i.category,
+      emotion: i.emotion,
+      timeOfDay: i.timeOfDay,
       transition: 'dissolve',
       trimStart: applySmartTrim ? i.trimStart : 0,
       trimEnd: applySmartTrim ? i.trimEnd : i.clip.duration
@@ -399,6 +412,8 @@ export function AiChronologicalMergeModal({
       smartTitle: i.smartTitle,
       subtitleCaption: i.subtitleCaption,
       category: i.category,
+      emotion: i.emotion,
+      timeOfDay: i.timeOfDay,
       transition: applyTransitions ? i.transition : 'cut',
       trimStart: applySmartTrim ? i.trimStart : 0,
       trimEnd: applySmartTrim ? i.trimEnd : i.clip.duration
@@ -422,6 +437,8 @@ export function AiChronologicalMergeModal({
       smartTitle: i.smartTitle,
       subtitleCaption: i.subtitleCaption,
       category: i.category,
+      emotion: i.emotion,
+      timeOfDay: i.timeOfDay,
       transition: applyTransitions ? i.transition : 'cut',
       trimStart: applySmartTrim ? i.trimStart : 0,
       trimEnd: applySmartTrim ? i.trimEnd : i.clip.duration
@@ -459,20 +476,20 @@ export function AiChronologicalMergeModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-md animate-fadeIn">
-      <div className="relative w-full max-w-5xl max-h-[94vh] flex flex-col bg-[#14120D] border border-[#D4AF37]/50 rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.95)] overflow-hidden">
+      <div className="relative w-full max-w-5xl max-h-[94vh] flex flex-col bg-[var(--bg-atelier)] border border-[var(--gold-primary)]/40 rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.95)] overflow-hidden">
         
         {/* Header */}
-        <div className="px-5 py-4 border-b border-[#2D261A] bg-gradient-to-r from-[#1A160F] via-[#241E13] to-[#16130C] flex items-center justify-between shrink-0">
+        <div className="px-5 py-4 border-b border-[var(--border-subtle)] bg-gradient-to-r from-[var(--bg-subtle)] via-[var(--bg-atelier)] to-[var(--bg-subtle)] flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#2D2412] border border-[#D4AF37]/50 flex items-center justify-center shadow-[0_0_15px_rgba(212,175,55,0.3)] shrink-0">
-              <Sparkles className="w-5 h-5 text-[#FDE047] animate-pulse" />
+            <div className="w-10 h-10 rounded-xl bg-[var(--bg-subtle)] border border-[var(--gold-primary)]/40 flex items-center justify-center shadow-[0_0_15px_rgba(197,160,89,0.2)] shrink-0">
+              <Sparkles className="w-5 h-5 text-[var(--gold-bright)] animate-pulse" />
             </div>
             <div>
-              <h2 className="text-base sm:text-lg font-cinematic font-bold text-transparent bg-clip-text bg-gradient-to-r from-[#FFF0A0] via-[#D4AF37] to-[#AA852C]">
+              <h2 className="text-base sm:text-lg font-cinematic font-bold text-transparent bg-clip-text bg-gradient-to-r from-[var(--ink-primary)] via-[var(--gold-bright)] to-[var(--gold-primary)]">
                 Reżyser AI • Scalanie Filmów z Wybranymi Dodatkami
               </h2>
-              <p className="text-xs text-[#A89C82]">
-                Inteligentne łączenie {clips.length} zaznaczonych filmów, plansza tytułowa, napisy, przejścia i mastering
+              <p className="text-xs text-[var(--ink-muted)]">
+                Inteligentne łączenie {clips.length} zaznaczonych filmów, plansza tytułowa, napisy i mastering
               </p>
             </div>
           </div>
@@ -481,7 +498,7 @@ export function AiChronologicalMergeModal({
             <button
               onClick={handleStartAnalysis}
               disabled={isLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#221C11] border border-[#D4AF37]/40 text-xs font-semibold text-[#FDE047] hover:border-[#D4AF37] transition-all cursor-pointer shadow-sm"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#1B4332]/20 border border-[#C5A059]/40 text-xs font-semibold text-[#E5C992] hover:border-[#C5A059] transition-all cursor-pointer shadow-sm"
               title="Przelicz ponownie chronologię i napisy"
             >
               <RotateCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
@@ -490,7 +507,7 @@ export function AiChronologicalMergeModal({
 
             <button
               onClick={onClose}
-              className="p-2 rounded-xl bg-[#1D1912] text-[#A69C87] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+              className="p-2 rounded-xl bg-[var(--bg-subtle)] text-[var(--ink-muted)] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -501,15 +518,15 @@ export function AiChronologicalMergeModal({
         <div className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-5 space-y-4">
           
           {/* Top Options Bar */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 p-3.5 rounded-xl bg-[#19150E] border border-[#2D261A]">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 p-3.5 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border-subtle)]">
             <div>
-              <label className="text-[11px] font-semibold text-[#C5BAA2] uppercase tracking-wider block mb-1.5">
+              <label className="text-[11px] font-semibold text-[var(--ink-muted)] uppercase tracking-wider block mb-1.5">
                 Styl i tempo montażu
               </label>
               <select
                 value={pacing}
                 onChange={(e: any) => setPacing(e.target.value)}
-                className="w-full bg-[#110E09] border border-[#3A301E] rounded-lg px-2.5 py-1.5 text-xs text-[#F5EAD4] focus:border-[#D4AF37] focus:outline-none"
+                className="w-full bg-[var(--bg-atelier)] border border-[var(--border-subtle)] rounded-lg px-2.5 py-1.5 text-xs text-[var(--ink-primary)] focus:border-[var(--gold-primary)] focus:outline-none"
               >
                 <option value="cinematic">Kinowy i emocjonalny (płynny przepływ)</option>
                 <option value="dynamic">Dynamiczny teledysk (szybkie tempo)</option>
@@ -518,13 +535,13 @@ export function AiChronologicalMergeModal({
             </div>
 
             <div>
-              <label className="text-[11px] font-semibold text-[#C5BAA2] uppercase tracking-wider block mb-1.5">
+              <label className="text-[11px] font-semibold text-[#949B96] uppercase tracking-wider block mb-1.5">
                 Styl podpisów i narracji
               </label>
               <select
                 value={captionStyle}
                 onChange={(e: any) => setCaptionStyle(e.target.value)}
-                className="w-full bg-[#110E09] border border-[#3A301E] rounded-lg px-2.5 py-1.5 text-xs text-[#F5EAD4] focus:border-[#D4AF37] focus:outline-none"
+                className="w-full bg-[#050705] border border-[#1B4332] rounded-lg px-2.5 py-1.5 text-xs text-[#F8F7F4] focus:border-[#C5A059] focus:outline-none"
               >
                 <option value="cinematic_poetic">Poetycki i wzruszający</option>
                 <option value="elegant_classic">Klasyczny i elegancki</option>
@@ -533,7 +550,7 @@ export function AiChronologicalMergeModal({
             </div>
 
             <div>
-              <label className="text-[11px] font-semibold text-[#C5BAA2] uppercase tracking-wider block mb-1.5">
+              <label className="text-[11px] font-semibold text-[#949B96] uppercase tracking-wider block mb-1.5">
                 Para Młoda / Tytuł Główny
               </label>
               <input
@@ -541,19 +558,19 @@ export function AiChronologicalMergeModal({
                 value={coupleNames}
                 onChange={(e) => setCoupleNames(e.target.value)}
                 placeholder="Joanna & Piotr"
-                className="w-full bg-[#110E09] border border-[#3A301E] rounded-lg px-2.5 py-1.5 text-xs text-[#F5EAD4] focus:border-[#D4AF37] focus:outline-none"
+                className="w-full bg-[#050705] border border-[#1B4332] rounded-lg px-2.5 py-1.5 text-xs text-[#F8F7F4] focus:border-[#C5A059] focus:outline-none"
               />
             </div>
           </div>
 
           {/* Wybrane Dodatki Reżyserskie Panel */}
-          <div className="p-4 rounded-xl bg-gradient-to-r from-[#221B11] via-[#1A150D] to-[#20180F] border border-[#D4AF37]/40 shadow-lg space-y-3">
-            <div className="flex items-center justify-between border-b border-[#352B1B] pb-2">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-[#FDE047] flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-[#D4AF37]" />
+          <div className="p-4 rounded-xl bg-gradient-to-r from-[#0D1A10] via-[#050705] to-[#0D1A10] border border-[#C5A059]/30 shadow-lg space-y-3">
+            <div className="flex items-center justify-between border-b border-[#1B4332]/30 pb-2">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-[#E5C992] flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-[#C5A059]" />
                 Wybrane Dodatki Reżysera (Aktywne w Scalonym Filmie)
               </h3>
-              <span className="text-[11px] text-[#A69777]">
+              <span className="text-[11px] text-[#949B96]">
                 Wszystkie zaznaczone opcje zostaną wkomponowane w wynikowy film
               </span>
             </div>
@@ -561,18 +578,18 @@ export function AiChronologicalMergeModal({
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
               {/* Dodatek 1: Plansza Intro (Liturgiczna / Kościelna) */}
               <div className={`p-3 rounded-lg border transition-all ${
-                includeIntroTitleCard ? 'bg-[#2A2113] border-[#D4AF37]/60' : 'bg-[#15120B] border-[#2B2317] opacity-60'
+                includeIntroTitleCard ? 'bg-[#1B4332]/10 border-[#C5A059]/40' : 'bg-[#050705] border-[#1B4332]/30 opacity-60'
               }`}>
                 <label className="flex items-center justify-between cursor-pointer mb-2">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Tv className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <Tv className="w-3.5 h-3.5 text-[#C5A059]" />
                     Wstępna karta (Intro)
                   </span>
                   <input
                     type="checkbox"
                     checked={includeIntroTitleCard}
                     onChange={(e) => setIncludeIntroTitleCard(e.target.checked)}
-                    className="accent-[#D4AF37] w-4 h-4 rounded cursor-pointer"
+                    className="accent-[#C5A059] w-4 h-4 rounded cursor-pointer"
                   />
                 </label>
                 {includeIntroTitleCard && (
@@ -582,21 +599,21 @@ export function AiChronologicalMergeModal({
                       value={introTitle}
                       onChange={(e) => setIntroTitle(e.target.value)}
                       placeholder="Wielki napis (np. Ślub Joanny i Piotra)"
-                      className="w-full bg-[#110E09] border border-[#3E311B] rounded px-2 py-1 text-white font-medium focus:border-[#D4AF37]"
+                      className="w-full bg-[#050705] border border-[#1B4332] rounded px-2 py-1 text-white font-medium focus:border-[#C5A059]"
                     />
                     <input
                       type="text"
                       value={introSubtitle}
                       onChange={(e) => setIntroSubtitle(e.target.value)}
                       placeholder="Podtytuł / Data (np. 14.09.2024)"
-                      className="w-full bg-[#110E09] border border-[#3E311B] rounded px-2 py-1 text-[#C5BBA7] focus:border-[#D4AF37]"
+                      className="w-full bg-[#050705] border border-[#1B4332] rounded px-2 py-1 text-[#949B96] focus:border-[#C5A059]"
                     />
-                    <div className="flex items-center justify-between text-[10px] text-[#8C7E64]">
+                    <div className="flex items-center justify-between text-[10px] text-[#949B96]">
                       <span>Styl tła:</span>
                       <select
                         value={introStyle}
                         onChange={(e: any) => setIntroStyle(e.target.value)}
-                        className="bg-[#110E09] border border-[#3E311B] rounded px-1.5 py-0.5 text-[#FDE047]"
+                        className="bg-[#050705] border border-[#1B4332] rounded px-1.5 py-0.5 text-[#E5C992]"
                       >
                         <option value="liturgical">Kościelno-Liturgiczny (Katedra & Krzyż)</option>
                         <option value="cinematic">Kinowy Zmierzch</option>
@@ -610,39 +627,39 @@ export function AiChronologicalMergeModal({
 
               {/* Dodatek 2: Karty Pomiędzy Filmami (Opisujące co się dzieje) */}
               <div className={`p-3 rounded-lg border transition-all ${
-                includeSceneTitles ? 'bg-[#2A2113] border-[#D4AF37]/60' : 'bg-[#15120B] border-[#2B2317] opacity-60'
+                includeSceneTitles ? 'bg-[#1B4332]/10 border-[#C5A059]/40' : 'bg-[#050705] border-[#1B4332]/30 opacity-60'
               }`}>
                 <label className="flex items-center justify-between cursor-pointer mb-2">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Layers className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <Layers className="w-3.5 h-3.5 text-[#C5A059]" />
                     Karty pomiędzy filmami (Sceny)
                   </span>
                   <input
                     type="checkbox"
                     checked={includeSceneTitles}
                     onChange={(e) => setIncludeSceneTitles(e.target.checked)}
-                    className="accent-[#D4AF37] w-4 h-4 rounded cursor-pointer"
+                    className="accent-[#C5A059] w-4 h-4 rounded cursor-pointer"
                   />
                 </label>
-                <p className="text-[11px] text-[#B0A48E] leading-relaxed">
+                <p className="text-[11px] text-[#949B96] leading-relaxed">
                   Eleganckie plansze wprowadzające między etapami wesela opisujące co się dzieje (Przysięga, Życzenia, Pierwszy Taniec, Tort).
                 </p>
               </div>
 
               {/* Dodatek 3: Karta Końcowa (Podziękowania dla rodziców, świadków, gości) */}
               <div className={`p-3 rounded-lg border transition-all ${
-                includeOutroTitleCard ? 'bg-[#2A2113] border-[#D4AF37]/60' : 'bg-[#15120B] border-[#2B2317] opacity-60'
+                includeOutroTitleCard ? 'bg-[#1B4332]/10 border-[#C5A059]/40' : 'bg-[#050705] border-[#1B4332]/30 opacity-60'
               }`}>
                 <label className="flex items-center justify-between cursor-pointer mb-2">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Heart className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <Heart className="w-3.5 h-3.5 text-[#C5A059]" />
                     Karta końcowa (Podziękowania)
                   </span>
                   <input
                     type="checkbox"
                     checked={includeOutroTitleCard}
                     onChange={(e) => setIncludeOutroTitleCard(e.target.checked)}
-                    className="accent-[#D4AF37] w-4 h-4 rounded cursor-pointer"
+                    className="accent-[#C5A059] w-4 h-4 rounded cursor-pointer"
                   />
                 </label>
                 {includeOutroTitleCard && (
@@ -652,127 +669,131 @@ export function AiChronologicalMergeModal({
                       value={outroTitle}
                       onChange={(e) => setOutroTitle(e.target.value)}
                       placeholder="Tytuł podziękowań"
-                      className="w-full bg-[#110E09] border border-[#3E311B] rounded px-2 py-1 text-white font-medium focus:border-[#D4AF37]"
+                      className="w-full bg-[#050705] border border-[#1B4332] rounded px-2 py-1 text-white font-medium focus:border-[#C5A059]"
                     />
                     <textarea
                       value={outroSubtitle}
                       onChange={(e) => setOutroSubtitle(e.target.value)}
                       placeholder="Podziękowania dla rodziców, świadków i gości..."
                       rows={2}
-                      className="w-full bg-[#110E09] border border-[#3E311B] rounded px-2 py-1 text-[10px] text-[#C5BBA7] focus:border-[#D4AF37] resize-none leading-tight"
+                      className="w-full bg-[#050705] border border-[#1B4332] rounded px-2 py-1 text-[10px] text-[#949B96] focus:border-[#C5A059] resize-none leading-tight"
                     />
                   </div>
                 )}
               </div>
 
-              {/* Dodatek 4: Oprawa Muzyczna (Dźwięk jako podstawa) */}
+              {/* Dodatek 4: Oprawa Muzyczna (Domyślnie wyłączona - 100% oryginalny dźwięk) */}
               <div className={`p-3 rounded-lg border transition-all ${
-                includeSoundtrack ? 'bg-[#2A2113] border-[#D4AF37]/60' : 'bg-[#15120B] border-[#2B2317] opacity-60'
+                includeSoundtrack ? 'bg-[#1B4332]/10 border-[#C5A059]/40' : 'bg-[#050705] border-[#1B4332]/30 opacity-60'
               }`}>
                 <label className="flex items-center justify-between cursor-pointer mb-2">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Music className="w-3.5 h-3.5 text-[#D4AF37]" />
-                    Podkład dźwiękowy (Audio)
+                    <Music className="w-3.5 h-3.5 text-[#C5A059]" />
+                    Dodatkowy podkład muzyczny
                   </span>
                   <input
                     type="checkbox"
                     checked={includeSoundtrack}
                     onChange={(e) => setIncludeSoundtrack(e.target.checked)}
-                    className="accent-[#D4AF37] w-4 h-4 rounded cursor-pointer"
+                    className="accent-[#C5A059] w-4 h-4 rounded cursor-pointer"
                   />
                 </label>
-                <div className="space-y-1 text-[11px]">
-                  <select
-                    value={soundtrackPresetId}
-                    onChange={(e) => setSoundtrackPresetId(e.target.value)}
-                    className="w-full bg-[#110E09] border border-[#3E311B] rounded px-2 py-1 text-xs text-[#FDE047] focus:border-[#D4AF37] cursor-pointer"
-                  >
-                    <option value="altar_procession">Droga do Ołtarza (Dzwony & Chóry)</option>
-                    <option value="golden_hour_piano">Złoty Zmierzch (Fortepian & Smyczki)</option>
-                    <option value="first_dance_waltz">Pierwszy Taniec (Walc Akustyczny)</option>
-                    <option value="venice_strings">Wenecja Nocą (Smyczki & Harfa)</option>
-                  </select>
-                  <p className="text-[10px] text-[#A69777]">
-                    Dźwięk stanowi bazę montażu z automatycznym wyciszaniem (ducking) pod mowę z ujęć.
-                  </p>
-                </div>
+                <p className="text-[11px] text-[#949B96] leading-relaxed">
+                  {includeSoundtrack 
+                    ? 'Włączono syntetyczny podkład muzyczny w tle.' 
+                    : 'Wyłączony: Zachowany zostaje wyłącznie 100% oryginalny, czysty dźwięk z Twoich nagrań wideo.'}
+                </p>
+                {includeSoundtrack && (
+                  <div className="space-y-1 text-[11px] pt-1.5">
+                    <select
+                      value={soundtrackPresetId}
+                      onChange={(e) => setSoundtrackPresetId(e.target.value)}
+                      className="w-full bg-[#050705] border border-[#1B4332] rounded px-2 py-1 text-xs text-[#E5C992] focus:border-[#C5A059] cursor-pointer"
+                    >
+                      <option value="golden_hour_piano">Złoty Zmierzch (Fortepian & Smyczki)</option>
+                      <option value="first_dance_waltz">Pierwszy Taniec (Walc Akustyczny)</option>
+                      <option value="venice_strings">Wenecja Nocą (Smyczki & Harfa)</option>
+                      <option value="altar_procession">Droga do Ołtarza (Dzwony & Chóry)</option>
+                    </select>
+                  </div>
+                )}
               </div>
 
               {/* Dodatek 5: Napisy scen */}
               <div className={`p-3 rounded-lg border transition-all ${
-                includeSubtitles ? 'bg-[#2A2113] border-[#D4AF37]/60' : 'bg-[#15120B] border-[#2B2317] opacity-60'
+                includeSubtitles ? 'bg-[#1B4332]/10 border-[#C5A059]/40' : 'bg-[#050705] border-[#1B4332]/30 opacity-60'
               }`}>
                 <label className="flex items-center justify-between cursor-pointer mb-2">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <TypeIcon className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <TypeIcon className="w-3.5 h-3.5 text-[#C5A059]" />
                     Kinowe napisy / podpisy scen
                   </span>
                   <input
                     type="checkbox"
                     checked={includeSubtitles}
                     onChange={(e) => setIncludeSubtitles(e.target.checked)}
-                    className="accent-[#D4AF37] w-4 h-4 rounded cursor-pointer"
+                    className="accent-[#C5A059] w-4 h-4 rounded cursor-pointer"
                   />
                 </label>
-                <p className="text-[11px] text-[#B0A48E] leading-relaxed">
+                <p className="text-[11px] text-[#949B96] leading-relaxed">
                   Automatycznie generuje podpisy narracyjne na dole ekranu, zsynchronizowane z każdym ujęciem.
                 </p>
               </div>
 
               {/* Dodatek 6: Płynne przejścia */}
               <div className={`p-3 rounded-lg border transition-all ${
-                applyTransitions ? 'bg-[#2A2113] border-[#D4AF37]/60' : 'bg-[#15120B] border-[#2B2317] opacity-60'
+                applyTransitions ? 'bg-[#1B4332]/10 border-[#C5A059]/40' : 'bg-[#050705] border-[#1B4332]/30 opacity-60'
               }`}>
                 <label className="flex items-center justify-between cursor-pointer mb-2">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Sliders className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <Sliders className="w-3.5 h-3.5 text-[#C5A059]" />
                     Płynne przejścia (Crossfade)
                   </span>
                   <input
                     type="checkbox"
                     checked={applyTransitions}
                     onChange={(e) => setApplyTransitions(e.target.checked)}
-                    className="accent-[#D4AF37] w-4 h-4 rounded cursor-pointer"
+                    className="accent-[#C5A059] w-4 h-4 rounded cursor-pointer"
                   />
                 </label>
-                <p className="text-[11px] text-[#B0A48E] leading-relaxed">
+                <p className="text-[11px] text-[#949B96] leading-relaxed">
                   Eliminuje ostre cięcia, nakłada przenikanie (dissolve) oraz ściemnienie (dip black) na zmiany scen.
                 </p>
               </div>
 
               {/* Dodatek 7: Smart Trim */}
               <div className={`p-3 rounded-lg border transition-all ${
-                applySmartTrim ? 'bg-[#2A2113] border-[#D4AF37]/60' : 'bg-[#15120B] border-[#2B2317] opacity-60'
+                applySmartTrim ? 'bg-[#1B4332]/10 border-[#C5A059]/40' : 'bg-[#050705] border-[#1B4332]/30 opacity-60'
               }`}>
                 <label className="flex items-center justify-between cursor-pointer mb-2">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Scissors className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <Scissors className="w-3.5 h-3.5 text-[#C5A059]" />
                     Inteligentne cięcie (Smart Trim)
                   </span>
                   <input
                     type="checkbox"
                     checked={applySmartTrim}
                     onChange={(e) => setApplySmartTrim(e.target.checked)}
-                    className="accent-[#D4AF37] w-4 h-4 rounded cursor-pointer"
+                    className="accent-[#C5A059] w-4 h-4 rounded cursor-pointer"
                   />
                 </label>
-                <p className="text-[11px] text-[#B0A48E] leading-relaxed">
+                <p className="text-[11px] text-[#949B96] leading-relaxed">
                   Obcina niestabilne pierwsze i ostatnie klatki nagrań smartfonowych i kamerowych.
                 </p>
               </div>
 
               {/* Dodatek 8: Kolorystyka i Grading */}
-              <div className="p-3 rounded-lg border bg-[#2A2113] border-[#D4AF37]/60">
+              <div className="p-3 rounded-lg border bg-[#1B4332]/10 border-[#C5A059]/40">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Palette className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <Palette className="w-3.5 h-3.5 text-[#C5A059]" />
                     Profil barwny filmu (LUT)
                   </span>
                 </div>
                 <select
                   value={colorGrade}
                   onChange={(e: any) => setColorGrade(e.target.value)}
-                  className="w-full bg-[#110E09] border border-[#3E311B] rounded px-2 py-1 text-xs text-[#FDE047] focus:border-[#D4AF37] cursor-pointer"
+                  className="w-full bg-[#050705] border border-[#1B4332] rounded px-2 py-1 text-xs text-[#E5C992] focus:border-[#C5A059] cursor-pointer"
                 >
                   <option value="golden_hour">Złota Godzina (Ciepłe złoto ślubne)</option>
                   <option value="cinematic">Kinowy Romans (Głęboki kontrast)</option>
@@ -785,21 +806,21 @@ export function AiChronologicalMergeModal({
 
               {/* Dodatek 9: Rozdziały filmu */}
               <div className={`p-3 rounded-lg border transition-all ${
-                generateChapters ? 'bg-[#2A2113] border-[#D4AF37]/60' : 'bg-[#15120B] border-[#2B2317] opacity-60'
+                generateChapters ? 'bg-[#1B4332]/10 border-[#C5A059]/40' : 'bg-[#050705] border-[#1B4332]/30 opacity-60'
               }`}>
                 <label className="flex items-center justify-between cursor-pointer mb-2">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Bookmark className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <Bookmark className="w-3.5 h-3.5 text-[#C5A059]" />
                     Rozdziały filmu (Chapters)
                   </span>
                   <input
                     type="checkbox"
                     checked={generateChapters}
                     onChange={(e) => setGenerateChapters(e.target.checked)}
-                    className="accent-[#D4AF37] w-4 h-4 rounded cursor-pointer"
+                    className="accent-[#C5A059] w-4 h-4 rounded cursor-pointer"
                   />
                 </label>
-                <p className="text-[11px] text-[#B0A48E] leading-relaxed">
+                <p className="text-[11px] text-[#949B96] leading-relaxed">
                   Dzieli scalony film na logiczne rozdziały (Przygotowania, Ślub, Taniec, Tort, Finał).
                 </p>
               </div>
@@ -808,20 +829,20 @@ export function AiChronologicalMergeModal({
 
           {/* Story Concept Banner */}
           {storyConcept && (
-            <div className="p-3.5 rounded-xl bg-gradient-to-r from-[#261E0F]/80 to-[#19150E] border border-[#D4AF37]/30 flex items-start gap-3">
-              <div className="p-2 rounded-lg bg-[#3D3014] text-[#FDE047] shrink-0 mt-0.5">
+            <div className="p-3.5 rounded-xl bg-gradient-to-r from-[#0D1A10]/80 to-[#050705] border border-[#C5A059]/30 flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-[#1B4332]/40 text-[#E5C992] shrink-0 mt-0.5">
                 <Heart className="w-4 h-4" />
               </div>
               <div className="space-y-1">
-                <h4 className="text-xs font-bold text-[#FDE047] uppercase tracking-wider">
+                <h4 className="text-xs font-bold text-[#E5C992] uppercase tracking-wider">
                   Koncept Reżyserski Scalania
                 </h4>
-                <p className="text-xs text-[#DDD2BC] leading-relaxed">
+                <p className="text-xs text-[#F8F7F4] leading-relaxed">
                   {storyConcept}
                 </p>
                 {musicSuggestion && (
-                  <p className="text-[11px] text-[#A69777] flex items-center gap-1.5 pt-0.5">
-                    <Music className="w-3 h-3 text-[#D4AF37]" />
+                  <p className="text-[11px] text-[#949B96] flex items-center gap-1.5 pt-0.5">
+                    <Music className="w-3 h-3 text-[#C5A059]" />
                     <span>Sugerowana oprawa muzyczna: <strong>{musicSuggestion}</strong></span>
                   </p>
                 )}
@@ -830,14 +851,14 @@ export function AiChronologicalMergeModal({
           )}
 
           {/* Tabs for Sequence / Quick Captions */}
-          <div className="flex items-center justify-between border-b border-[#2A2317] pb-2">
+          <div className="flex items-center justify-between border-b border-[#1B4332]/30 pb-2">
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setActiveTab('sequence')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
                   activeTab === 'sequence' 
-                    ? 'bg-[#2A2213] text-[#FDE047] border border-[#D4AF37]/50' 
-                    : 'text-[#A0957F] hover:text-white'
+                    ? 'bg-[#1B4332]/30 text-[#E5C992] border border-[#C5A059]/50' 
+                    : 'text-[#949B96] hover:text-white'
                 }`}
               >
                 🎬 Oś Chronologiczna & Cięcia ({sequencedItems.length} ujęć)
@@ -846,16 +867,16 @@ export function AiChronologicalMergeModal({
                 onClick={() => setActiveTab('captions')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
                   activeTab === 'captions' 
-                    ? 'bg-[#2A2213] text-[#FDE047] border border-[#D4AF37]/50' 
-                    : 'text-[#A0957F] hover:text-white'
+                    ? 'bg-[#1B4332]/30 text-[#E5C992] border border-[#C5A059]/50' 
+                    : 'text-[#949B96] hover:text-white'
                 }`}
               >
                 🏷️ Generator Podpisów & Tagi
               </button>
             </div>
 
-            <div className="text-xs text-[#A89C82] flex items-center gap-2 font-mono">
-              <Clock className="w-3.5 h-3.5 text-[#D4AF37]" />
+            <div className="text-xs text-[#949B96] flex items-center gap-2 font-mono">
+              <Clock className="w-3.5 h-3.5 text-[#C5A059]" />
               <span>Łączny czas z dodatkami: <strong>{Math.floor(totalDuration / 60)}m {Math.round(totalDuration % 60)}s</strong></span>
             </div>
           </div>
@@ -932,6 +953,16 @@ export function AiChronologicalMergeModal({
                             <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${catInfo.color}`}>
                               {catInfo.icon} {catInfo.label}
                             </span>
+                            {item.emotion && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                                🎭 {item.emotion}
+                              </span>
+                            )}
+                            {item.timeOfDay && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/30">
+                                ☀️ {item.timeOfDay}
+                              </span>
+                            )}
                             <span className="text-[10px] text-[#8C7E64] font-mono">
                               Oryginał: {item.clip.name}
                             </span>

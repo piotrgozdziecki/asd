@@ -17,15 +17,22 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 
 // Initialize Firestore with robust modern multi-tab persistent cache
 let firestoreInstance: Firestore;
+const databaseId = (firebaseConfig as any).firestoreDatabaseId;
 try {
-  firestoreInstance = initializeFirestore(app, {
-    localCache: persistentLocalCache({
-      tabManager: persistentMultipleTabManager()
-    })
-  }, firebaseConfig.firestoreDatabaseId);
+  firestoreInstance = databaseId 
+    ? initializeFirestore(app, {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager()
+        })
+      }, databaseId)
+    : initializeFirestore(app, {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager()
+        })
+      });
 } catch {
   // In case Firestore has already been initialized on this app instance
-  firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  firestoreInstance = databaseId ? getFirestore(app, databaseId) : getFirestore(app);
 }
 
 export const db = firestoreInstance;

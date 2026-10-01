@@ -109,13 +109,27 @@ export interface TimelineClip {
   transitionDuration?: number;
 }
 
+export type ExportResolution = 
+  | '720p' 
+  | '1080p' 
+  | '1440p' 
+  | '4k' 
+  | 'vertical_1080p' 
+  | 'vertical_4k' 
+  | 'square_1080p';
+
+export type VideoCodecOption = 'auto' | 'H.264' | 'H.265' | 'AV1' | 'VP9' | 'ProRes_Master' | 'FFMPEG_X264';
+
+export type ContainerFormat = 'auto' | 'mp4' | 'webm';
+
 export interface ExportPreset {
-  resolution: '720p' | '1080p' | '4k';
+  resolution: ExportResolution;
   width: number;
   height: number;
   fps: number;
-  videoCodec: 'H.264';
-  audioCodec: 'AAC';
+  videoCodec: VideoCodecOption;
+  container?: ContainerFormat;
+  audioCodec: 'AAC' | 'Opus';
   bitrate: number;
   quality: 'standard' | 'high' | 'maximum';
   fitMode: FitMode;
@@ -238,8 +252,10 @@ export type ExportTaskStatus = 'queued' | 'processing' | 'completed' | 'failed' 
 
 export interface ExportTaskConfig {
   presetMode: 'FAST' | 'BALANCED' | 'QUALITY' | 'MAX_QUALITY';
-  resolution: '720p' | '1080p' | '4k';
+  resolution: ExportResolution;
   fps: number;
+  videoCodec?: VideoCodecOption;
+  container?: ContainerFormat;
   fitMode: FitMode;
   colorGrade: 'none' | 'golden_hour' | 'vivid_master' | 'pastel_boho' | 'vintage_35mm' | 'cinematic_noir';
   letterbox: 'none' | 'cinemascope';
@@ -274,8 +290,17 @@ export interface DiagnosticsCapabilities {
   audioEncoderSupported: boolean;
   h264Supported: boolean;
   supportedH264Codecs: string[];
+  hevcSupported: boolean;
+  hevcHardware?: boolean;
+  av1Supported: boolean;
+  av1Hardware?: boolean;
+  vp9Supported: boolean;
+  vp9Hardware?: boolean;
   aacSupported: boolean;
+  opusSupported?: boolean;
   mp4MuxerSupported: boolean;
+  webmMuxerSupported?: boolean;
+  recommendedCodec?: string;
   availableMemoryMb?: number;
   lastExportStatus?: string;
   lastError?: string;

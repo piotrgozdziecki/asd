@@ -3,14 +3,74 @@ import { urlRegistry } from './urlRegistry';
 import { localIndexedDB } from '../storage/indexedDBProvider';
 
 /**
- * Robustly resolves a playable/renderable URL for a media clip.
- * 1. Uses in-memory clip.file if available.
- * 2. Preserves active blob, http, https, data, or relative API paths.
- * 3. Restores File & Blob from IndexedDB if needed.
- * 4. Falls back to proxyUrl for video clips.
- * 5. Falls back to thumbnailUrl ONLY for image clips (never for videos).
+ * Converts a remote/external URL to a local Blob URL, keeping it strictly in CORS-safe space.
+ * Caches in IndexedDB automatically to prevent redundant network requests and network errors.
  */
+export async function convertToLocalBlobUrl(
+  url: string, 
+  id: string, 
+  name: string, 
+  type: 'video' | 'image' | 'audio'
+): Promise<string> {
+  if (!url) return '';
+  if (url.startsWith('blob:') || url.startsWith('data:')) {
+    return url;
+  }
+
+  try {
+    const isGDrive = url.includes('googleapis.com') || url.includes('/api/drive/stream/');
+    const headers: HeadersInit = {};
+    if (isGDrive) {
+      const token = typeof window !== 'undefined' ? sessionStorage.getItem('gdrive_access_token') : null;
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+    }
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+      mode: 'cors',
+      credentials: 'omit'
+    });
+
+    if (response.ok) {
+      const blob = await response.blob();
+      if (blob && blob.size > 0) {
+        let mime = blob.type;
+        if (!mime || mime === 'application/octet-stream') {
+          if (type === 'image') mime = 'image/jpeg';
+          else if (type === 'audio') mime = 'audio/mp3';
+          else mime = 'video/mp4';
+        }
+        const typedBlob = new Blob([blob], { type: mime });
+        const file = new File([typedBlob], name, { type: mime });
+        const localUrl = urlRegistry.create(file);
+
+        // Save to IndexedDB so subsequent sessions can load locally instantly
+        try {
+          await localIndexedDB.saveMediaBlob(id, typedBlob);
+        } catch (idbErr) {
+          console.warn(`[mediaResolver] Failed to cache local blob in IDB for ${id}:`, idbErr);
+        }
+
+        return localUrl;
+      }
+    }
+  } catch (err) {
+    console.warn(`[mediaResolver] Failed to convert remote source to local blob URL: ${url}`, err);
+  }
+
+  return url;
+}
+
 export async function resolveClipMediaUrl(clip: MediaClip, preferProxy: boolean = false): Promise<string | null> {
+  const rawUrl = await resolveRawClipMediaUrl(clip, preferProxy);
+  if (!rawUrl) return null;
+  return await convertToLocalBlobUrl(rawUrl, clip.id, clip.name || 'video.mp4', clip.type || 'video');
+}
+
+export async function resolveRawClipMediaUrl(clip: MediaClip, preferProxy: boolean = false): Promise<string | null> {
   if (!clip) return null;
 
   // If proxy is explicitly requested (e.g. for lightweight editing/playback) and ready
@@ -153,11 +213,13 @@ export async function resolveClipMediaUrl(clip: MediaClip, preferProxy: boolean 
   return null;
 }
 
-/**
- * Resolves a valid, playable URL for an AudioTrackItem.
- * Checks track.file, IndexedDB, Google Drive client-side download, or alive objectUrl.
- */
 export async function resolveAudioTrackUrl(track: AudioTrackItem): Promise<string | null> {
+  const rawUrl = await resolveRawAudioTrackUrl(track);
+  if (!rawUrl) return null;
+  return await convertToLocalBlobUrl(rawUrl, track.id, track.name || 'audio.mp3', 'audio');
+}
+
+export async function resolveRawAudioTrackUrl(track: AudioTrackItem): Promise<string | null> {
   if (!track) return null;
 
   // 1. In-memory File
@@ -253,4 +315,3 @@ export async function getMediaArrayBuffer(id: string, file?: File | Blob, url?: 
   }
   return null;
 }
-

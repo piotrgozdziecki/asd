@@ -523,54 +523,37 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
           const srcW = mediaEl instanceof HTMLVideoElement ? mediaEl.videoWidth : ('naturalWidth' in mediaEl ? mediaEl.naturalWidth : (mediaEl as HTMLCanvasElement).width);
           const srcH = mediaEl instanceof HTMLVideoElement ? mediaEl.videoHeight : ('naturalHeight' in mediaEl ? mediaEl.naturalHeight : (mediaEl as HTMLCanvasElement).height);
 
-          FrameCompositor.drawMedia(
-            ctx,
-            mediaEl,
-            srcW || width,
-            srcH || height,
-            width,
-            height,
+          const activeOutro = activeItem.outroCard || (activeItem === sortedItems[sortedItems.length - 1] ? project.settings?.outroCard : undefined);
+          const transInType = activeItem.transitionIn || (activeItem.fadeIn ? 'fade' : 'cut');
+          const transOutType = activeItem.transitionOut || (activeItem.fadeOut ? 'fade' : 'cut');
+
+          FrameCompositor.renderAndTransferToEncoder(
             {
+              width,
+              height,
+              mediaEl,
+              srcWidth: srcW || width,
+              srcHeight: srcH || height,
               fitMode: activeItem.fitMode || 'fit',
               rotation: activeItem.rotation || 0,
               scale: activeItem.scale || 1,
               position: activeItem.position,
               crop: activeItem.crop,
               colorAdjustments: activeItem.colorAdjustments || clip.colorAdjustments,
-              globalPreset: project.settings?.colorGrade
-            }
+              globalPreset: project.settings?.colorGrade,
+              titleCard: activeItem.titleCard,
+              outroCard: activeOutro,
+              timeInItem,
+              itemDuration: activeItem.duration,
+              transitionIn: transInType,
+              transitionOut: transOutType,
+              transitionDuration: activeItem.transitionDuration,
+              textLayers: project.textLayers,
+              currentTimeSec: currentTime,
+              letterbox: project.settings?.letterbox
+            },
+            ctx
           );
-
-          // Apply Title Card if enabled for this item
-          if (activeItem.titleCard && activeItem.titleCard.enabled) {
-            const cardDuration = Math.min(Math.max(0.8, activeItem.duration * 0.4), activeItem.titleCard.duration || 3);
-            if (timeInItem < cardDuration) {
-              FrameCompositor.drawTitleCard(ctx, width, height, activeItem.titleCard);
-            }
-          }
-
-          // Apply transitions
-          const transInType = activeItem.transitionIn || (activeItem.fadeIn ? 'fade' : 'cut');
-          const transInDuration = activeItem.transitionDuration || activeItem.fadeIn || (transInType !== 'cut' ? 0.8 : 0);
-          if (transInDuration > 0 && timeInItem < transInDuration) {
-            const transProgress = 1 - Math.max(0, Math.min(1, timeInItem / transInDuration));
-            FrameCompositor.applyTransition(ctx, width, height, transProgress, transInType);
-          }
-
-          const timeLeft = activeItem.duration - timeInItem;
-          const transOutType = activeItem.transitionOut || (activeItem.fadeOut ? 'fade' : 'cut');
-          const transOutDuration = activeItem.transitionDuration || activeItem.fadeOut || (transOutType !== 'cut' ? 0.8 : 0);
-          if (transOutDuration > 0 && timeLeft < transOutDuration) {
-            const transProgress = 1 - Math.max(0, Math.min(1, timeLeft / transOutDuration));
-            FrameCompositor.applyTransition(ctx, width, height, transProgress, transOutType);
-          }
-        }
-
-        // Draw Subtitles & Text Layers with FrameCompositor
-        if (project.textLayers && project.textLayers.length > 0) {
-          for (const textLayer of project.textLayers) {
-            FrameCompositor.drawTextLayer(ctx, width, height, textLayer, currentTime);
-          }
         }
 
         // Small delay to let captureStream and MediaRecorder absorb the frame
