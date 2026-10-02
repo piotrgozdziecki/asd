@@ -80,7 +80,7 @@ export class FfmpegService {
 
     const args = canCopy 
       ? ['-f', 'concat', '-safe', '0', '-i', 'inputs.txt', '-c', 'copy', 'output.mp4']
-      : ['-f', 'concat', '-safe', '0', '-i', 'inputs.txt', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-vf', `scale=${targetWidth}:${targetHeight}`, '-c:a', 'aac', '-b:a', '192k', 'output.mp4'];
+      : ['-f', 'concat', '-safe', '0', '-i', 'inputs.txt', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-threads', '0', '-vf', `scale=${targetWidth}:${targetHeight}`, '-c:a', 'aac', '-b:a', '192k', 'output.mp4'];
     
     const inputList = sources.map(s => `file '${inputDir}/${s.name}'`).join('\n');
     await ffmpeg.writeFile('inputs.txt', inputList);

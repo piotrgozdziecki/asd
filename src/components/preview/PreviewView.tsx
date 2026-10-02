@@ -217,9 +217,7 @@ export function PreviewView({ project }: PreviewViewProps) {
           video = document.createElement('video');
           video.preload = 'auto';
           video.playsInline = true;
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            video.crossOrigin = 'anonymous';
-          }
+          video.crossOrigin = 'anonymous';
           video.muted = isMuted;
           video.src = url;
           if (offscreenHostRef.current && !video.parentNode) {
@@ -234,9 +232,7 @@ export function PreviewView({ project }: PreviewViewProps) {
         let img = imagePool.get(clip.id);
         if (!img) {
           img = new Image();
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            img.crossOrigin = 'anonymous';
-          }
+          img.crossOrigin = 'anonymous';
           img.src = url;
           imagePool.set(clip.id, img);
         } else if (img.src !== url && !img.src.endsWith(url)) {

@@ -9,6 +9,7 @@ export interface RenderOptions {
   watermark?: boolean;
   useProxyMedia?: boolean;
   startFromFrame?: number;
+  videoCodec?: string;
 }
 
 export type RenderStage = 

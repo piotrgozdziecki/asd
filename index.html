@@ -2,7 +2,7 @@
 <html lang="pl">
   <head>
     <script>
-      // Suppress benign iframe dev websocket warnings from appearing in error scrapers
+      // Suppress benign iframe dev websocket and firestore offline mode warnings from appearing in error scrapers
       (function() {
         if (typeof window === 'undefined') return;
         var origError = console.error;
@@ -13,6 +13,9 @@
           if (str.indexOf('[vite]') !== -1 && (str.indexOf('websocket') !== -1 || str.indexOf('failed to connect') !== -1 || str.indexOf('WebSocket') !== -1)) {
             return;
           }
+          if (str.indexOf('@firebase/firestore') !== -1 && (str.indexOf('Could not reach Cloud Firestore backend') !== -1 || str.indexOf('operate in offline mode') !== -1)) {
+            return;
+          }
           return origError.apply(console, arguments);
         };
         var origWarn = console.warn;
@@ -21,6 +24,9 @@
             return typeof a === 'string' ? a : (a && a.message ? a.message : '');
           }).join(' ');
           if (str.indexOf('[vite]') !== -1 && (str.indexOf('websocket') !== -1 || str.indexOf('failed to connect') !== -1 || str.indexOf('WebSocket') !== -1)) {
+            return;
+          }
+          if (str.indexOf('@firebase/firestore') !== -1 && (str.indexOf('Could not reach Cloud Firestore backend') !== -1 || str.indexOf('operate in offline mode') !== -1)) {
             return;
           }
           return origWarn.apply(console, arguments);

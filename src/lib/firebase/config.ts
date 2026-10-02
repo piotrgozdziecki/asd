@@ -15,17 +15,19 @@ import firebaseConfig from '../../../firebase-applet-config.json';
 // Ensure singleton Firebase App
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Firestore with robust modern multi-tab persistent cache
+// Initialize Firestore with robust modern multi-tab persistent cache and auto-detect long polling
 let firestoreInstance: Firestore;
 const databaseId = (firebaseConfig as any).firestoreDatabaseId;
 try {
   firestoreInstance = databaseId 
     ? initializeFirestore(app, {
+        experimentalAutoDetectLongPolling: true,
         localCache: persistentLocalCache({
           tabManager: persistentMultipleTabManager()
         })
       }, databaseId)
     : initializeFirestore(app, {
+        experimentalAutoDetectLongPolling: true,
         localCache: persistentLocalCache({
           tabManager: persistentMultipleTabManager()
         })
@@ -83,9 +85,10 @@ if (typeof window !== 'undefined') {
 
       if (isOffline) {
         updateConnectionStatus(false);
-        console.warn('[Firebase] Client is currently operating in offline mode. Local persistent cache is enabled.');
+        console.info('[Firebase] Client is currently operating in offline mode. Local persistent cache is enabled.');
       }
     }
   }
-  testConnection();
+  // Allow network stack to settle
+  setTimeout(testConnection, 800);
 }

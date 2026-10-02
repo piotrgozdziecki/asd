@@ -42,6 +42,7 @@ export interface CompositeFrameParams {
   currentTimeSec?: number;
   letterbox?: string;
   watermark?: { enabled: boolean; text: string; position: string; opacity: number };
+  sessionId?: string;
 }
 
 export interface EncoderFrameResult {
@@ -52,8 +53,10 @@ export interface EncoderFrameResult {
 }
 
 export class FrameCompositor {
-  private static offscreenBufferCanvas: OffscreenCanvas | HTMLCanvasElement | null = null;
-  private static offscreenBufferCtx: AnyCanvasContext | null = null;
+  private static offscreenBuffers: Map<string, {
+    canvas: OffscreenCanvas | HTMLCanvasElement;
+    ctx: AnyCanvasContext;
+  }> = new Map();
 
   /**
    * Creates an OffscreenCanvas or fallback HTMLCanvasElement for high-throughput headless frame drawing
@@ -72,29 +75,46 @@ export class FrameCompositor {
    * Retrieves or initializes a hardware-accelerated OffscreenCanvas intermediate buffer.
    * Reuses buffer memory across frames to prevent GC pressure during high-FPS video encoding.
    */
-  static getOffscreenBuffer(width: number, height: number): {
+  static getOffscreenBuffer(width: number, height: number, sessionId: string = 'default'): {
     canvas: OffscreenCanvas | HTMLCanvasElement;
     ctx: AnyCanvasContext;
   } {
+    const key = `${sessionId}_${width}x${height}`;
+    let buffer = this.offscreenBuffers.get(key);
+    
     if (
-      !this.offscreenBufferCanvas ||
-      this.offscreenBufferCanvas.width !== width ||
-      this.offscreenBufferCanvas.height !== height
+      !buffer ||
+      buffer.canvas.width !== width ||
+      buffer.canvas.height !== height
     ) {
-      this.offscreenBufferCanvas = this.createOffscreenCanvas(width, height);
-      this.offscreenBufferCtx = this.offscreenBufferCanvas.getContext('2d', {
+      const canvas = this.createOffscreenCanvas(width, height);
+      const ctx = canvas.getContext('2d', {
         alpha: false,
         desynchronized: true,
         willReadFrequently: false
       }) as AnyCanvasContext;
-    } else if (this.offscreenBufferCtx) {
-      this.offscreenBufferCtx.clearRect(0, 0, width, height);
+      buffer = { canvas, ctx };
+      this.offscreenBuffers.set(key, buffer);
+    } else {
+      buffer.ctx.clearRect(0, 0, width, height);
     }
 
-    return {
-      canvas: this.offscreenBufferCanvas,
-      ctx: this.offscreenBufferCtx!
-    };
+    // Always ensure a solid black background base to prevent transparent frames/leakage
+    buffer.ctx.fillStyle = '#000000';
+    buffer.ctx.fillRect(0, 0, width, height);
+
+    return buffer;
+  }
+
+  /**
+   * Cleans up offscreen canvas buffers associated with a given session ID to free memory.
+   */
+  static cleanupSession(sessionId: string): void {
+    for (const key of Array.from(this.offscreenBuffers.keys())) {
+      if (key.startsWith(`${sessionId}_`)) {
+        this.offscreenBuffers.delete(key);
+      }
+    }
   }
 
   /**
@@ -105,8 +125,8 @@ export class FrameCompositor {
     canvas: OffscreenCanvas | HTMLCanvasElement;
     ctx: AnyCanvasContext;
   } {
-    const { width, height } = params;
-    const { canvas, ctx } = this.getOffscreenBuffer(width, height);
+    const { width, height, sessionId } = params;
+    const { canvas, ctx } = this.getOffscreenBuffer(width, height, sessionId);
 
     // 1. Draw Media / Video Frame if provided
     if (params.mediaEl) {
@@ -197,7 +217,7 @@ export class FrameCompositor {
     timestampMicros: number = 0,
     durationMicros: number = 33333
   ): VideoFrame {
-    const buffer = sourceBuffer || this.offscreenBufferCanvas;
+    const buffer = sourceBuffer || Array.from(this.offscreenBuffers.values())[0]?.canvas;
     if (!buffer) {
       throw new Error('FrameCompositor: OffscreenCanvas buffer nie został zainicjalizowany.');
     }

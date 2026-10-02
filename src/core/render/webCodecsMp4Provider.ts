@@ -212,6 +212,7 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
       throw new Error('Eksport został anulowany przed rozpoczęciem.');
     }
 
+    const sessionId = `export_${Math.random().toString(36).substring(2, 11)}`;
     let failureStage: 'initialization' | 'loading' | 'decoding' | 'rendering' | 'encoding_video' | 'encoding_audio' | 'muxing' | 'validating' = 'initialization';
     let currentClipName: string | undefined;
     let framesProcessed = 0;
@@ -308,13 +309,23 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
       const defaultBitrate = width >= 3840 ? 35000 : (width >= 1920 ? 10000 : 4500);
       const targetBitrate = (options.bitrateKbps || defaultBitrate) * 1000;
 
-      const candidateCodecs = [
-        'avc1.420028',
-        'avc1.42001f',
-        'avc1.42E028',
-        'avc1.4D4028',
-        'avc1.4D401F'
-      ];
+      const selectedCodec = options.videoCodec || 'auto';
+      const candidateCodecs: string[] = [];
+      if (selectedCodec === 'VP9') {
+        candidateCodecs.push('vp09.00.10.08');
+      } else if (selectedCodec === 'AV1') {
+        candidateCodecs.push('av01.0.04M.08');
+      } else if (selectedCodec === 'H.265') {
+        candidateCodecs.push('hev1.1.6.L93.B0', 'hvc1.1.6.L93.B0');
+      } else {
+        candidateCodecs.push(
+          'avc1.4D4028', // H.264 Main Profile Level 4.0
+          'avc1.640028', // H.264 High Profile Level 4.0
+          'avc1.42E028', // H.264 Constrained Baseline Profile Level 4.0
+          'avc1.420028',
+          'avc1.42001f'
+        );
+      }
 
       let videoConfig: VideoEncoderConfig | null = null;
       const probeScratchCanvas = document.createElement('canvas');
@@ -322,23 +333,26 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
       probeScratchCanvas.height = 16;
 
       if (typeof VideoEncoder.isConfigSupported === 'function') {
-        for (const accel of ['no-preference', 'prefer-software', 'prefer-hardware'] as HardwareAcceleration[]) {
+        for (const accel of ['prefer-hardware', 'no-preference', 'prefer-software'] as HardwareAcceleration[]) {
           for (const codec of candidateCodecs) {
             try {
+              const isAvc = codec.startsWith('avc');
               const testConfig: VideoEncoderConfig = {
                 codec,
                 width,
                 height,
                 bitrate: targetBitrate,
+                bitrateMode: 'variable', // Variable bitrate for ultimate quality vs speed
+                latencyMode: 'quality',  // Quality mode for high-end encoding efficiency
                 framerate: fps,
                 hardwareAcceleration: accel,
-                avc: { format: 'avc' }
-              };
+                avc: isAvc ? { format: 'avc' } : undefined
+              } as any;
               const support = await VideoEncoder.isConfigSupported(testConfig);
               if (support && support.supported) {
                 const fullCandidate: VideoEncoderConfig = {
                   ...(support.config || testConfig),
-                  avc: { format: 'avc' }
+                  avc: isAvc ? { format: 'avc' } : undefined
                 };
 
                 let probeOk = false;
@@ -377,15 +391,18 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
       }
 
       if (!videoConfig) {
+        const isAvcFallback = candidateCodecs[0].startsWith('avc');
         videoConfig = {
-          codec: 'avc1.420028',
+          codec: candidateCodecs[0],
           width,
           height,
           bitrate: targetBitrate,
+          bitrateMode: 'variable',
+          latencyMode: 'quality',
           framerate: fps,
           hardwareAcceleration: 'no-preference',
-          avc: { format: 'avc' }
-        };
+          avc: isAvcFallback ? { format: 'avc' } : undefined
+        } as any;
       }
 
       let encoderError: { message: string; failureStage: string; originalError?: unknown } | null = null;
@@ -477,102 +494,48 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
             video.style.zIndex = '-9999';
             document.body.appendChild(video);
 
-            const isExternal = src.startsWith('http://') || src.startsWith('https://');
-            const isSameOrigin = typeof window !== 'undefined' && src.startsWith(window.location.origin);
-            if (isExternal && !isSameOrigin) {
-              video.crossOrigin = 'anonymous';
-            }
+            video.crossOrigin = 'anonymous';
             video.src = src;
 
-            const waitForVideo = (vidEl: HTMLVideoElement): Promise<boolean> => {
-              if (vidEl.readyState >= 1 && vidEl.videoWidth > 0) return Promise.resolve(true);
-
-              return new Promise<boolean>((resolve) => {
-                let settled = false;
-                const onMetadata = () => {
-                  if (settled) return;
-                  settled = true;
-                  cleanup();
-                  resolve(true);
-                };
-                const onError = () => {
-                  if (settled) return;
-                  settled = true;
-                  cleanup();
-                  resolve(false);
-                };
-                const cleanup = () => {
-                  vidEl.removeEventListener('loadedmetadata', onMetadata);
-                  vidEl.removeEventListener('canplay', onMetadata);
-                  vidEl.removeEventListener('error', onError);
-                };
-
-                vidEl.addEventListener('loadedmetadata', onMetadata);
-                vidEl.addEventListener('canplay', onMetadata);
-                vidEl.addEventListener('error', onError);
-                vidEl.load();
-
-                setTimeout(() => {
-                  if (!settled) {
-                    settled = true;
-                    cleanup();
-                    resolve(vidEl.videoWidth > 0 || vidEl.readyState >= 1);
-                  }
-                }, 10000);
-              });
-            };
-
-            let loaded = await waitForVideo(video);
-
-            // Retry if CORS failed
-            if (!loaded && video.crossOrigin) {
-              video.removeAttribute('crossorigin');
-              video.src = src;
-              loaded = await waitForVideo(video);
-            }
-
-            // Fallback to proxyUrl
-            if (!loaded && clip.proxyUrl && clip.proxyUrl !== src) {
-              video.src = clip.proxyUrl;
-              loaded = await waitForVideo(video);
-            }
-
-            // Fallback to in-memory file
-            if (!loaded && clip.file) {
-              try {
-                video.src = URL.createObjectURL(clip.file);
-                loaded = await waitForVideo(video);
-              } catch {}
-            }
-
-            // Fallback to IndexedDB
-            if (!loaded) {
-              try {
-                const blob = await localIndexedDB.getMediaBlob(clip.id);
-                if (blob && blob.size > 0) {
-                  const mime = (blob.type && blob.type.startsWith('video/')) ? blob.type : 'video/mp4';
-                  const typedBlob = new Blob([blob], { type: mime });
-                  const freshUrl = urlRegistry.create(typedBlob);
-                  video.src = freshUrl;
-                  loaded = await waitForVideo(video);
-                }
-              } catch {}
-            }
-
-            if (!loaded && video.videoWidth === 0 && video.readyState < 1) {
-              if (clip.thumbnailUrl && clip.thumbnailUrl.length > 5) {
-                const fallbackImg = new Image();
-                if (clip.thumbnailUrl.startsWith('http')) fallbackImg.crossOrigin = 'anonymous';
-                fallbackImg.src = clip.thumbnailUrl;
-                await new Promise<void>((res) => {
-                  fallbackImg.onload = () => res();
-                  fallbackImg.onerror = () => res();
-                  setTimeout(res, 3000);
-                });
-                mediaElements.set(clip.id, fallbackImg);
+            const loaded = await new Promise<boolean>((resolve) => {
+              if (video.readyState >= 1 && video.videoWidth > 0) {
+                resolve(true);
                 return;
               }
+              let settled = false;
+              const onMetadata = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(true);
+              };
+              const onError = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(false);
+              };
+              const cleanup = () => {
+                video.removeEventListener('loadedmetadata', onMetadata);
+                video.removeEventListener('canplay', onMetadata);
+                video.removeEventListener('error', onError);
+              };
 
+              video.addEventListener('loadedmetadata', onMetadata);
+              video.addEventListener('canplay', onMetadata);
+              video.addEventListener('error', onError);
+              video.load();
+
+              setTimeout(() => {
+                if (!settled) {
+                  settled = true;
+                  cleanup();
+                  resolve(video.videoWidth > 0 || video.readyState >= 1);
+                }
+              }, 8000);
+            });
+
+            if (!loaded) {
               const fallbackEl = this.createFallbackFrameElement(clip.name, width, height);
               mediaElements.set(clip.id, fallbackEl);
               return;
@@ -581,7 +544,7 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
             mediaElements.set(clip.id, video);
           } else {
             const img = new Image();
-            if (src.startsWith('http')) img.crossOrigin = 'anonymous';
+            img.crossOrigin = 'anonymous';
             img.src = src;
             await new Promise<void>((resolve) => {
               img.onload = () => resolve();
@@ -590,7 +553,7 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
                 mediaElements.set(clip.id, fallback);
                 resolve();
               };
-              setTimeout(resolve, 5000);
+              setTimeout(resolve, 4000);
             });
             if (!mediaElements.has(clip.id)) {
               mediaElements.set(clip.id, img);
@@ -794,7 +757,8 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
             transitionDuration: activeItem?.transitionDuration,
             textLayers: project.textLayers,
             currentTimeSec: currentTime,
-            letterbox: project.settings?.letterbox
+            letterbox: project.settings?.letterbox,
+            sessionId
           },
           ctx,
           timestampMicros,
@@ -988,6 +952,9 @@ export class WebCodecsMp4RenderProvider implements IRenderProvider {
 
       throw err;
     } finally {
+      // Clean up buffers associated with this export session in FrameCompositor
+      FrameCompositor.cleanupSession(sessionId);
+
       // Clean up video elements from DOM
       for (const el of mediaElements.values()) {
         if (el instanceof HTMLVideoElement) {

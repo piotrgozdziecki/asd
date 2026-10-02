@@ -86,6 +86,7 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
       throw new Error('Eksport został anulowany przed rozpoczęciem.');
     }
 
+    const sessionId = `mediarecorder_${Math.random().toString(36).substring(2, 11)}`;
     const sortedItems = [...(project.timelineItems || [])].sort((a, b) => a.timelineStart - b.timelineStart);
     if (sortedItems.length === 0) {
       throw new Error('Brak klipów na osi czasu do wyrenderowania.');
@@ -418,7 +419,7 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
         video.style.zIndex = '-9999';
         document.body.appendChild(video);
 
-        if (src.startsWith('http')) video.crossOrigin = 'anonymous';
+        video.crossOrigin = 'anonymous';
         video.src = src;
 
         await new Promise<void>((resolve) => {
@@ -444,7 +445,7 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
         mediaElements.set(clip.id, video);
       } else {
         const img = new Image();
-        if (src.startsWith('http')) img.crossOrigin = 'anonymous';
+        img.crossOrigin = 'anonymous';
         img.src = src;
         await new Promise<void>((resolve) => {
           img.onload = () => resolve();
@@ -550,7 +551,8 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
               transitionDuration: activeItem.transitionDuration,
               textLayers: project.textLayers,
               currentTimeSec: currentTime,
-              letterbox: project.settings?.letterbox
+              letterbox: project.settings?.letterbox,
+              sessionId
             },
             ctx
           );
@@ -662,6 +664,7 @@ export class LocalBrowserRenderProvider implements IRenderProvider {
       } catch {}
       throw err;
     } finally {
+      FrameCompositor.cleanupSession(sessionId);
       for (const el of mediaElements.values()) {
         if (el instanceof HTMLVideoElement) {
           try {
