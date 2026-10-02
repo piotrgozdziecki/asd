@@ -1,43 +1,38 @@
 /**
- * EXPORT SERVICE - Pobieranie wygenerowanych filmów z IndexedDB
- * Obsługuje: .zip (cały projekt), .mp4 (pojedyncze filmy), batch download
+ * DOWNLOAD SERVICE - Export rendered videos & backups from IndexedDB
+ * Supports: MP4, JSON backup, ZIP archive, batch exports
  */
 
 import { localIndexedDB } from '../storage/indexedDBProvider';
 
-interface ExportFormat {
-  type: 'mp4' | 'zip' | 'json';
-  quality: '720p' | '1080p' | '4k';
-  includeProject: boolean;
-  filename?: string;
+interface DownloadProgress {
+  percent: number;
+  message: string;
 }
 
 /**
- * Pobiera film MP4 z IndexedDB i inicjuje download
+ * Download rendered MP4 from IndexedDB to user's device
  */
 export async function downloadRenderBlob(
   projectId: string,
   filename?: string,
-  onProgress?: (percent: number) => void
-): Promise<{ success: boolean; message: string; blobUrl?: string }> {
+  onProgress?: (p: DownloadProgress) => void
+): Promise<{ success: boolean; message: string }> {
   try {
-    onProgress?.(10);
+    onProgress?.({ percent: 10, message: 'Pobieranie z pamięci lokalnej...' });
     
     const result = await localIndexedDB.getMasterRenderBlob(projectId);
-    if (!result || !result.blob) {
+    if (!result?.blob) {
       return { 
         success: false, 
-        message: 'Film nie znaleziony w pamięci urządzenia. Renderuj najpierw wideo.' 
+        message: 'Film nie znaleziony. Renderuj najpierw wideo.' 
       };
     }
 
-    onProgress?.(50);
+    onProgress?.({ percent: 50, message: 'Przygotowywanie do pobrania...' });
     
-    const blob = result.blob;
     const finalFilename = filename || result.meta?.fileName || `wedding_${projectId}_${Date.now()}.mp4`;
-    
-    // Trigger browser download
-    const url = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(result.blob);
     const link = document.createElement('a');
     link.href = url;
     link.download = finalFilename;
@@ -45,47 +40,33 @@ export async function downloadRenderBlob(
     link.click();
     document.body.removeChild(link);
     
-    onProgress?.(90);
+    onProgress?.({ percent: 90, message: 'Pobieranie w toku...' });
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
     
-    // Keep URL alive for a bit
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-    
-    onProgress?.(100);
-    
-    return {
-      success: true,
-      message: `Film "${finalFilename}" pobrany pomyślnie!`,
-      blobUrl: url
-    };
+    onProgress?.({ percent: 100, message: 'Gotowe!' });
+    return { success: true, message: `Pobrano: ${finalFilename}` };
   } catch (err: any) {
-    console.error('[downloadRenderBlob] Error:', err);
-    return {
-      success: false,
-      message: `Błąd pobierania: ${err?.message || 'Nieznany błąd'}`
-    };
+    return { success: false, message: `Błąd: ${err?.message}` };
   }
 }
 
 /**
- * Pobiera projekt jako JSON
+ * Download project as JSON backup
  */
-export async function downloadProjectAsJson(
+export async function downloadProjectJSON(
   projectId: string,
   projectName: string,
-  onProgress?: (percent: number) => void
+  onProgress?: (p: DownloadProgress) => void
 ): Promise<{ success: boolean; message: string }> {
   try {
-    onProgress?.(20);
+    onProgress?.({ percent: 20, message: 'Ładowanie projektu...' });
     
     const project = await localIndexedDB.loadProjectDraft(projectId);
     if (!project) {
-      return { 
-        success: false, 
-        message: 'Projekt nie znaleziony' 
-      };
+      return { success: false, message: 'Projekt nie znaleziony' };
     }
 
-    onProgress?.(50);
+    onProgress?.({ percent: 50, message: 'Konwertowanie do JSON...' });
     
     const json = JSON.stringify(project, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -97,10 +78,10 @@ export async function downloadProjectAsJson(
     link.click();
     document.body.removeChild(link);
     
-    onProgress?.(90);
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    onProgress?.({ percent: 90, message: 'Pobieranie...' });
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
     
-    onProgress?.(100);
+    onProgress?.({ percent: 100, message: 'Gotowe!' });
     return { success: true, message: 'Projekt pobrany jako JSON' };
   } catch (err: any) {
     return { success: false, message: `Błąd: ${err?.message}` };
@@ -108,87 +89,32 @@ export async function downloadProjectAsJson(
 }
 
 /**
- * Eksportuje wiele filmów jako .zip (wymaga biblioteki JSZip)
+ * Download all projects as ZIP backup (requires JSZip)
  */
-export async function downloadProjectAsZip(
-  projectId: string,
-  projectName: string,
-  includeProject: boolean = true,
-  onProgress?: (percent: number) => void
+export async function downloadAllProjectsZip(
+  onProgress?: (p: DownloadProgress) => void
 ): Promise<{ success: boolean; message: string }> {
   try {
-    // Dynamically import JSZip only when needed
+    onProgress?.({ percent: 5, message: 'Inicjalizacja ZIP...' });
     const JSZip = (await import('jszip')).default;
-    
-    onProgress?.(10);
-    
     const zip = new JSZip();
     
-    // Add main render blob
-    const renderResult = await localIndexedDB.getMasterRenderBlob(projectId);
-    if (renderResult?.blob) {
-      const filename = renderResult.meta?.fileName || 'main_render.mp4';
-      zip.file(filename, renderResult.blob);
-    }
-    
-    onProgress?.(40);
-    
-    // Add project JSON as metadata
-    if (includeProject) {
-      const project = await localIndexedDB.loadProjectDraft(projectId);
-      if (project) {
-        zip.file('project.json', JSON.stringify(project, null, 2));
-      }
-    }
-    
-    onProgress?.(70);
-    
-    // Generate and download zip
-    const zipBlob = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(zipBlob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${projectName}_complete_${Date.now()}.zip`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    
-    onProgress?.(95);
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-    
-    onProgress?.(100);
-    return { success: true, message: 'Plik ZIP pobrany pomyślnie' };
-  } catch (err: any) {
-    return { success: false, message: `Błąd ZIP: ${err?.message}` };
-  }
-}
-
-/**
- * Pobiera archiwum wszystkich projektów (backup całej bazy)
- */
-export async function downloadAllProjectsBackup(
-  onProgress?: (percent: number) => void
-): Promise<{ success: boolean; message: string }> {
-  try {
-    const JSZip = (await import('jszip')).default;
-    onProgress?.(5);
-    
-    const zip = new JSZip();
+    onProgress?.({ percent: 15, message: 'Pobieranie listy projektów...' });
     const projects = await localIndexedDB.listProjectDrafts();
     
-    onProgress?.(15);
-    
+    onProgress?.({ percent: 25, message: `Pakowanie ${projects.length} projektów...` });
     for (let i = 0; i < projects.length; i++) {
-      const project = await localIndexedDB.loadProjectDraft(projects[i].id);
-      if (project) {
-        const folder = zip.folder(`project_${projects[i].name || projects[i].id}`);
-        folder?.file('data.json', JSON.stringify(project, null, 2));
+      const proj = await localIndexedDB.loadProjectDraft(projects[i].id);
+      if (proj) {
+        const folder = zip.folder(`project_${projects[i].name}`);
+        folder?.file('data.json', JSON.stringify(proj, null, 2));
       }
-      onProgress?.(15 + (i / projects.length) * 70);
+      onProgress?.({ percent: 25 + (i / projects.length) * 60, message: `Pakowanie... ${i + 1}/${projects.length}` });
     }
     
-    const zipBlob = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(zipBlob);
+    onProgress?.({ percent: 85, message: 'Generowanie archiwum...' });
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     link.download = `wedding_studio_backup_${Date.now()}.zip`;
@@ -196,81 +122,78 @@ export async function downloadAllProjectsBackup(
     link.click();
     document.body.removeChild(link);
     
-    onProgress?.(95);
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    onProgress?.({ percent: 95, message: 'Pobieranie...' });
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
     
-    onProgress?.(100);
+    onProgress?.({ percent: 100, message: 'Gotowe!' });
     return { success: true, message: `Backup ${projects.length} projektów pobrany` };
   } catch (err: any) {
-    return { success: false, message: `Błąd backupu: ${err?.message}` };
+    return { success: false, message: `Błąd ZIP: ${err?.message}` };
   }
 }
 
 /**
- * Importuje projekt z pliku JSON
+ * Import project from JSON file
  */
-export async function importProjectFromJson(
+export async function importProjectFromFile(
   file: File,
-  onProgress?: (percent: number) => void
+  onProgress?: (p: DownloadProgress) => void
 ): Promise<{ success: boolean; message: string; projectId?: string }> {
   try {
-    onProgress?.(20);
+    onProgress?.({ percent: 20, message: 'Czytanie pliku...' });
     
     const text = await file.text();
     const project = JSON.parse(text);
     
-    onProgress?.(50);
+    onProgress?.({ percent: 50, message: 'Walidacja projektu...' });
     
     if (!project.id) {
       project.id = `imported_${Date.now()}`;
     }
     
+    onProgress?.({ percent: 75, message: 'Zapisywanie do pamięci lokalnej...' });
     await localIndexedDB.saveProjectDraft(project);
     
-    onProgress?.(90);
-    onProgress?.(100);
-    
+    onProgress?.({ percent: 100, message: 'Gotowe!' });
     return {
       success: true,
       message: `Projekt "${project.name}" zaimportowany pomyślnie`,
       projectId: project.id
     };
   } catch (err: any) {
-    return {
-      success: false,
-      message: `Błąd importu: ${err?.message}`
-    };
+    return { success: false, message: `Błąd importu: ${err?.message}` };
   }
 }
 
 /**
- * Pobiera statystykę przechowywania
+ * Get storage statistics
  */
-export async function getStorageInfo(): Promise<{
+export async function getStorageStats(): Promise<{
   usedMB: number;
   quotaMB: number;
   percentUsed: number;
   availableMB: number;
+  projectCount: number;
 }> {
   const stats = await localIndexedDB.getStorageStats();
   return {
-    usedMB: Math.round(stats.usedBytes / (1024 * 1024) * 100) / 100,
+    usedMB: Math.round((stats.usedBytes / (1024 * 1024)) * 100) / 100,
     quotaMB: Math.round(stats.quotaBytes / (1024 * 1024)),
     percentUsed: Math.round(stats.percentUsed),
-    availableMB: Math.round(stats.availableBytes / (1024 * 1024) * 100) / 100
+    availableMB: Math.round((stats.availableBytes / (1024 * 1024)) * 100) / 100,
+    projectCount: stats.projectCount
   };
 }
 
 /**
- * Czyści starsze kopie filmów, pozostawiając tylko ostatnie N
+ * Clear old cached renders to free space
  */
-export async function cleanupOldRenders(
-  maxRenderSnapshots: number = 3
-): Promise<{ cleaned: boolean; removedCount: number }> {
+export async function clearOldRenders(keepCount: number = 3): Promise<boolean> {
   try {
-    // This is a placeholder - full implementation would require tracking multiple renders per project
-    return { cleaned: true, removedCount: 0 };
-  } catch (err) {
-    return { cleaned: false, removedCount: 0 };
+    // Implementation would track multiple renders per project
+    // and delete older ones beyond keepCount
+    return true;
+  } catch {
+    return false;
   }
 }
